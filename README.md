@@ -81,17 +81,20 @@ dags/                          — примеры DAG'ов под все 4 на�
 
 ## Переменные окружения
 
+Хранятся в файле `.env` в корне проекта (он в `.gitignore`, в репозиторий
+не уходит). Шаблон со всеми ключами и значениями-плейсхолдерами —
+`.env.example`.
+
+Подготовка: `cp .env.example .env` и подставить свои значения. На старте
+любого модуля (`Connect/__init__.py`, `Src/fullPath.py`) автоматически
+вызывается `python-dotenv`, который и подхватит `.env`. Если переменная
+уже задана в системе (`export ...`), она имеет приоритет — `.env` не
+перетирает то, что уже есть.
+
+Список ключей — в `.env.example`:
+
 ```
-ETL_FULL_PATH=/opt/airflow/airflow/
-ETL_MODE=Prod
-ETL_ORACLE_HOST=10.0.15.9
-ETL_ORACLE_PORT=1521
-ETL_ORACLE_SID=ias
-ETL_ORACLE_USER=...
-ETL_ORACLE_PWD=...
-ETL_POST_HOST=10.0.15.35
-ETL_POST_PORT=5432
-ETL_POST_DB=ias5db
-ETL_POST_USER=...
-ETL_POST_PWD=...
+ETL_FULL_PATH, ETL_MODE
+ETL_ORACLE_HOST / PORT / SID / USER / PWD / CONFIG_DIR
+ETL_POST_HOST / PORT / DB / USER / PWD
 ```

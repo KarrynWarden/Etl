@@ -1,0 +1,5 @@
+psycopg2-binary
+cx_Oracle
+python-dotenv
+colorlog
+apache-airflow

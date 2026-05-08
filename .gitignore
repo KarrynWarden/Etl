@@ -1,0 +1,19 @@
+# Секреты — никогда не коммитим
+.env
+*.env
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# IDE
+.idea/
+.vscode/
+
+# Airflow
+airflow.db
+airflow.cfg
+logs/
