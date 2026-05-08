@@ -1,0 +1,60 @@
+{
+  "_comment": "Конфигурация ETL по парам tableNameEtlJobs+dbMaster+dbSlave. Все пути относительно FULL_PATH+etlFolder+MODE.",
+  "data": {
+    "iperson_OrcLPost": {
+      "_doc": "Пример: oracle->postgres, простой PK, master-таблица",
+      "tableNameMaster": "iperson",
+      "tableNameSlave": "iperson",
+      "structureMaster": "/opt/airflow/airflow/etlFolder/structures/iperson_orcl.json",
+      "structureSlave": "/opt/airflow/airflow/etlFolder/structures/iperson_post.json",
+      "selectSql": "/opt/airflow/airflow/etlFolder/queries/customQueries/iperson.sql",
+      "periodColumn": "createdate",
+      "mode": "iud"
+    },
+
+    "reqprepmoPostOrcl": {
+      "_doc": "postgres->oracle, master-таблица напрямую, период reqdt",
+      "tableNameMaster": "reqprepmo",
+      "tableNameSlave": "reqprepmo",
+      "structureMaster": "/opt/airflow/airflow/etlFolder/structures/reqprepmo_post.json",
+      "structureSlave": "/opt/airflow/airflow/etlFolder/structures/reqprepmo_orcl.json",
+      "periodColumn": "reqdt",
+      "slavePeriodColumn": "reqdt",
+      "mode": "iud"
+    },
+
+    "reqprepmomocheckPostPost": {
+      "_doc": "postgres->postgres: reqprepmo->mocheck, частичный уникальный индекс по doctype=7",
+      "tableNameMaster": "reqprepmo",
+      "tableNameSlave": "mocheck",
+      "structureMaster": "/opt/airflow/airflow/etlFolder/structures/reqprepmomocheck_post.json",
+      "structureSlave": "/opt/airflow/airflow/etlFolder/structures/mocheck_post.json",
+      "selectSql": "/opt/airflow/airflow/etlFolder/queries/customQueries/reqprepmomocheck.sql",
+      "periodColumn": "createdate",
+      "filterClauseSlave": ["doctype = 7"],
+      "conflictExtra": ["doctype"],
+      "mode": "iud"
+    },
+
+    "medcheckOrclPost": {
+      "_doc": "oracle->postgres, режим section: полная перезаливка группы (медри-стиль).",
+      "tableNameMaster": "medcheck",
+      "tableNameSlave": "medcheck",
+      "structureMaster": "/opt/airflow/airflow/etlFolder/structures/medcheck_orcl.json",
+      "structureSlave": "/opt/airflow/airflow/etlFolder/structures/medcheck_post.json",
+      "periodColumn": "updt",
+      "slavePeriodColumn": "createdate",
+      "mode": "section"
+    },
+
+    "etljobsOrclOrcl": {
+      "_doc": "oracle->oracle (на случай миграции внутри одной СУБД).",
+      "tableNameMaster": "etl_jobs_src",
+      "tableNameSlave": "etl_jobs_dst",
+      "structureMaster": "/opt/airflow/airflow/etlFolder/structures/etl_jobs_orcl.json",
+      "structureSlave": "/opt/airflow/airflow/etlFolder/structures/etl_jobs_orcl.json",
+      "periodColumn": "period",
+      "mode": "iud"
+    }
+  }
+}
