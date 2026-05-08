@@ -38,6 +38,18 @@ recordSelectByIdOrclSql = _q("general/newEtl/RecordSelectByIdOrcl.sql")
 recordSelectGroupPostSql = _q("general/newEtl/RecordSelectGroupPost.sql")
 recordSelectGroupOrclSql = _q("general/newEtl/RecordSelectGroupOrcl.sql")
 
+# --- newEtl: section_compare (mocheck/medree) ---
+dateSelectMasterPostSql = _q("general/newEtl/DateSelectMasterPost.sql")
+dateSelectMasterOrclSql = _q("general/newEtl/DateSelectMasterOrcl.sql")
+dateSelectSlavePostSql = _q("general/newEtl/DateSelectSlavePost.sql")
+dateSelectSlaveOrclSql = _q("general/newEtl/DateSelectSlaveOrcl.sql")
+periodsFromIudPostSql = _q("general/newEtl/PeriodsFromIudPost.sql")
+periodsFromIudOrclSql = _q("general/newEtl/PeriodsFromIudOrcl.sql")
+markPeriodIudPostSql = _q("general/newEtl/MarkPeriodIudPost.sql")
+markPeriodIudOrclSql = _q("general/newEtl/MarkPeriodIudOrcl.sql")
+periodsIsokAudit4PostSql = _q("general/newEtl/PeriodsIsokAudit4Post.sql")
+periodsIsokAudit4OrclSql = _q("general/newEtl/PeriodsIsokAudit4Orcl.sql")
+
 # --- newEtl: служебные обновления ---
 etlIdUpdatePostSql = _q("general/newEtl/EtlIdUpdatePost.sql")
 etlIdUpdateOrclSql = _q("general/newEtl/EtlIdUpdateOrcl.sql")

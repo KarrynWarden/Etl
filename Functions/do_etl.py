@@ -88,6 +88,17 @@ from Src.generalQueries import (
     etlErrorPostSql,
     newDatesOrclSql,
     newDatesPostSql,
+    # section_compare (mocheck / medree)
+    dateSelectMasterPostSql,
+    dateSelectMasterOrclSql,
+    dateSelectSlavePostSql,
+    dateSelectSlaveOrclSql,
+    periodsFromIudPostSql,
+    periodsFromIudOrclSql,
+    markPeriodIudPostSql,
+    markPeriodIudOrclSql,
+    periodsIsokAudit4PostSql,
+    periodsIsokAudit4OrclSql,
 )
 
 logger = logging.getLogger(__name__)
@@ -284,12 +295,16 @@ def _buildRecordGroupSql(dbMaster, selectSql, structMaster, periodColumn,
 #                              Группа ↔ периоды
 # ----------------------------------------------------------------------------
 
-def _registerNewPeriods(cursor, dbMaster, tableNameMaster, tableNameEtlJobs,
+def _registerNewPeriods(cursor, dbMaster, sourceFromClause, tableNameEtlJobs,
                         periodColumn):
-    """Добавить в etl_jobs группы (createdate), которых ещё нет."""
+    """Добавить в etl_jobs группы (createdate), которых ещё нет.
+
+    sourceFromClause — то, что подставляется в FROM: имя таблицы либо
+    обёрнутый '(...) ' для произвольного SQL.
+    """
     sqlTpl = _pickSql(dbMaster, newDatesPostSql, newDatesOrclSql)
     cursor.execute(
-        sqlTpl.format(tableNameMaster, periodColumn),
+        sqlTpl.format(sourceFromClause, periodColumn),
         {
             "tablename": tableNameEtlJobs,
             "tablenamelow": tableNameEtlJobs.lower(),
@@ -507,7 +522,7 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords):
 
         # перепроверить новые createdate, которые могли появиться, и
         # выставить статус группам без ошибок
-        _registerNewPeriods(cursorMaster, dbMaster, cfg["tableNameMaster"],
+        _registerNewPeriods(cursorMaster, dbMaster, ctx["selectSql"],
                             tableNameEtlJobs, cfg["periodColumn"])
         for groupId, count, status in groupsData:
             if status == "ok":
@@ -563,6 +578,190 @@ def _markFailGroup(groupsData, period):
         if row[0] == period and row[2] == "ok":
             row[2] = "fail"
             break
+
+
+# ----------------------------------------------------------------------------
+#         Режим section_compare (mocheck / medree): сравнение master vs slave
+# ----------------------------------------------------------------------------
+
+def _selectMasterPeriods(cursor, dbMaster, selectSql, periodColumn):
+    """Уникальные (createdate, max(lastupdate)) на стороне ведущей.
+
+    periodColumn — имя колонки группировки в источнике (createdate / dcalc /
+    reqdt и т.п.).
+    """
+    sqlTpl = _pickSql(dbMaster, dateSelectMasterPostSql, dateSelectMasterOrclSql)
+    sql = sqlTpl.format(select_sql=selectSql, period_col=periodColumn)
+    return _executeQuery(cursor, sql)
+
+
+def _selectSlavePeriods(cursor, dbSlave, tableNameSlave,
+                        slavePeriodColumn, filterClauseSlave):
+    """Уникальные (createdate, max(lastupdate)) на стороне ведомой."""
+    sqlTpl = _pickSql(dbSlave, dateSelectSlavePostSql, dateSelectSlaveOrclSql)
+    filterSql = " AND ".join(filterClauseSlave or ["1=1"])
+    sql = sqlTpl.format(
+        tablename=tableNameSlave,
+        period_col=slavePeriodColumn,
+        filter=filterSql,
+    )
+    return _executeQuery(cursor, sql)
+
+
+def _selectIudPeriods(cursor, dbMaster, tableNameEtlJobs):
+    """Группы (createdate), для которых в etl_log_iud_row есть iseth=0."""
+    sqlTpl = _pickSql(dbMaster, periodsFromIudPostSql, periodsFromIudOrclSql)
+    rows = _executeQuery(cursor, sqlTpl, {"tablename": tableNameEtlJobs})
+    return [r[0] for r in rows]
+
+
+def _maxIudIdrw(cursor, dbMaster, tableNameEtlJobs):
+    """Граница idrw на момент старта — нужна, чтобы отметить как обработанные
+    только те записи etl_log_iud_row, что были до начала переноса.
+    Новые записи, появившиеся за время выполнения, останутся iseth=0
+    и попадут в следующий запуск.
+    """
+    sql = (
+        "SELECT COALESCE(MAX(idrw), 0) FROM etl_log_iud_row "
+        "WHERE tablename = "
+        + _bindName(dbMaster, "tablename")
+    )
+    cursor.execute(sql, {"tablename": tableNameEtlJobs})
+    return cursor.fetchone()[0]
+
+
+def _diffPeriods(masterRows, slaveRows):
+    """Группы, требующие обновления: либо нет на стороне ведомой, либо
+    lastupdate на ведущей больше, либо отличаются.
+    """
+    slaveByPeriod = {row[0]: row[1] for row in slaveRows}
+    diff = []
+    for period, masterUpd in masterRows:
+        slaveUpd = slaveByPeriod.get(period)
+        if slaveUpd is None or masterUpd != slaveUpd:
+            diff.append(period)
+    return diff
+
+
+def _processSectionGroup(cfg, ctx, period, idrwBefore):
+    """Полная перезаливка группы (createdate=period) с пометкой
+    обработанных записей etl_log_iud_row.
+    """
+    cursorMaster = ctx["cursorMaster"]
+    conMaster = ctx["conMaster"]
+    dbMaster = cfg["dbMaster"]
+    dbSlave = cfg["dbSlave"]
+    tableNameEtlJobs = cfg["tableNameEtlJobs"]
+    action = "ETL_SECTION_COMPARE"
+
+    logger.info("section_compare: группа %s (%s)", period, tableNameEtlJobs)
+
+    conSlave = None
+    try:
+        conSlave = _connect(dbSlave)
+        cursorSlave = conSlave.cursor()
+
+        # 1) удалить группу на стороне ведомой
+        cursorSlave.execute(ctx["deletePeriodSql"], {"createdate": period})
+
+        # 2) выбрать актуальные записи из ведущей и залить
+        cursorMaster.execute(
+            ctx["recordGroupSql"],
+            {"tablename": tableNameEtlJobs, "createdate": period,
+             **(cfg.get("filterParams") or {})},
+        )
+        records = cursorMaster.fetchall()
+        logger.info("Найдено %d записей для %s", len(records), period)
+        _bulkUpsert(cursorSlave, dbSlave, ctx["upsertSql"],
+                    ctx["structSlave"], records)
+
+        # 3) пометить обработанными те записи журнала, что существовали
+        # на момент старта (новые останутся для следующего запуска)
+        markSql = _pickSql(dbMaster, markPeriodIudPostSql, markPeriodIudOrclSql)
+        cursorMaster.execute(markSql, {
+            "tablename": tableNameEtlJobs,
+            "period": period,
+            "idrwBefore": idrwBefore,
+        })
+
+        # 4) обновить etl_jobs.last_success_ts
+        cursorMaster.execute(
+            _pickSql(dbMaster, etlUpdatePostSql, etlUpdateOrclSql),
+            {"LAST_SUCCESS_TS": ctx["currDt"],
+             "TABLENAME": tableNameEtlJobs,
+             "PERIOD": period},
+        )
+
+        conMaster.commit()
+        conSlave.commit()
+        UpdateLog(tableNameEtlJobs, dbMaster, action,
+                  cursorMaster, conMaster, len(records), period)
+        logger.info("Группа %s обработана (section_compare)", period)
+    except Exception as err:
+        if conMaster:
+            conMaster.rollback()
+        if conSlave:
+            conSlave.rollback()
+        cursorMaster.execute(
+            _pickSql(dbMaster, etlErrorPostSql, etlErrorOrclSql),
+            {"ISOKAUDIT": -1, "tablename": tableNameEtlJobs,
+             "PERIOD": period},
+        )
+        conMaster.commit()
+        UpdateLog(tableNameEtlJobs, dbMaster, action,
+                  cursorMaster, conMaster, 0, period)
+        logger.error("Ошибка section_compare группы %s: %s", period, err)
+        raise
+    finally:
+        if conSlave:
+            conSlave.close()
+
+
+def _runSectionCompare(cfg, ctx, selectSql):
+    """Основной цикл section_compare: собрать группы из 3 источников
+    (master vs slave diff, etl_log_iud_row, isokaudit=4) и обработать.
+    """
+    dbMaster = cfg["dbMaster"]
+    dbSlave = cfg["dbSlave"]
+    tableNameEtlJobs = cfg["tableNameEtlJobs"]
+
+    idrwBefore = _maxIudIdrw(ctx["cursorMaster"], dbMaster, tableNameEtlJobs)
+
+    # 1. master vs slave по (createdate, max(lastupdate))
+    conSlave = _connect(dbSlave)
+    try:
+        cursorSlave = conSlave.cursor()
+        slaveRows = _selectSlavePeriods(
+            cursorSlave, dbSlave, cfg["tableNameSlave"],
+            cfg["slavePeriodColumn"], cfg.get("filterClauseSlave"),
+        )
+    finally:
+        conSlave.close()
+    masterRows = _selectMasterPeriods(
+        ctx["cursorMaster"], dbMaster, selectSql, cfg["periodColumn"],
+    )
+    needUpdate = set(_diffPeriods(masterRows, slaveRows))
+
+    # 2. сигналы из etl_log_iud_row
+    iudPeriods = _selectIudPeriods(ctx["cursorMaster"], dbMaster, tableNameEtlJobs)
+    needUpdate.update(iudPeriods)
+
+    # 3. явные группы с isokaudit=4 в etl_jobs
+    sqlTpl = _pickSql(dbMaster, periodsIsokAudit4PostSql, periodsIsokAudit4OrclSql)
+    explicit = _executeQuery(
+        ctx["cursorMaster"], sqlTpl, {"tablename": tableNameEtlJobs},
+    )
+    needUpdate.update(row[0] for row in explicit)
+
+    if not needUpdate:
+        logger.info("section_compare %s: групп для обновления нет",
+                    tableNameEtlJobs)
+        raise AirflowSkipException
+
+    logger.info("section_compare %s: %d групп для обновления: %s",
+                tableNameEtlJobs, len(needUpdate), sorted(needUpdate))
+    for period in sorted(needUpdate, key=lambda x: (x is None, x)):
+        _processSectionGroup(cfg, ctx, period, idrwBefore)
 
 
 # ----------------------------------------------------------------------------
@@ -665,7 +864,7 @@ def _run(cfg):
             return
 
         # 4. Регистрация новых периодов
-        _registerNewPeriods(cursorMaster, dbMaster, tableNameMaster,
+        _registerNewPeriods(cursorMaster, dbMaster, selectSql,
                             tableNameEtlJobs, cfg["periodColumn"])
         conMaster.commit()
 
@@ -674,6 +873,7 @@ def _run(cfg):
             "currDt": currDt,
             "conMaster": conMaster,
             "cursorMaster": cursorMaster,
+            "selectSql": selectSql,
             "structMaster": structMaster,
             "structSlave": structSlave,
             "pkColsMaster": _primaryKeys(structMaster),
@@ -706,8 +906,14 @@ def _run(cfg):
             ),
         }
 
-        # 6. Массовое обновление (isokaudit = 4) — режим "section" или
-        # естественно возникшие группы со статусом 4.
+        # 6. Диспатч по режиму
+        mode = cfg["mode"]
+        if mode == "section_compare":
+            # Универсальный режим срезов для mocheck / medree.
+            _runSectionCompare(cfg, ctx, selectSql)
+            return
+
+        # 6a. Массовое обновление (isokaudit = 4) — обрабатывается всегда.
         groups = _selectGroupsForMassUpdate(
             cursorMaster, dbMaster, tableNameMaster, tableNameEtlJobs,
             cfg["periodColumn"],
@@ -720,12 +926,11 @@ def _run(cfg):
         else:
             logger.info("Групп с isokaudit=4 нет")
 
-        if cfg["mode"] == "section":
-            # В медри-стиле индивидуальные обновления не нужны — всё уже
-            # перезалили целыми группами.
+        if mode == "section":
+            # Срезовый режим без сравнения с ведомой: только isokaudit=4.
             return
 
-        # 7. Точечные обновления через etl_log_iud_row
+        # 7. Точечные обновления через etl_log_iud_row (mode='iud')
         iudRecords = _selectIudRecords(cursorMaster, dbMaster, tableNameEtlJobs)
         if not iudRecords:
             logger.info("В etl_log_iud_row для %s ничего нет", tableNameEtlJobs)
