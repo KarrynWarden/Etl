@@ -34,7 +34,7 @@ BEGIN
         IF <PK_EXPR_OLD> <> <PK_EXPR_NEW>
            OR NVL(:old.<PERIOD_COLUMN>, TO_DATE('1900-01-01','YYYY-MM-DD'))
             <> NVL(:new.<PERIOD_COLUMN>, TO_DATE('1900-01-01','YYYY-MM-DD')) THEN
-            INSERT INTO etl_log_iud_row(tablename, timeoper, oper, period, id, iseth)
+            INSERT INTO etl_log_iud_row(tablename, timeoper, oper, period, id, isetl)
             VALUES ('<TABLE_NAME>', systimestamp, 'D',
                     :old.<PERIOD_COLUMN>, <PK_EXPR_OLD>, 0);
         END IF;
@@ -44,7 +44,7 @@ BEGIN
         p_period := :old.<PERIOD_COLUMN>;
     END IF;
 
-    INSERT INTO etl_log_iud_row(tablename, timeoper, oper, period, id, iseth)
+    INSERT INTO etl_log_iud_row(tablename, timeoper, oper, period, id, isetl)
     VALUES ('<TABLE_NAME>', systimestamp, p_oper, p_period, p_id, 0);
 END;
 /

@@ -1,29 +1,26 @@
 """Подключения к БД.
 
-Параметры подтягиваются из переменных окружения. Удобный способ
-их задать — файл `.env` рядом с корнем проекта (см. `.env.example`).
-Файл .env лежит в .gitignore и в репозиторий не попадает.
-
-Перечень переменных:
-    ETL_FULL_PATH, ETL_MODE
-    ETL_ORACLE_HOST, ETL_ORACLE_PORT, ETL_ORACLE_SID,
-    ETL_ORACLE_USER, ETL_ORACLE_PWD, ETL_ORACLE_CONFIG_DIR
-    ETL_POST_HOST, ETL_POST_PORT, ETL_POST_DB,
-    ETL_POST_USER, ETL_POST_PWD
+Параметры временно захардкожены (на сервере нет интернета — нельзя
+поставить python-dotenv). Поправь значения констант ниже под свою среду.
 """
-import os
-from pathlib import Path
-
-import psycopg2
 import cx_Oracle
-from dotenv import load_dotenv
+import psycopg2
 
 
-# .env лежит в корне репозитория (на один уровень выше этого файла).
-# Если файла нет — load_dotenv тихо ничего не сделает, и значения
-# подтянутся из системных переменных окружения.
-_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
-load_dotenv(_ENV_PATH)
+# --- Oracle ---
+ORACLE_HOST = "10.0.15.9"
+ORACLE_PORT = 1521
+ORACLE_SID = "ias"
+ORACLE_USER = "имя_пользователя"
+ORACLE_PWD = "пароль"
+ORACLE_CONFIG_DIR = "/opt/oracle/config"
+
+# --- PostgreSQL ---
+POSTGRES_HOST = "10.0.15.35"
+POSTGRES_PORT = "5432"
+POSTGRES_DB = "ias5db"
+POSTGRES_USER = "имя_пользователя"
+POSTGRES_PWD = "пароль"
 
 
 _oracleClientInitialized = False
@@ -32,18 +29,12 @@ _oracleClientInitialized = False
 def DbConnectOrcl():
     global _oracleClientInitialized
     if not _oracleClientInitialized:
-        cx_Oracle.init_oracle_client(
-            config_dir=os.environ.get("ETL_ORACLE_CONFIG_DIR", "/opt/oracle/config"),
-        )
+        cx_Oracle.init_oracle_client(config_dir=ORACLE_CONFIG_DIR)
         _oracleClientInitialized = True
-    dsn = cx_Oracle.makedsn(
-        os.environ["ETL_ORACLE_HOST"],
-        int(os.environ.get("ETL_ORACLE_PORT", 1521)),
-        sid=os.environ["ETL_ORACLE_SID"],
-    )
+    dsn = cx_Oracle.makedsn(ORACLE_HOST, ORACLE_PORT, sid=ORACLE_SID)
     return cx_Oracle.connect(
-        user=os.environ["ETL_ORACLE_USER"],
-        password=os.environ["ETL_ORACLE_PWD"],
+        user=ORACLE_USER,
+        password=ORACLE_PWD,
         dsn=dsn,
         encoding="UTF-8",
     )
@@ -51,9 +42,9 @@ def DbConnectOrcl():
 
 def DbConnectPost():
     return psycopg2.connect(
-        host=os.environ["ETL_POST_HOST"],
-        port=os.environ.get("ETL_POST_PORT", "5432"),
-        database=os.environ["ETL_POST_DB"],
-        user=os.environ["ETL_POST_USER"],
-        password=os.environ["ETL_POST_PWD"],
+        host=POSTGRES_HOST,
+        port=POSTGRES_PORT,
+        database=POSTGRES_DB,
+        user=POSTGRES_USER,
+        password=POSTGRES_PWD,
     )

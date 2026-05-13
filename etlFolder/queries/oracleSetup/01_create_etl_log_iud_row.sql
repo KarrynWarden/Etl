@@ -2,7 +2,7 @@
 -- Создание таблицы etl_log_iud_row на Oracle.
 --
 -- Назначение: журнал INSERT/UPDATE/DELETE на ведущих таблицах. ETL-процесс
--- читает из этой таблицы строки с iseth = 0 и переносит соответствующие
+-- читает из этой таблицы строки с isetl = 0 и переносит соответствующие
 -- записи в ведомую БД.
 --
 -- Поля совместимы с PostgreSQL-аналогом из etl_user.etl_log_iud_row.
@@ -12,7 +12,7 @@
 --   period    : значение createdate (или эквивалентного поля группировки)
 --   id        : первичный ключ изменённой записи; для составного PK
 --                сохраняется как 'pk1/pk2/...'
---   iseth     : 0 — требует обработки, 1 — обработано, -1 — ошибка ETL
+--   isetl     : 0 — требует обработки, 1 — обработано, -1 — ошибка ETL
 --   idrw      : суррогатный ключ
 --------------------------------------------------------------------------------
 
@@ -25,11 +25,11 @@ CREATE TABLE etl_log_iud_row (
     oper      VARCHAR2(2)  NOT NULL,
     period    DATE,
     id        VARCHAR2(200) NOT NULL,
-    iseth     NUMBER(1)    DEFAULT 0
+    isetl     NUMBER(1)    DEFAULT 0
 );
 
-CREATE INDEX ix_etl_log_iud_row_tabl_iseth
-    ON etl_log_iud_row(tablename, iseth);
+CREATE INDEX ix_etl_log_iud_row_tabl_isetl
+    ON etl_log_iud_row(tablename, isetl);
 
 CREATE INDEX ix_etl_log_iud_row_per
     ON etl_log_iud_row(period, id);

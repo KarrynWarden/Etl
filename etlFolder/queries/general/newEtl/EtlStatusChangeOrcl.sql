@@ -1,2 +1,2 @@
-UPDATE etl_log_iud_row SET iseth = 1
-WHERE iseth = 0 AND period = :createdate AND tablename = :tablename
+UPDATE etl_log_iud_row SET isetl = 1
+WHERE isetl = 0 AND period = :createdate AND tablename = :tablename

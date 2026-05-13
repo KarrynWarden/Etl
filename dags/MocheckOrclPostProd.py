@@ -18,7 +18,7 @@ import datetime as dt
 
 from airflow.models import DAG
 
-from dags._dagHelpers import DEFAULT_ARGS, buildOperator, configureLogger, runEtl
+from Functions._dagHelpers import DEFAULT_ARGS, buildOperator, configureLogger, runEtl
 
 
 # (tableNameEtlJobs, doctype) — порядок соответствует CASE-выражению в SQL.

@@ -23,13 +23,13 @@ BEGIN
     ELSIF UPDATING THEN
         p_id := TO_CHAR(:new.idrw); p_oper := 'IU'; p_period := :new.updt;
         IF :old.idrw <> :new.idrw THEN
-            INSERT INTO etl_log_iud_row(tablename, timeoper, oper, period, id, iseth)
+            INSERT INTO etl_log_iud_row(tablename, timeoper, oper, period, id, isetl)
             VALUES ('medcheck', systimestamp, 'D', :old.updt, TO_CHAR(:old.idrw), 0);
         END IF;
     ELSIF DELETING THEN
         p_id := TO_CHAR(:old.idrw); p_oper := 'D'; p_period := :old.updt;
     END IF;
-    INSERT INTO etl_log_iud_row(tablename, timeoper, oper, period, id, iseth)
+    INSERT INTO etl_log_iud_row(tablename, timeoper, oper, period, id, isetl)
     VALUES ('medcheck', systimestamp, p_oper, p_period, p_id, 0);
 END;
 /
@@ -52,9 +52,9 @@ BEGIN
     ELSIF DELETING THEN
         p_id := TO_CHAR(:old.idrw); p_oper := 'D'; p_period := :old.reqdt;
     END IF;
-    INSERT INTO etl_log_iud_row(tablename, timeoper, oper, period, id, iseth)
+    INSERT INTO etl_log_iud_row(tablename, timeoper, oper, period, id, isetl)
     VALUES ('reqprepmo', systimestamp, p_oper, p_period, p_id, 0);
-    INSERT INTO etl_log_iud_row(tablename, timeoper, oper, period, id, iseth)
+    INSERT INTO etl_log_iud_row(tablename, timeoper, oper, period, id, isetl)
     VALUES ('reqprepmomocheck', systimestamp, p_oper, p_period, p_id, 0);
 END;
 /

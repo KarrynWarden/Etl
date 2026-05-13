@@ -5,9 +5,9 @@
 
 Стратегия по умолчанию — на основе etl_log_iud_row:
     - триггеры на ведущей таблице пишут в etl_log_iud_row id строки и тип
-      операции (I/U/D) с iseth=0;
+      операции (I/U/D) с isetl=0;
     - ETL читает все необработанные записи и переносит соответствующие
-      строки в ведомую таблицу, в конце выставляя iseth=1;
+      строки в ведомую таблицу, в конце выставляя isetl=1;
     - решена проблема отложенного коммита, так как триггер ловит INSERT/UPDATE
       непосредственно перед коммитом, но фиксируется логом только при коммите.
 
@@ -369,7 +369,7 @@ def _processGroupUpdate(cfg, ctx, dateGroup):
                       cursorMaster, conMaster, "ведомых")
             return
 
-        # iseth: 0 -> 1 в etl_log_iud_row для уже зафиксированных записей
+        # isetl: 0 -> 1 в etl_log_iud_row для уже зафиксированных записей
         # этой группы — они будут перезалиты вместе со всей группой.
         cursorMaster.execute(
             _pickSql(dbMaster, etlStatusChangePostSql, etlStatusChangeOrclSql),
@@ -505,7 +505,7 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords):
                 idrws = [b for a, b in iudRecords if a == recId]
                 cursorMaster.execute(
                     _pickSql(dbMaster, etlIdUpdatePostSql, etlIdUpdateOrclSql),
-                    {"iseth": 1, "idrws": idrws},
+                    {"isetl": 1, "idrws": idrws},
                 )
                 conMaster.commit()
             except Exception as err:
@@ -515,7 +515,7 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords):
                 idrws = [b for a, b in iudRecords if a == recId]
                 cursorMaster.execute(
                     _pickSql(dbMaster, etlIdUpdatePostSql, etlIdUpdateOrclSql),
-                    {"iseth": -1, "idrws": idrws},
+                    {"isetl": -1, "idrws": idrws},
                 )
                 conMaster.commit()
                 _markFailGroup(groupsData, period)
@@ -609,7 +609,7 @@ def _selectSlavePeriods(cursor, dbSlave, tableNameSlave,
 
 
 def _selectIudPeriods(cursor, dbMaster, tableNameEtlJobs):
-    """Группы (createdate), для которых в etl_log_iud_row есть iseth=0."""
+    """Группы (createdate), для которых в etl_log_iud_row есть isetl=0."""
     sqlTpl = _pickSql(dbMaster, periodsFromIudPostSql, periodsFromIudOrclSql)
     rows = _executeQuery(cursor, sqlTpl, {"tablename": tableNameEtlJobs})
     return [r[0] for r in rows]
@@ -618,7 +618,7 @@ def _selectIudPeriods(cursor, dbMaster, tableNameEtlJobs):
 def _maxIudIdrw(cursor, dbMaster, tableNameEtlJobs):
     """Граница idrw на момент старта — нужна, чтобы отметить как обработанные
     только те записи etl_log_iud_row, что были до начала переноса.
-    Новые записи, появившиеся за время выполнения, останутся iseth=0
+    Новые записи, появившиеся за время выполнения, останутся isetl=0
     и попадут в следующий запуск.
     """
     sql = (
