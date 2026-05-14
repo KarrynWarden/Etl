@@ -156,6 +156,21 @@ def _executeQuery(cursor, sql, params=None):
     return cursor.fetchall()
 
 
+def _bindList(values, prefix):
+    """Сгенерировать (in_clause, params) для Oracle IN-выражения.
+
+    cx_Oracle не умеет биндить Python-list в обычный SQL (ORA-01484
+    "arrays can only be bound to PL/SQL statements"). Поэтому для Oracle
+    приходится разворачивать список в конкретное число именованных
+    плейсхолдеров: ":prefix0, :prefix1, ...".
+
+    Возвращает строку для подстановки в `IN (...)` и словарь параметров.
+    """
+    placeholders = ", ".join(f":{prefix}{i}" for i in range(len(values)))
+    params = {f"{prefix}{i}": v for i, v in enumerate(values)}
+    return placeholders, params
+
+
 def _appendFilter(sql, filterClause):
     """Добавить пользовательский WHERE-фильтр к подзапросу.
 
@@ -329,9 +344,38 @@ def _selectIudRecords(cursor, dbMaster, tableNameEtlJobs):
 
 
 def _selectDistinctIds(cursor, dbMaster, idLogs):
-    """По списку idrw из etl_log_iud_row — уникальные (id, period, oper)."""
-    sqlTpl = _pickSql(dbMaster, selectDistinctPostSql, selectDistinctOrclSql)
-    return _executeQuery(cursor, sqlTpl, {"idlogs": idLogs})
+    """По списку idrw из etl_log_iud_row — уникальные (id, period, oper).
+
+    Postgres принимает массив через `= ANY(%(idlogs)s)` — psycopg2 это
+    биндит как обычный list. Oracle с cx_Oracle такое не умеет
+    (ORA-01484), поэтому для него разворачиваем IN-список в N именованных
+    плейсхолдеров.
+    """
+    if not idLogs:
+        return []
+    if _isPost(dbMaster):
+        return _executeQuery(cursor, selectDistinctPostSql,
+                             {"idlogs": idLogs})
+    inClause, params = _bindList(idLogs, "id")
+    sql = selectDistinctOrclSql.format(in_clause=inClause)
+    return _executeQuery(cursor, sql, params)
+
+
+def _markEtlIud(cursor, dbMaster, idrws, isetl):
+    """Пометить пачку idrw в etl_log_iud_row значением isetl (1 / -1).
+
+    Та же история с массивом — Oracle разворачивает IN, Postgres получает
+    list напрямую.
+    """
+    if not idrws:
+        return
+    if _isPost(dbMaster):
+        cursor.execute(etlIdUpdatePostSql,
+                       {"isetl": isetl, "idrws": idrws})
+        return
+    inClause, params = _bindList(idrws, "i")
+    params["isetl"] = isetl
+    cursor.execute(etlIdUpdateOrclSql.format(in_clause=inClause), params)
 
 
 # ----------------------------------------------------------------------------
@@ -503,20 +547,14 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords):
                 conSlave.commit()
                 # отметить пакет idrw как обработанные
                 idrws = [b for a, b in iudRecords if a == recId]
-                cursorMaster.execute(
-                    _pickSql(dbMaster, etlIdUpdatePostSql, etlIdUpdateOrclSql),
-                    {"isetl": 1, "idrws": idrws},
-                )
+                _markEtlIud(cursorMaster, dbMaster, idrws, 1)
                 conMaster.commit()
             except Exception as err:
                 logger.error("Ошибка по id=%s: %s", recId, err)
                 if conSlave:
                     conSlave.rollback()
                 idrws = [b for a, b in iudRecords if a == recId]
-                cursorMaster.execute(
-                    _pickSql(dbMaster, etlIdUpdatePostSql, etlIdUpdateOrclSql),
-                    {"isetl": -1, "idrws": idrws},
-                )
+                _markEtlIud(cursorMaster, dbMaster, idrws, -1)
                 conMaster.commit()
                 _markFailGroup(groupsData, period)
 
