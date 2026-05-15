@@ -55,11 +55,23 @@ def runEtl(tableNameMaster, dbMaster, dbSlave, tableNameEtlJobs=None, **opts):
     return _task
 
 
-def buildOperator(taskId, callable_):
-    return PythonOperator(
+def buildOperator(taskId, callable_, triggerRule=None):
+    """Создать PythonOperator для одной задачи ETL.
+
+    triggerRule — опциональный airflow trigger_rule (например, "all_done").
+    По умолчанию airflow использует "all_success" — это значит, что если
+    upstream вылетел с AirflowSkipException, текущая задача тоже скипнется
+    каскадно. В DAG'ах с несколькими независимыми задачами (mocheck по 9
+    doctype'ам, medree по двум таблицам) удобнее "all_done" — каждая
+    задача запускается независимо и независимо красится в нужный цвет.
+    """
+    kwargs = dict(
         task_id=taskId,
         pool="Prod",
         provide_context=True,
         priority_weight=1,
         python_callable=callable_,
     )
+    if triggerRule is not None:
+        kwargs["trigger_rule"] = triggerRule
+    return PythonOperator(**kwargs)

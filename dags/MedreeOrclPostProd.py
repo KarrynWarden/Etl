@@ -34,6 +34,9 @@ with DAG(
 ) as dag:
     configureLogger()
 
+    # Задачи идут последовательно (`>>`). triggerRule="all_done" нужен,
+    # чтобы AirflowSkipException на первой не каскадил на вторую: каждая
+    # сама красится в свой цвет независимо.
     previous = None
     for tableName in MEDREE_TABLES:
         task = buildOperator(
@@ -43,6 +46,7 @@ with DAG(
                 dbMaster="Orcl",
                 dbSlave="Post",
             ),
+            triggerRule="all_done",
         )
         if previous is not None:
             previous >> task

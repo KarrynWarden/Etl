@@ -9,10 +9,13 @@ doctype). Логические группы различаются filterClause/
 по doctype и собственным tableNameEtlJobs (MEDCHECK, EXPMED2, ...,
 TFINSCHET) для отслеживания в etl_jobs.
 
-Режим — section_compare: сравниваем (createdate, MAX(lastupdate)) на
-ведущей и ведомой сторонах в пределах одного doctype, плюс учитываем
+Режим — section_compare: сравниваем уникальные (createdate, lastupdate)
+на ведущей и ведомой сторонах в пределах одного doctype, плюс учитываем
 сигналы из etl_log_iud_row. Каждая группа, нуждающаяся в обновлении,
 полностью удаляется и перезаливается.
+
+9 задач запускаются параллельно (без `>>`-цепочки). Параллелизм
+ограничивается capacity пула "Prod" в UI airflow.
 """
 import datetime as dt
 
@@ -45,9 +48,12 @@ with DAG(
 ) as dag:
     configureLogger()
 
-    previous = None
+    # 9 задач без зависимостей — airflow запустит их параллельно (в пределах
+    # capacity пула "Prod"). trigger_rule="all_done" на самом деле здесь не
+    # активен (нет upstream'а), но оставлен на случай, если в будущем
+    # вернётся `>>`-цепочка — тогда skip в одной не каскадит на остальных.
     for groupName, _doctype in MOCHECK_LOGICAL_GROUPS:
-        task = buildOperator(
+        buildOperator(
             f"do_etl_{groupName}",
             runEtl(
                 tableNameMaster=groupName,
@@ -55,9 +61,5 @@ with DAG(
                 dbSlave="Post",
                 tableNameEtlJobs=groupName,
             ),
+            triggerRule="all_done",
         )
-        # Последовательно — чтобы не перегружать соединения и предсказуемо
-        # обновлять mocheck по одному doctype за раз.
-        if previous is not None:
-            previous >> task
-        previous = task
