@@ -158,6 +158,23 @@ def _executeQuery(cursor, sql, params=None):
     return cursor.fetchall()
 
 
+def _normalizePeriod(value):
+    """Привести значение периода к datetime.date.
+
+    Oracle DATE → datetime.datetime (00:00:00), Postgres date → datetime.date.
+    Без нормализации:
+      - ключи set/dict разных типов не равны: date(2024,1,1) != datetime(2024,1,1);
+      - sorted() падает с TypeError на смешанной коллекции.
+    Приводим к date — это естественная гранулярность createdate, и оба
+    драйвера принимают datetime.date в WHERE period = X.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime.datetime):
+        return value.date()
+    return value
+
+
 def _bindList(values, prefix):
     """Сгенерировать (in_clause, params) для Oracle IN-выражения.
 
@@ -694,13 +711,18 @@ def _maxIudIdrw(cursor, dbMaster, tableNameEtlJobs):
 def _diffPeriods(masterRows, slaveRows):
     """Группы, требующие обновления: либо нет на стороне ведомой, либо
     lastupdate на ведущей больше, либо отличаются.
+
+    Период приводится к datetime.date — иначе при сравнении Oracle DATE
+    (datetime.datetime) с Postgres date (datetime.date) ключи никогда не
+    совпадают, даже если означают один и тот же календарный день.
     """
-    slaveByPeriod = {row[0]: row[1] for row in slaveRows}
+    slaveByPeriod = {_normalizePeriod(row[0]): row[1] for row in slaveRows}
     diff = []
     for period, masterUpd in masterRows:
-        slaveUpd = slaveByPeriod.get(period)
+        normPeriod = _normalizePeriod(period)
+        slaveUpd = slaveByPeriod.get(normPeriod)
         if slaveUpd is None or masterUpd != slaveUpd:
-            diff.append(period)
+            diff.append(normPeriod)
     return diff
 
 
@@ -801,18 +823,20 @@ def _runSectionCompare(cfg, ctx, selectSql):
     masterRows = _selectMasterPeriods(
         ctx["cursorMaster"], dbMaster, selectSql, cfg["periodColumn"],
     )
+    # Все периоды нормализуем к datetime.date — иначе set/sorted ломаются
+    # на смешанных типах date vs datetime, приходящих из Postgres и Oracle.
     needUpdate = set(_diffPeriods(masterRows, slaveRows))
 
     # 2. сигналы из etl_log_iud_row
     iudPeriods = _selectIudPeriods(ctx["cursorMaster"], dbMaster, tableNameEtlJobs)
-    needUpdate.update(iudPeriods)
+    needUpdate.update(_normalizePeriod(p) for p in iudPeriods)
 
     # 3. явные группы с isokaudit=4 в etl_jobs
     sqlTpl = _pickSql(dbMaster, periodsIsokAudit4PostSql, periodsIsokAudit4OrclSql)
     explicit = _executeQuery(
         ctx["cursorMaster"], sqlTpl, {"tablename": tableNameEtlJobs},
     )
-    needUpdate.update(row[0] for row in explicit)
+    needUpdate.update(_normalizePeriod(row[0]) for row in explicit)
 
     if not needUpdate:
         logger.info("section_compare %s: групп для обновления нет",
