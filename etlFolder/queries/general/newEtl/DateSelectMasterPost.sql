@@ -1,3 +1,2 @@
-SELECT {period_col} AS createdate, MAX(lastupdate) AS lastupdate
+SELECT DISTINCT {period_col} AS createdate, lastupdate
 FROM ( {select_sql} ) p
-GROUP BY {period_col}

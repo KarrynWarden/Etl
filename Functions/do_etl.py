@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+from collections import defaultdict
 
 from airflow.exceptions import AirflowSkipException, AirflowException
 
@@ -172,6 +173,20 @@ def _normalizePeriod(value):
         return None
     if isinstance(value, datetime.datetime):
         return value.date()
+    return value
+
+
+def _normalizeLastupdate(value):
+    """Привести lastupdate к виду, одинаковому в обеих БД.
+
+    Oracle DATE — секундная точность; Postgres timestamp может содержать
+    микросекунды. Срезаем до секунды, чтобы случайный микросекундный
+    дрейф не делал ложно-разные множества (period, lastupdate).
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime.datetime):
+        return value.replace(microsecond=0)
     return value
 
 
@@ -709,20 +724,36 @@ def _maxIudIdrw(cursor, dbMaster, tableNameEtlJobs):
 
 
 def _diffPeriods(masterRows, slaveRows):
-    """Группы, требующие обновления: либо нет на стороне ведомой, либо
-    lastupdate на ведущей больше, либо отличаются.
+    """Группы, требующие обновления.
 
-    Период приводится к datetime.date — иначе при сравнении Oracle DATE
-    (datetime.datetime) с Postgres date (datetime.date) ключи никогда не
-    совпадают, даже если означают один и тот же календарный день.
+    Сравниваем МНОЖЕСТВА (period, lastupdate)-пар на master и slave: если
+    для какого-то period множества различаются, period идёт на обновление.
+
+    Нельзя ограничиться сравнением MAX(lastupdate) — из-за отложенного
+    коммита одна и та же группа может содержать запись, у которой
+    lastupdate=11:00, но реально она «появилась» в БД только при коммите
+    в 13:00. К этому моменту на master MAX уже стал 12:00 (от другого,
+    раньше закоммиченного пользователя), на slave MAX тоже 12:00 — и при
+    сравнении MAX мы решили бы, что переноса не нужно. А запись 11:00
+    потерялась бы.
+
+    Период приводим к datetime.date (Oracle datetime vs Postgres date —
+    иначе ключи не равны), lastupdate — к секундной точности (Oracle
+    DATE точно до секунды, Postgres timestamp может иметь микросекунды).
     """
-    slaveByPeriod = {_normalizePeriod(row[0]): row[1] for row in slaveRows}
+    def _bucket(rows):
+        buckets = defaultdict(set)
+        for period, lu in rows:
+            buckets[_normalizePeriod(period)].add(_normalizeLastupdate(lu))
+        return buckets
+
+    masterMap = _bucket(masterRows)
+    slaveMap = _bucket(slaveRows)
+
     diff = []
-    for period, masterUpd in masterRows:
-        normPeriod = _normalizePeriod(period)
-        slaveUpd = slaveByPeriod.get(normPeriod)
-        if slaveUpd is None or masterUpd != slaveUpd:
-            diff.append(normPeriod)
+    for period, masterSet in masterMap.items():
+        if masterSet != slaveMap.get(period, set()):
+            diff.append(period)
     return diff
 
 
