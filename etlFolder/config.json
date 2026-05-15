@@ -46,6 +46,7 @@
       "periodColumn": "createdate",
       "filterClauseSlave": ["doctype = 7"],
       "conflictExtra": ["doctype"],
+      "conflictWhere": "doctype = 7",
       "mode": "iud"
     },
 

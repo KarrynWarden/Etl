@@ -68,6 +68,8 @@ from Src.generalQueries import (
     # запись в ведомую
     upsertOrclSql,
     upsertPostSql,
+    insertPostSql,
+    insertOrclSql,
     deleteByIdOrclSql,
     deleteByIdPostSql,
     deletePeriodOrclSql,
@@ -192,24 +194,45 @@ def _appendFilter(sql, filterClause):
 # ----------------------------------------------------------------------------
 
 def _buildUpsertSql(dbSlave, tableNameSlave, structSlave,
-                    conflictExtra, filterClauseSlave):
-    """Сформировать запрос upsert (insert .. on conflict / merge)."""
+                    conflictExtra, conflictWhere, filterClauseSlave, mode):
+    """Сформировать SQL для записи строки в ведомую таблицу.
+
+    Режим section / section_compare всегда сопровождается
+    DELETE WHERE period = X [AND filter] перед заливкой группы — конфликта
+    по уникальному индексу там в принципе быть не может, поэтому
+    используется простой INSERT. Это убирает требование «иметь уникальный
+    индекс под conflictExtra на ведомой»: для mocheck c частичным индексом
+    только под doctype=7 ON CONFLICT (idrw, doctype) обвалился бы для
+    остальных doctype.
+
+    В режиме iud точечно меняем строки по PK — без ON CONFLICT не обойтись.
+    Если индекс на ведомой ЧАСТИЧНЫЙ (например,
+        CREATE UNIQUE INDEX ... ON mocheck (doctype, idrw) WHERE doctype = 7
+    ), задаём в конфиге conflictWhere = "doctype = 7" — это попадёт в
+    ON CONFLICT (...) WHERE <conflictWhere>, чтобы PG нашёл этот индекс.
+    """
     columns = _columnNames(structSlave)
     pkCols = _primaryKeys(structSlave)
 
     if _isPost(dbSlave):
-        primaryStr = ", ".join(pkCols + list(conflictExtra or ()))
         columnsStr = ", ".join(columns)
         valuesStr = ", ".join(["%s"] * len(columns))
+        if mode in ("section", "section_compare"):
+            return insertPostSql.format(
+                tablename=tableNameSlave,
+                columns_str=columnsStr,
+                values_str=valuesStr,
+            )
+        primaryStr = ", ".join(pkCols + list(conflictExtra or ()))
         updateStr = ", ".join(f"{c} = EXCLUDED.{c}" for c in columns)
-        # Частичный уникальный индекс (например, mocheck.doctype = 7) ловится
-        # как (pk, doctype) в on conflict.
+        whereClause = f" WHERE {conflictWhere}" if conflictWhere else ""
         return upsertPostSql.format(
             tablename=tableNameSlave,
             columns_str=columnsStr,
             values_str=valuesStr,
             update_str=updateStr,
             primary_str=primaryStr,
+            conflict_where=whereClause,
         )
 
     # Oracle: MERGE INTO ... USING dual
@@ -842,6 +865,7 @@ def Do_etl(tableNameMaster, tableNameSlave=None, structureMaster=None,
     config.setdefault("filterClauseSlave", None)
     config.setdefault("filterParams", {})
     config.setdefault("conflictExtra", ())
+    config.setdefault("conflictWhere", None)
     config.update(overrides)
 
     return _run(config)
@@ -919,7 +943,9 @@ def _run(cfg):
             "upsertSql": _buildUpsertSql(
                 dbSlave, cfg["tableNameSlave"], structSlave,
                 cfg.get("conflictExtra"),
+                cfg.get("conflictWhere"),
                 cfg.get("filterClauseSlave"),
+                cfg["mode"],
             ),
             "deleteByIdSql": _buildDeleteByIdSql(
                 dbSlave, cfg["tableNameSlave"],

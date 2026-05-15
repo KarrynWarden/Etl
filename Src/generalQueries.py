@@ -27,6 +27,8 @@ selectDistinctOrclSql = _q("general/newEtl/SelectDistinctOrcl.sql")
 # --- newEtl: запись в ведомую ---
 upsertPostSql = _q("general/newEtl/UpsertPost.sql")
 upsertOrclSql = _q("general/newEtl/UpsertOrcl.sql")
+insertPostSql = _q("general/newEtl/InsertPost.sql")
+insertOrclSql = _q("general/newEtl/InsertOrcl.sql")
 deleteByIdPostSql = _q("general/newEtl/DeleteByIdPost.sql")
 deleteByIdOrclSql = _q("general/newEtl/DeleteByIdOrcl.sql")
 deletePeriodPostSql = _q("general/newEtl/DeletePeriodPost.sql")
