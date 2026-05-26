@@ -43,7 +43,11 @@ import datetime
 import logging
 from collections import defaultdict
 
-from airflow.exceptions import AirflowSkipException, AirflowException
+import psycopg2
+import cx_Oracle
+from airflow.exceptions import (
+    AirflowSkipException, AirflowException, AirflowFailException,
+)
 
 from Connect import DbConnectPost, DbConnectOrcl
 from Functions.functionsFile.jsonLoad import JsonLoadPost, JsonLoadOrcl
@@ -105,6 +109,64 @@ from Src.generalQueries import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ----------------------------------------------------------------------------
+#                       Классификация ошибок по типу
+# ----------------------------------------------------------------------------
+
+class RecordScopeError(AirflowException):
+    """Часть записей не перенесена из-за ошибок per-record (плохие данные,
+    констрейнт и т.п.). Эти записи припаркованы (isetl=-1), линия НЕ
+    морозится — но текущий запуск красится 🟥 для видимости в общем списке.
+    Подхватывается в runEtl: ставит XCom error_class='record', чтобы FSM
+    ретраев и watcher не считали эту 🟥 за «сломанную линию».
+    """
+    pass
+
+
+# DB-API 2.0 иерархия одинаково экспонируется psycopg2 и cx_Oracle, поэтому
+# можно классифицировать ошибку независимо от драйвера.
+_CONNECTION_EXCEPTIONS = (
+    psycopg2.OperationalError, psycopg2.InterfaceError,
+    cx_Oracle.OperationalError, cx_Oracle.InterfaceError,
+)
+_PROGRAMMING_EXCEPTIONS = (
+    psycopg2.ProgrammingError,
+    cx_Oracle.ProgrammingError,
+)
+_RECORD_EXCEPTIONS = (
+    psycopg2.IntegrityError, psycopg2.DataError,
+    cx_Oracle.IntegrityError, cx_Oracle.DataError,
+)
+
+
+def classifyError(err):
+    """Классифицировать исключение → 'record' / 'retryable' / 'fatal'.
+
+    record    — ошибка по конкретной записи (констрейнт, тип данных, баг
+                кода): запись паркуем (isetl=-1), остальные продолжаем,
+                запуск 🟥, линия НЕ морозится;
+    retryable — соединение умерло (OperationalError/InterfaceError) —
+                ретраи по backoff, потом заморозка;
+    fatal     — битый SQL/структура (ProgrammingError, FLK) — сразу
+                заморозка, ретраи бессмысленны.
+
+    Неизвестный класс → record (см. обсуждение: системный код-баг
+    засигналит чередой 🟥 и счётчиком провальных в общем списке,
+    но не заморозит линию из-за одной странной записи).
+    """
+    # AirflowException обычно обёрнут вокруг настоящей причины через
+    # `raise ... from err` — раскручиваем до корня.
+    while isinstance(err, AirflowException) and err.__cause__ is not None:
+        err = err.__cause__
+    if isinstance(err, _CONNECTION_EXCEPTIONS):
+        return "retryable"
+    if isinstance(err, _PROGRAMMING_EXCEPTIONS):
+        return "fatal"
+    if isinstance(err, _RECORD_EXCEPTIONS):
+        return "record"
+    return "record"
 
 
 # ----------------------------------------------------------------------------
@@ -456,7 +518,9 @@ def _processGroupUpdate(cfg, ctx, dateGroup):
             logger.error("Структуры ведомой %s не совпадают", cfg["tableNameSlave"])
             UpdateLog(tableNameEtlJobs, dbMaster, "FLK",
                       cursorMaster, conMaster, "ведомых")
-            return
+            raise AirflowFailException(
+                f"FLK: структура ведомой {cfg['tableNameSlave']} не совпадает с json-эталоном"
+            )
 
         # isetl: 0 -> 1 в etl_log_iud_row для уже зафиксированных записей
         # этой группы — они будут перезалиты вместе со всей группой.
@@ -563,16 +627,17 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords):
             logger.error("Структуры ведомой %s не совпадают", cfg["tableNameSlave"])
             UpdateLog(tableNameEtlJobs, dbMaster, "FLK",
                       cursorMaster, conMaster, "ведомых")
-            return
+            raise AirflowFailException(
+                f"FLK: структура ведомой {cfg['tableNameSlave']} не совпадает с json-эталоном"
+            )
 
+        recordErrors = []        # [(recId, period, errStr), ...] для финального RecordScopeError
         for entry in distinctIds:
             recId, period, _timeoper, oper = entry[0], entry[1], entry[2], entry[3]
             try:
-                # параметры для PK (одно или несколько полей, разделённых ',')
                 pkParams = _splitPkValue(recId, len(ctx["pkColsMaster"]))
 
                 if oper == "IU":
-                    print('sql is here',ctx["upsertSql"])
                     cursorMaster.execute(ctx["recordByIdSql"],
                                          {**pkParams,
                                           **(cfg.get("filterParams") or {})})
@@ -582,37 +647,42 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords):
                             "Запись id=%s в ведущей не найдена — пропуск",
                             recId,
                         )
+                    elif _isPost(dbSlave):
+                        cursorSlave.execute(ctx["upsertSql"], rowDb)
                     else:
-                        if _isPost(dbSlave):
-                            print('record is here', rowDb)
-                            cursorSlave.execute(ctx["upsertSql"], rowDb)
-                        else:
-                            params = {str(i + 1): v for i, v in enumerate(rowDb)}
-                            print('record2 is here', params)
-                            cursorSlave.execute(ctx["upsertSql"], params)
+                        params = {str(i + 1): v for i, v in enumerate(rowDb)}
+                        cursorSlave.execute(ctx["upsertSql"], params)
                 else:  # 'D'
                     cursorSlave.execute(ctx["deleteByIdSql"], pkParams)
 
                 conSlave.commit()
-                # отметить пакет idrw как обработанные
                 idrws = [b for a, b in iudRecords if a == recId]
-                #cursorMaster.execute(
-                #    _pickSql(dbMaster, etlIdUpdatePostSql, etlIdUpdateOrclSql),
-                #    {"isetl": 1, "idrws": idrws},
-                #)
                 _markEtlIud(cursorMaster, dbMaster, idrws, 1)
                 conMaster.commit()
             except Exception as err:
-                logger.error("Ошибка по id=%s: %s", recId, err)
+                cls = classifyError(err)
                 if conSlave:
                     conSlave.rollback()
+                if cls != "record":
+                    # connection / programming / fatal: одна и та же ошибка
+                    # сломает все следующие записи — прерываем цикл наверх,
+                    # запись не паркуем (она не виновата).
+                    logger.error(
+                        "Ошибка по id=%s КЛАСС=%s — прерываю цикл (остальные "
+                        "записи не трогаем): %s", recId, cls, err,
+                    )
+                    raise
+                # RECORD-ошибка: паркуем именно эту запись (isetl=-1),
+                # продолжаем остальные. В конце выбросим RecordScopeError →
+                # запуск 🟥, но FSM/watcher не сочтут линию сломанной.
+                logger.error(
+                    "RECORD-ошибка по id=%s, паркую isetl=-1, продолжаю: %s",
+                    recId, err,
+                )
                 idrws = [b for a, b in iudRecords if a == recId]
-                #cursorMaster.execute(
-                #    _pickSql(dbMaster, etlIdUpdatePostSql, etlIdUpdateOrclSql),
-                #    {"isetl": -1, "idrws": idrws},
-                #)
+                _markEtlIud(cursorMaster, dbMaster, idrws, -1)
                 conMaster.commit()
-                _markEtlIud(cursorMaster, dbMaster, idrws, 1)
+                recordErrors.append((recId, period, str(err)))
                 _markFailGroup(groupsData, period)
 
         # перепроверить новые createdate, которые могли появиться, и
@@ -638,6 +708,16 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords):
                 UpdateLog(tableNameEtlJobs, dbMaster, action,
                           cursorMaster, conMaster, count, groupId)
         conMaster.commit()
+
+        if recordErrors:
+            sample = ", ".join(str(r[0]) for r in recordErrors[:5])
+            more = f" (+{len(recordErrors) - 5} ещё)" if len(recordErrors) > 5 else ""
+            raise RecordScopeError(
+                f"{len(recordErrors)} записей не перенесено: {sample}{more}. "
+                f"Записи припаркованы (isetl=-1); линия продолжает работать. "
+                f"Повторить ручкой: UPDATE etl_log_iud_row SET isetl=0 "
+                f"WHERE tablename='{tableNameEtlJobs}' AND isetl=-1;"
+            )
     finally:
         if conSlave:
             conSlave.close()
@@ -956,7 +1036,10 @@ def _run(cfg):
             )
             UpdateLog(tableNameEtlJobs, dbMaster, "FLK",
                       cursorMaster, conMaster, "json")
-            return
+            raise AirflowFailException(
+                f"FLK: разные размеры json-структур ({len(structMaster)} vs "
+                f"{len(structSlave)}) — линия заморожена, нужен человек"
+            )
 
         # 2. Источник ведущей — таблица или sql
         if cfg.get("selectSql"):
@@ -974,7 +1057,9 @@ def _run(cfg):
                          tableNameEtlJobs)
             UpdateLog(tableNameEtlJobs, dbMaster, "FLK",
                       cursorMaster, conMaster, "ведущих")
-            return
+            raise AirflowFailException(
+                f"FLK: структура ведущего источника {tableNameEtlJobs} не совпадает"
+            )
 
         # 4. Регистрация новых периодов
         _registerNewPeriods(cursorMaster, dbMaster, selectSql,
@@ -1055,9 +1140,12 @@ def _run(cfg):
             cursorMaster, dbMaster, [r[1] for r in iudRecords],
         )
         _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords)
-    except AirflowSkipException:
+    except (AirflowSkipException, AirflowFailException, RecordScopeError):
+        # пропускаем через — это специальные классы, runEtl их различает
+        # (skip / fatal / record) и проставляет XCom error_class
         raise
     except Exception as err:
+        # generic — runEtl классифицирует через classifyError(__cause__)
         raise AirflowException(f"Процесс остановлен, ошибка: {err}") from err
     finally:
         try:

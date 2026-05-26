@@ -1,39 +1,61 @@
-"""Общая обвязка для DAG'ов: однотипный логгер и фабрика задачи."""
+"""Общая обвязка для DAG'ов: логгер, фабрики задач (runEtl, makeEtlOperator),
+FSM-ретраев по тикам расписания, watcher с авто-удержанием при полной
+заморозке, ссылки на первую ошибку.
+
+Классы ошибок (записываются в XCom 'error_class' на упавшей задаче):
+  - 'record'    — ошибка по конкретной записи (Integrity/Data/неизвестное):
+                   запись припаркована (isetl=-1), линия НЕ морозится, но
+                   квадрат 🟥 для видимости в общем списке;
+  - 'retryable' — соединение умерло (Operational/Interface) — FSM считает
+                   в backoff-серию;
+  - 'fatal'     — структурная (Programming, FLK) — FSM сразу frozen.
+
+SIGTERM при перезапуске airflow специально конвертируется в SkipException
+(🟪) — не загрязняет историю ложными красными квадратами при деплое.
+"""
 import datetime as dt
 import logging
 import time
+from urllib.parse import quote
 
 import colorlog
-from airflow.exceptions import AirflowSkipException, AirflowException, AirflowFailException
+from airflow.configuration import conf
+from airflow.exceptions import (
+    AirflowSkipException, AirflowException, AirflowFailException,
+)
+from airflow.models import TaskInstance, DagRun, DagModel, XCom
 from airflow.operators.python_operator import PythonOperator
+from airflow.utils.session import create_session
 from airflow.utils.state import State
 from airflow.utils.timezone import utcnow
-from airflow.utils.session import create_session
-from airflow.models import TaskInstance, DagRun, DagModel
-from urllib.parse import quote
-from airflow.configuration import conf
+
+from Functions.do_etl import Do_etl, RecordScopeError, classifyError
 from Src.fullPath import WEB_BASE_URL
 
-from Functions.do_etl import Do_etl
-
-
-#DEFAULT_ARGS = {
-#    "owner": "airflow",
-#    "start_date": dt.datetime(2023, 10, 23),
-#    "retries": 1,
-#    "retry_delay": dt.timedelta(minutes=1),
-#    "depends_on_past": False,
-#    "timezone": "Asia/Yekaterinburg",
-#}
 
 DEFAULT_ARGS = {
     "owner": "airflow",
     "start_date": dt.datetime(2023, 10, 23),
     "timezone": "Asia/Yekaterinburg",
     # retries / retry_delay / depends_on_past убраны намеренно:
-    # ретраи задаются per-mode (см. makeEtlOperator), заморозка упавшей
-    # линии — в runEtl. depends_on_past вешал бы весь DAG-run.
+    # ретраи — per-mode (см. makeEtlOperator), заморозка — в runEtl.
+    # depends_on_past вешал бы весь DAG-run в нетерминальном состоянии.
 }
+
+
+# Паузы (мин) после падений №1..N; после (N+1)-го — FROZEN.
+FREQUENT_BACKOFF_MIN = [1, 1]
+
+# Период перепроверки watcher'ом при удержании "бесконечного дага".
+WATCHER_RECHECK_SEC = 60
+
+# airflow-ретраи для RARE-режима: задержки ≈ 1, 2, 4, 8, 16, 30 мин (потолок 30).
+_RARE_RETRY_ARGS = dict(
+    retries=6,
+    retry_delay=dt.timedelta(minutes=1),
+    retry_exponential_backoff=True,
+    max_retry_delay=dt.timedelta(minutes=30),
+)
 
 
 def configureLogger():
@@ -53,81 +75,77 @@ def configureLogger():
     return logger
 
 
-def buildOperator(taskId, callable_, triggerRule=None):
-    kwargs = dict(
-        task_id = taskId, 
-        pool="Test",
-        provide_context=True,
-        priority_weight=1,
-        python_callable=callable_,
-    )
-    if triggerRule is not None:
-        kwargs["trigger_rule"] = triggerRule
-    return PythonOperator(**kwargs)
-    #return PythonOperator(
-    #    task_id=taskId,
-    #    pool="Test",
-    #    provide_context=True,
-    #    priority_weight=1,
-    #    python_callable=callable_,
-    #)
+# ----------------------------------------------------------------------------
+#               История задачи + класс ошибки из XCom
+# ----------------------------------------------------------------------------
 
-#def _previousRunFailed(context):
-#    """True, если эта же задача в прошлом DAG-run завершилась ошибкой."""
-#    prev = context["ti"].get_previous_ti()
-#    return prev is not None and prev.state == State.FAILED
-
-#def runEtl(tableNameMaster, dbMaster, dbSlave, tableNameEtlJobs=None, **opts):
-#    line = tableNameEtlJobs or tableNameMaster
-
-#    def _task(**context):
-        # Защита «упавшая линия»: если прошлый запуск этой задачи упал —
-        # сразу падаем без ретраев и без обращения к БД. Линия стоит, пока
-        # человек не пометит упавшую задачу как success в airflow UI.
-#        if _previousRunFailed(context):
-#            raise AirflowFailException(
-#                f"Линия {line} заморожена: прошлый запуск завершился "
-#                f"ошибкой. Разморозка — mark success на упавшей задаче."
-#            )
-#        try:
-#            Do_etl(tableNameMaster=tableNameMaster, dbMaster=dbMaster,
-#                   dbSlave=dbSlave, tableNameEtlJobs=tableNameEtlJobs, **opts)
-#        except (AirflowSkipException, AirflowFailException):
-#            raise
-#        except Exception as err:
-#            raise AirflowException(f"Ошибка при выполнении дага: {err}")
-#    return _task
-
-
-# Паузы (мин) после падений №1..4; после 5-го падения — FROZEN.
-FREQUENT_BACKOFF_MIN = [1, 1]
-
-def _taskHistory(context, limit=150):
-    """История этой задачи (state, end_date, run_id), новые — первыми."""
+def _taskHistory(context, taskId=None, limit=150):
+    """История задачи (state, end_date, run_id, exec_date), новые первыми.
+    taskId — по умолчанию текущая задача; watcher передаёт чужие линии."""
     ti = context["ti"]
+    taskId = taskId or ti.task_id
     with create_session() as session:
         return (
             session.query(TaskInstance.state, TaskInstance.end_date,
-                           DagRun.run_id, DagRun.execution_date)
+                          DagRun.run_id, DagRun.execution_date)
             .join(DagRun, (DagRun.dag_id == TaskInstance.dag_id)
                           & (DagRun.run_id == TaskInstance.run_id))
             .filter(TaskInstance.dag_id == ti.dag_id,
-                    TaskInstance.task_id == ti.task_id,
+                    TaskInstance.task_id == taskId,
                     DagRun.execution_date < context["dag_run"].execution_date)
             .order_by(DagRun.execution_date.desc())
             .limit(limit)
             .all()
         )
 
+
+def _xcomErrorClass(dagId, taskId, runId):
+    """Прочитать XCom 'error_class' конкретного TI. None если нет."""
+    try:
+        with create_session() as session:
+            return XCom.get_one(
+                run_id=runId,
+                task_id=taskId,
+                dag_id=dagId,
+                key="error_class",
+                session=session,
+            )
+    except Exception:
+        return None
+
+
+# ----------------------------------------------------------------------------
+#                       FSM ретраев (FREQUENT-режим)
+# ----------------------------------------------------------------------------
+
 def _retryDecision(context):
     """Решение FREQUENT-режима. Возвращает (action, info).
 
-    action: 'run' — выполнять Do_etl; 'wait' — ещё рано (skip);
-            'frozen' — серия исчерпана (fail без работы).
+    action: 'run'   — выполнять Do_etl;
+            'wait'  — ещё рано (skip);
+            'frozen'— серия исчерпана или fatal-ошибка (fail без работы).
+
+    Логика серии:
+    - RECORD-падения прозрачны (не считаются, серию не рвут) — линия
+      продолжает работать как ни в чём не бывало.
+    - FATAL-падение сразу даёт frozen, ретраи бессмысленны.
+    - RETRYABLE / неклассифицированное — копится в серию по backoff.
     """
+    ti = context["ti"]
     failed = []
     for state, endDate, runId, execDate in _taskHistory(context):
         if state == State.FAILED:
+            cls = _xcomErrorClass(ti.dag_id, ti.task_id, runId)
+            if cls == "record":
+                continue                  # прозрачно — это запись, не линия
+            if cls == "fatal":
+                # фатальная ошибка — сразу заморозка, ретраи не нужны
+                return "frozen", {
+                    "failCount": 1,
+                    "firstFailRunId": runId,
+                    "firstFailExecDate": execDate,
+                    "errorClass": "fatal",
+                }
             failed.append((endDate, runId, execDate))
         elif state == State.SKIPPED:
             continue
@@ -138,27 +156,39 @@ def _retryDecision(context):
         return "run", {"attempt": 1}
 
     failCount = len(failed)
-    firstFailRunId = failed[-1][1]    # самое первое падение серии — для ссылки
+    firstFailRunId = failed[-1][1]
     firstFailExecDate = failed[-1][2]
 
     if failCount > len(FREQUENT_BACKOFF_MIN):
-        return "frozen", {"failCount": failCount, "firstFailRunId": firstFailRunId, "firstFailExecDate":firstFailExecDate}
+        return "frozen", {
+            "failCount": failCount,
+            "firstFailRunId": firstFailRunId,
+            "firstFailExecDate": firstFailExecDate,
+            "errorClass": "retryable",
+        }
 
     waitMin = FREQUENT_BACKOFF_MIN[failCount - 1]
     lastFailEnd = failed[0][0]
     dueAt = lastFailEnd + dt.timedelta(minutes=waitMin)
-    info = {"attempt": failCount + 1, "failCount": failCount,
-            "waitMin": waitMin, "lastFailEnd": lastFailEnd,
-            "dueAt": dueAt, "firstFailRunId": firstFailRunId, "firstFailExecDate":firstFailExecDate}
+    info = {
+        "attempt": failCount + 1, "failCount": failCount,
+        "waitMin": waitMin, "lastFailEnd": lastFailEnd, "dueAt": dueAt,
+        "firstFailRunId": firstFailRunId,
+        "firstFailExecDate": firstFailExecDate,
+    }
     return ("run" if utcnow() >= dueAt else "wait"), info
 
+
+# ----------------------------------------------------------------------------
+#                       Ссылка на логи первой ошибки
+# ----------------------------------------------------------------------------
 
 def _logsUrl(context, runId, execDate=None):
     """Ссылка на логи задачи в указанном запуске.
 
-    base_date нужен, иначе grid airflow показывает только последние 25
-    запусков от текущего времени — и старый run на странице не появится,
-    ссылка откроет просто DAG, а не лог.
+    base_date обязателен: иначе grid airflow показывает только последние 25
+    запусков от current_time — и старый run будет «вне окна», ссылка
+    откроет просто DAG, а не нужный лог.
     """
     base = (WEB_BASE_URL or conf.get("webserver", "base_url")).rstrip("/")
     ti = context["ti"]
@@ -166,7 +196,7 @@ def _logsUrl(context, runId, execDate=None):
              f"task_id={ti.task_id}",
              "tab=logs"]
     if execDate is not None:
-        # +1 мин — чтобы целевой run гарантированно попал в окно «25 последних до base_date»
+        # +1 мин — целевой run гарантированно попадает в окно "25 до base_date"
         anchor = (execDate.astimezone(dt.timezone.utc)
                   + dt.timedelta(minutes=1)
                  ).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -174,88 +204,147 @@ def _logsUrl(context, runId, execDate=None):
     return f"{base}/dags/{ti.dag_id}/grid?" + "&".join(parts)
 
 
+# ----------------------------------------------------------------------------
+#                    RARE-режим: «прошлый запуск упал?»
+# ----------------------------------------------------------------------------
+
 def _previousRunFailed(context):
+    """Вернуть (failed, firstRunId, firstExecDate) для RARE-режима.
+
+    RECORD-падения прозрачны: не считаются за «упавшую линию».
+    FATAL и retryable, после исчерпания airflow-ретраев — считаются.
+    """
+    ti = context["ti"]
     firstFailRunId = None
     firstFailExecDate = None
     for state, _end, runId, execDate in _taskHistory(context):
         if state == State.FAILED:
+            cls = _xcomErrorClass(ti.dag_id, ti.task_id, runId)
+            if cls == "record":
+                continue
             firstFailRunId = runId
             firstFailExecDate = execDate
         elif state == State.SUCCESS:
             break
     return (firstFailRunId is not None, firstFailRunId, firstFailExecDate)
-    
+
+
+# ----------------------------------------------------------------------------
+#                       Обёртка задачи: runEtl
+# ----------------------------------------------------------------------------
+
+def _isSigterm(err):
+    return "SIGTERM" in str(err)
+
 
 def runEtl(tableNameMaster, dbMaster, dbSlave, tableNameEtlJobs=None,
            retryMode="frequent", **opts):
-    """Обёртка ETL-задачи: ретраи + заморозка упавшей линии.
+    """Обёртка ETL-задачи: ретраи + заморозка упавшей линии + XCom error_class.
 
-    retryMode='frequent' — кастомный FSM по тикам расписания (_retryDecision);
-    retryMode='rare'     — ретраи делает airflow; если прошлый запуск всё
-                           равно упал — линия заморожена.
+    retryMode='frequent' — кастомный FSM (_retryDecision) по тикам расписания;
+    retryMode='rare'     — ретраи делает airflow (экспонента), затем заморозка
+                           через _previousRunFailed.
+
+    SIGTERM (перезапуск airflow) специально конвертируется в SkipException —
+    не загрязняет историю ложными красными квадратами.
     """
     line = tableNameEtlJobs or tableNameMaster
 
     def _task(**context):
+        # ---------- FREQUENT: FSM-ретраев ----------
         if retryMode == "frequent":
             action, info = _retryDecision(context)
             if action in ("wait", "frozen"):
-                url = _logsUrl(context, info["firstFailRunId"], info["firstFailExecDate"])
+                url = _logsUrl(context, info["firstFailRunId"],
+                               info["firstFailExecDate"])
                 msg = (f"линия {line}, падений {info['failCount']}, "
                        f"backoff {FREQUENT_BACKOFF_MIN} мин; "
-                       )
-                firstErr = f"Первая ошибка: {url}"
+                       f"первая ошибка: {url}")
                 if action == "wait":
                     logging.warning("ОЖИДАНИЕ РЕТРАЯ — %s; следующий не "
                                     "раньше %s", msg, info["dueAt"])
-                    logging.warning(firstErr)
                     raise AirflowSkipException
-                logging.error("ЛИНИЯ ЗАМОРОЖЕНА — %s; разморозка: mark "
-                              "success на упавшей задаче", msg)
-                logging.error(firstErr)
+                why = "FATAL — структурная/SQL-ошибка" \
+                    if info.get("errorClass") == "fatal" else "исчерпаны backoff-ретраи"
+                logging.error("ЛИНИЯ ЗАМОРОЖЕНА (%s) — %s; разморозка: "
+                              "mark success на упавшей задаче", why, msg)
                 raise AirflowFailException(f"Линия {line} заморожена")
             logging.info("ЗАПУСК ETL — линия %s, попытка %s",
                          line, info["attempt"])
-        else:  # rare
+        else:
+            # ---------- RARE: airflow-ретраи + 1-shot freeze ----------
             failed, firstRunId, firstExecDate = _previousRunFailed(context)
             if failed:
-                logging.error("ЛИНИЯ ЗАМОРОЖЕНА — линия %s;"
-                              " разморозка: mark success", line,
-                              url = _logsUrl(context, firstRunId, firstExecDate))
-                logging.error("Первая ошибка: "
-                              "%s; ", line,
-                              url = _logsUrl(context, firstRunId, firstExecDate))
+                url = _logsUrl(context, firstRunId, firstExecDate)
+                logging.error("ЛИНИЯ ЗАМОРОЖЕНА — линия %s; первая ошибка: "
+                              "%s; разморозка: mark success на упавшей задаче",
+                              line, url)
                 raise AirflowFailException(f"Линия {line} заморожена")
 
+        # ---------- Сам ETL + классификация результата ----------
+        ti = context["ti"]
         try:
             Do_etl(tableNameMaster=tableNameMaster, dbMaster=dbMaster,
                    dbSlave=dbSlave, tableNameEtlJobs=tableNameEtlJobs, **opts)
-        except (AirflowSkipException, AirflowFailException):
+        except AirflowSkipException:
+            raise
+        except RecordScopeError as err:
+            # часть записей не перенесена — линию НЕ морозим, квадрат 🟥
+            ti.xcom_push(key="error_class", value="record")
+            logging.error("RECORD-ошибки в запуске линии %s: %s", line, err)
+            raise AirflowException(f"Линия {line}: {err}")
+        except AirflowFailException as err:
+            # FLK или иное мгновенно-фатальное — будет frozen на следующем тике
+            ti.xcom_push(key="error_class", value="fatal")
+            logging.error("FATAL в линии %s: %s", line, err)
             raise
         except Exception as err:
-            raise AirflowException(f"Ошибка ETL линии {line}: {err}")
+            # SIGTERM при перезапуске airflow — это не ошибка ETL, помечаем skip,
+            # чтобы деплой не плодил десятки ложно-красных квадратов
+            if _isSigterm(err):
+                logging.warning("Линия %s: получен SIGTERM (перезапуск "
+                                "airflow) — помечаю как skip", line)
+                raise AirflowSkipException("Прервано SIGTERM")
+            cls = classifyError(err)
+            ti.xcom_push(key="error_class", value=cls)
+            logging.error("Линия %s (класс=%s): %s", line, cls, err)
+            if cls == "fatal":
+                raise AirflowFailException(f"Линия {line}: {err}")
+            raise AirflowException(f"Линия {line}: {err}")
+
     return _task
 
-# airflow-ретраи для RARE-режима: задержки 1,2,4,8,16,30 мин (потолок 30).
-_RARE_RETRY_ARGS = dict(
-    retries=6,
-    retry_delay=dt.timedelta(minutes=1),
-    retry_exponential_backoff=True,
-    max_retry_delay=dt.timedelta(minutes=30),
-)
+
+# ----------------------------------------------------------------------------
+#                       Сборка PythonOperator
+# ----------------------------------------------------------------------------
+
+def buildOperator(taskId, callable_, triggerRule=None):
+    """Простой PythonOperator без ETL-обвязки (для редких ручных задач)."""
+    kwargs = dict(
+        task_id=taskId,
+        pool="Test",
+        provide_context=True,
+        priority_weight=1,
+        python_callable=callable_,
+    )
+    if triggerRule is not None:
+        kwargs["trigger_rule"] = triggerRule
+    return PythonOperator(**kwargs)
+
 
 def makeEtlOperator(taskId, tableNameMaster, dbMaster, dbSlave,
                     tableNameEtlJobs=None, retryMode="frequent",
-                    triggerRule=None, **opts):
-    """Собрать PythonOperator ETL-линии целиком (callable + ретраи).
+                    triggerRule=None, pool="Prod", **opts):
+    """Собрать PythonOperator ETL-линии целиком (callable + параметры ретраев).
 
-    retryMode='frequent' — airflow не ретраит (retries=0); ретраи делает
+    retryMode='frequent' — airflow не ретраит (retries=0), ретраи делает
                            FSM в runEtl по тикам расписания;
     retryMode='rare'     — ретраи делает airflow (экспонента 1..30 мин).
     """
     kwargs = dict(
         task_id=taskId,
-        pool="Prod",
+        pool=pool,
         provide_context=True,
         priority_weight=1,
         python_callable=runEtl(tableNameMaster, dbMaster, dbSlave,
@@ -270,70 +359,33 @@ def makeEtlOperator(taskId, tableNameMaster, dbMaster, dbSlave,
     return PythonOperator(**kwargs)
 
 
-def _pauseWatcher(**context):
-    """Если ВСЕ линии дага в этом запуске упали — ставит DAG на паузу.
+# ----------------------------------------------------------------------------
+#                Watcher: авто-удержание дага при полной заморозке
+# ----------------------------------------------------------------------------
 
-    Защита от бесконечного накопления полностью-красных запусков, когда
-    сломаны все линии разом. Текущий (последний) запуск с ошибками и
-    ссылками остаётся наверху. Возобновление — снять DAG с паузы вручную
-    + пометить линии успешными.
-    """
+def _lineStates(context):
+    """[(task_id, state)] линий текущего запуска (watcher исключён).
+    Перечитывает заново каждый вызов — человек мог пометить success."""
+    ti = context["ti"]
     dagRun = context["dag_run"]
-    ti = context["ti"]
-    lineTis = [t for t in dagRun.get_task_instances()
-               if t.task_id != ti.task_id]
-    if lineTis and all(t.state == State.FAILED for t in lineTis):
-        with create_session() as session:
-            session.query(DagModel).filter(
-                DagModel.dag_id == ti.dag_id
-            ).update({"is_paused": True})
-        logging.error("Все линии дага %s заморожены — DAG поставлен на "
-                      "паузу. Возобновление: снять с паузы + mark success "
-                      "на линиях.", ti.dag_id)
-    else:
-        logging.info("Watcher: живые линии есть — даг продолжает работу.")
-
-def addPauseWatcher(lineTasks):
-    """Добавить задачу-сторож после всех линий дага."""
-    watcher = PythonOperator(
-        task_id="freeze_watcher",
-        pool="Prod",
-        provide_context=True,
-        python_callable=_pauseWatcher,
-        trigger_rule="all_done",
-    )
-    for task in lineTasks:
-        task >> watcher
-    return watcher
-
-
-
-WATCHER_RECHECK_SEC = 60
-
-def _taskHistory(context, taskId=None, limit=150):
-    """История задачи (state, end_date, run_id, exec_date), новые первыми.
-    taskId — по умолчанию текущая задача; watcher передаёт чужие линии."""
-    ti = context["ti"]
-    taskId = taskId or ti.task_id
     with create_session() as session:
-        return (
-            session.query(TaskInstance.state, TaskInstance.end_date,
-                           DagRun.run_id, DagRun.execution_date)
-            .join(DagRun, (DagRun.dag_id == TaskInstance.dag_id)
-                          & (DagRun.run_id == TaskInstance.run_id))
-            .filter(TaskInstance.dag_id == ti.dag_id,
-                    TaskInstance.task_id == taskId,
-                    DagRun.execution_date < context["dag_run"].execution_date)
-            .order_by(DagRun.execution_date.desc())
-            .limit(limit)
-            .all()
-        )
+        return [(t.task_id, t.state)
+                for t in dagRun.get_task_instances(session=session)
+                if t.task_id != ti.task_id]
+
 
 def _streakLen(context, taskId):
-    """Длина серии ведущих падений линии (skipped прозрачны)."""
+    """Длина серии «настоящих» падений линии (RECORD — прозрачны;
+    FATAL — заведомо «уже за порогом», возвращаем заведомо большое число)."""
+    ti = context["ti"]
     n = 0
-    for state, _end, _runId, _ed in _taskHistory(context, taskId=taskId):
+    for state, _end, runId, _ed in _taskHistory(context, taskId=taskId):
         if state == State.FAILED:
+            cls = _xcomErrorClass(ti.dag_id, taskId, runId)
+            if cls == "record":
+                continue
+            if cls == "fatal":
+                return len(FREQUENT_BACKOFF_MIN) + 1   # уже заморожена
             n += 1
         elif state == State.SKIPPED:
             continue
@@ -341,18 +393,31 @@ def _streakLen(context, taskId):
             break
     return n
 
+
 def _allLinesFrozen(context, retryMode):
-    """True, только если ВСЕ линии исчерпали ретраи (с учётом текущего run)."""
+    """True, только если ВСЕ линии исчерпали ретраи (с учётом текущего run).
+
+    RECORD-падение в текущем run НЕ считается за заморозку — линия живая,
+    просто конкретные записи провалились. Watcher не удерживает даг.
+    """
+    ti = context["ti"]
+    currentRunId = context["dag_run"].run_id
     lines = _lineStates(context)
     if not lines:
         return False
     for taskId, state in lines:
         if state != State.FAILED:
             return False
+        currentCls = _xcomErrorClass(ti.dag_id, taskId, currentRunId)
+        if currentCls == "record":
+            return False                  # линия жива
         if retryMode == "frequent":
+            if currentCls == "fatal":
+                continue                  # эта точно заморожена
             if _streakLen(context, taskId) + 1 <= len(FREQUENT_BACKOFF_MIN):
-                return False
+                return False              # есть ещё backoff-попытки
     return True
+
 
 def _freezeWatcher(retryMode):
     def _watch(**context):
@@ -376,10 +441,11 @@ def _freezeWatcher(retryMode):
         logging.info("Watcher: упавших линий нет — даг зелёный.")
     return _watch
 
+
 def addFreezeWatcher(lineTasks, retryMode="frequent"):
-    """Сторож после всех линий. Если все линии исчерпали ретраи —
-    «зависает», удерживая DAG-run открытым: max_active_runs=1 не даёт
-    плодить новые красные запуски, а DAG остаётся в фильтре активных."""
+    """Сторож после всех линий. Если ВСЕ линии исчерпали ретраи —
+    зависает в sleep'е, удерживая DAG-run открытым: max_active_runs=1 не
+    даёт плодить новые красные запуски, а DAG остаётся в фильтре активных."""
     watcher = PythonOperator(
         task_id="freeze_watcher",
         provide_context=True,
@@ -389,14 +455,3 @@ def addFreezeWatcher(lineTasks, retryMode="frequent"):
     for task in lineTasks:
         task >> watcher
     return watcher
-
-def _lineStates(context):
-    """[(task_id, state)] линий текущего запуска (watcher исключён)."""
-    ti = context["ti"]
-    dagRun = context["dag_run"]
-    with create_session() as session:
-        return [(t.task_id, t.state)
-                for t in dagRun.get_task_instances(session=session)
-                if t.task_id != ti.task_id]
-
-
