@@ -1,5 +1,5 @@
 INSERT INTO etl_jobs (tablename, period, last_success_ts)
-SELECT DISTINCT %(tablename)s, createdate, NULL FROM (
+SELECT DISTINCT %(tablename)s, createdate, NULL::TIMESTAMP FROM (
     SELECT {1} AS createdate
     FROM ( {0} ) p
     WHERE {1} NOT IN (

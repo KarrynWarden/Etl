@@ -1,2 +1,3 @@
-INSERT INTO {tablename} ({insert_fields_str})
-VALUES ({insert_values_str})
+insert into {tablename}
+({insert_fields_str})
+values ({insert_values_str})

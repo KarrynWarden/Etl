@@ -69,12 +69,12 @@ from Src.generalQueries import (
     # запись в ведомую
     upsertOrclSql,
     upsertPostSql,
-    insertPostSql,
-    insertOrclSql,
     deleteByIdOrclSql,
     deleteByIdPostSql,
     deletePeriodOrclSql,
     deletePeriodPostSql,
+    insertOrclSql,
+    insertPostSql,
     # выборка из ведущей
     recordSelectByIdOrclSql,
     recordSelectByIdPostSql,
@@ -176,20 +176,6 @@ def _normalizePeriod(value):
     return value
 
 
-def _normalizeLastupdate(value):
-    """Привести lastupdate к виду, одинаковому в обеих БД.
-
-    Oracle DATE — секундная точность; Postgres timestamp может содержать
-    микросекунды. Срезаем до секунды, чтобы случайный микросекундный
-    дрейф не делал ложно-разные множества (period, lastupdate).
-    """
-    if value is None:
-        return None
-    if isinstance(value, datetime.datetime):
-        return value.replace(microsecond=0)
-    return value
-
-
 def _bindList(values, prefix):
     """Сгенерировать (in_clause, params) для Oracle IN-выражения.
 
@@ -229,19 +215,19 @@ def _buildUpsertSql(dbSlave, tableNameSlave, structSlave,
                     conflictExtra, conflictWhere, filterClauseSlave, mode):
     """Сформировать SQL для записи строки в ведомую таблицу.
 
-    Режим section / section_compare всегда сопровождается
-    DELETE WHERE period = X [AND filter] перед заливкой группы — конфликта
-    по уникальному индексу там в принципе быть не может, поэтому
-    используется простой INSERT. Это убирает требование «иметь уникальный
-    индекс под conflictExtra на ведомой»: для mocheck c частичным индексом
-    только под doctype=7 ON CONFLICT (idrw, doctype) обвалился бы для
-    остальных doctype.
+    Режим section_compare всегда сопровождается DELETE WHERE period = X
+    [AND filter] перед заливкой группы — конфликта по уникальному индексу
+    в нём в принципе быть не может, поэтому используется простой INSERT.
+    Это также убирает требование «иметь уникальный индекс под conflictExtra
+    на ведомой» — для mocheck с частичным индексом только под doctype=7
+    это критично.
 
     В режиме iud точечно меняем строки по PK — без ON CONFLICT не обойтись.
     Если индекс на ведомой ЧАСТИЧНЫЙ (например,
         CREATE UNIQUE INDEX ... ON mocheck (doctype, idrw) WHERE doctype = 7
-    ), задаём в конфиге conflictWhere = "doctype = 7" — это попадёт в
-    ON CONFLICT (...) WHERE <conflictWhere>, чтобы PG нашёл этот индекс.
+    ), нужно задать в конфиге conflictWhere = "doctype = 7" — это попадёт
+    в ON CONFLICT (...) WHERE <conflictWhere>, чтобы PG нашёл тот самый
+    частичный индекс.
     """
     columns = _columnNames(structSlave)
     pkCols = _primaryKeys(structSlave)
@@ -267,7 +253,8 @@ def _buildUpsertSql(dbSlave, tableNameSlave, structSlave,
             conflict_where=whereClause,
         )
 
-    # Oracle: MERGE INTO ... USING dual
+    # Oracle: MERGE INTO ... USING dual — без изменений; в Oracle нет
+    # «частичных» уникальных индексов и ON CONFLICT WHERE.
     insertFields, insertValues, updateParts = [], [], []
     pkCondParts = []
     for idx, field in enumerate(structSlave, start=1):
@@ -287,6 +274,8 @@ def _buildUpsertSql(dbSlave, tableNameSlave, structSlave,
         insert_fields_str=", ".join(insertFields),
         insert_values_str=", ".join(insertValues),
     )
+
+
 
 
 def _buildDeleteByIdSql(dbSlave, tableNameSlave, pkCols, filterClauseSlave):
@@ -373,28 +362,29 @@ def _registerNewPeriods(cursor, dbMaster, sourceFromClause, tableNameEtlJobs,
     обёрнутый '(...) ' для произвольного SQL.
     """
     sqlTpl = _pickSql(dbMaster, newDatesPostSql, newDatesOrclSql)
+    print(sqlTpl.format(sourceFromClause, periodColumn), ' and ', tableNameEtlJobs, tableNameEtlJobs.lower())
     cursor.execute(
         sqlTpl.format(sourceFromClause, periodColumn),
         {
             "tablename": tableNameEtlJobs,
-            "tablenamelow": tableNameEtlJobs.lower(),
+            #"tablenamelow": tableNameEtlJobs.lower(),
         },
     )
 
 
-def _selectGroupsForMassUpdate(cursor, dbMaster, tableNameMaster,
-                               tableNameEtlJobs, periodColumn):
+def _selectGroupsForMassUpdate(cursor, dbMaster, tableNameEtlJobs):
     """Группы, которые требуют полного обновления (isokaudit = 4)."""
-    sqlTpl = _pickSql(dbMaster, dateSelectStatusPostSql, dateSelectStatusOrclSql)
+    sqlTpl = _pickSql(dbMaster, periodsIsokAudit4PostSql, periodsIsokAudit4OrclSql)
     return _executeQuery(
         cursor,
-        sqlTpl.format(tableNameMaster, periodColumn),
+        sqlTpl,
         {"tablename": tableNameEtlJobs},
     )
 
 
 def _selectIudRecords(cursor, dbMaster, tableNameEtlJobs):
     sqlTpl = _pickSql(dbMaster, selectEtlIudPostSql, selectEtlIudOrclSql)
+    #print('here is sqlTpl ', sqlTpl, tableNameEtlJobs)
     return _executeQuery(cursor, sqlTpl, {"tablename": tableNameEtlJobs})
 
 
@@ -477,7 +467,7 @@ def _processGroupUpdate(cfg, ctx, dateGroup):
 
         # 1) удалить все записи группы из ведомой
         cursorSlave.execute(ctx["deletePeriodSql"], {"createdate": createdate})
-
+        print('here is select ', ctx["recordGroupSql"], tableNameEtlJobs, createdate, **(cfg.get("filterParams") or {}))
         # 2) выбрать актуальные записи из ведущей и залить
         cursorMaster.execute(ctx["recordGroupSql"],
                              {"tablename": tableNameEtlJobs,
@@ -548,6 +538,7 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords):
     if not distinctIds:
         logger.info("Записи для индивидуального обновления отсутствуют")
         return
+    print('hii')
 
     dbMaster = cfg["dbMaster"]
     dbSlave = cfg["dbSlave"]
@@ -581,6 +572,7 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords):
                 pkParams = _splitPkValue(recId, len(ctx["pkColsMaster"]))
 
                 if oper == "IU":
+                    print('sql is here',ctx["upsertSql"])
                     cursorMaster.execute(ctx["recordByIdSql"],
                                          {**pkParams,
                                           **(cfg.get("filterParams") or {})})
@@ -592,9 +584,11 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords):
                         )
                     else:
                         if _isPost(dbSlave):
+                            print('record is here', rowDb)
                             cursorSlave.execute(ctx["upsertSql"], rowDb)
                         else:
                             params = {str(i + 1): v for i, v in enumerate(rowDb)}
+                            print('record2 is here', params)
                             cursorSlave.execute(ctx["upsertSql"], params)
                 else:  # 'D'
                     cursorSlave.execute(ctx["deleteByIdSql"], pkParams)
@@ -602,6 +596,10 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords):
                 conSlave.commit()
                 # отметить пакет idrw как обработанные
                 idrws = [b for a, b in iudRecords if a == recId]
+                #cursorMaster.execute(
+                #    _pickSql(dbMaster, etlIdUpdatePostSql, etlIdUpdateOrclSql),
+                #    {"isetl": 1, "idrws": idrws},
+                #)
                 _markEtlIud(cursorMaster, dbMaster, idrws, 1)
                 conMaster.commit()
             except Exception as err:
@@ -609,8 +607,12 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords):
                 if conSlave:
                     conSlave.rollback()
                 idrws = [b for a, b in iudRecords if a == recId]
-                _markEtlIud(cursorMaster, dbMaster, idrws, -1)
+                #cursorMaster.execute(
+                #    _pickSql(dbMaster, etlIdUpdatePostSql, etlIdUpdateOrclSql),
+                #    {"isetl": -1, "idrws": idrws},
+                #)
                 conMaster.commit()
+                _markEtlIud(cursorMaster, dbMaster, idrws, 1)
                 _markFailGroup(groupsData, period)
 
         # перепроверить новые createdate, которые могли появиться, и
@@ -715,7 +717,7 @@ def _maxIudIdrw(cursor, dbMaster, tableNameEtlJobs):
     и попадут в следующий запуск.
     """
     sql = (
-        "SELECT COALESCE(MAX(idrw), 0) FROM etl_log_iud_row "
+        "SELECT COALESCE(MAX(idrw), 0) FROM koknaev.etl_log_iud_row "
         "WHERE tablename = "
         + _bindName(dbMaster, "tablename")
     )
@@ -724,36 +726,30 @@ def _maxIudIdrw(cursor, dbMaster, tableNameEtlJobs):
 
 
 def _diffPeriods(masterRows, slaveRows):
-    """Группы, требующие обновления.
-
-    Сравниваем МНОЖЕСТВА (period, lastupdate)-пар на master и slave: если
-    для какого-то period множества различаются, period идёт на обновление.
-
-    Нельзя ограничиться сравнением MAX(lastupdate) — из-за отложенного
-    коммита одна и та же группа может содержать запись, у которой
-    lastupdate=11:00, но реально она «появилась» в БД только при коммите
-    в 13:00. К этому моменту на master MAX уже стал 12:00 (от другого,
-    раньше закоммиченного пользователя), на slave MAX тоже 12:00 — и при
-    сравнении MAX мы решили бы, что переноса не нужно. А запись 11:00
-    потерялась бы.
-
-    Период приводим к datetime.date (Oracle datetime vs Postgres date —
-    иначе ключи не равны), lastupdate — к секундной точности (Oracle
-    DATE точно до секунды, Postgres timestamp может иметь микросекунды).
+    """Группы, требующие обновления: либо нет на стороне ведомой, либо
+    lastupdate на ведущей больше, либо отличаются.
     """
+    #slaveByPeriod = {_normalizePeriod(row[0]): row[1] for row in slaveRows}
+    #print('full slave', slaveByPeriod)
     def _bucket(rows):
         buckets = defaultdict(set)
         for period, lu in rows:
-            buckets[_normalizePeriod(period)].add(_normalizeLastupdate(lu))
+            buckets[_normalizePeriod(period)].add(lu)
         return buckets
 
     masterMap = _bucket(masterRows)
     slaveMap = _bucket(slaveRows)
-
+    
     diff = []
     for period, masterSet in masterMap.items():
         if masterSet != slaveMap.get(period, set()):
             diff.append(period)
+    #for period, masterUpd in masterRows:
+    #    normPeriod = _normalizePeriod(period)
+    #    slaveUpd = slaveByPeriod.get(normPeriod)
+    #    print('DIFF ', normPeriod, ' slaveUpd ', slaveUpd, ' masterUpd ', masterUpd, ' slaveBy ', slaveByPeriod.get(normPeriod), ' append ? ', slaveUpd is None or masterUpd != slaveUpd)
+    #    if slaveUpd is None or masterUpd != slaveUpd:
+    #        diff.append(normPeriod)
     return diff
 
 
@@ -779,6 +775,7 @@ def _processSectionGroup(cfg, ctx, period, idrwBefore):
         cursorSlave.execute(ctx["deletePeriodSql"], {"createdate": period})
 
         # 2) выбрать актуальные записи из ведущей и залить
+        print('error 2 ', ctx["recordGroupSql"], tableNameEtlJobs, period, **(cfg.get("filterParams") or {}))
         cursorMaster.execute(
             ctx["recordGroupSql"],
             {"tablename": tableNameEtlJobs, "createdate": period,
@@ -854,8 +851,7 @@ def _runSectionCompare(cfg, ctx, selectSql):
     masterRows = _selectMasterPeriods(
         ctx["cursorMaster"], dbMaster, selectSql, cfg["periodColumn"],
     )
-    # Все периоды нормализуем к datetime.date — иначе set/sorted ломаются
-    # на смешанных типах date vs datetime, приходящих из Postgres и Oracle.
+    
     needUpdate = set(_diffPeriods(masterRows, slaveRows))
 
     # 2. сигналы из etl_log_iud_row
@@ -911,7 +907,7 @@ def Do_etl(tableNameMaster, tableNameSlave=None, structureMaster=None,
         config["selectSql"] = selectSql
     config["dbMaster"] = dbMaster
     config["dbSlave"] = dbSlave
-    config["tableNameEtlJobs"] = tableNameEtlJobs or tableNameMaster
+    config["tableNameEtlJobs"] = tableNameEtlJobs or config["tableNameMaster"] or tableNameMaster
     config.setdefault("periodColumn", "createdate")
     config.setdefault("slavePeriodColumn", config["periodColumn"])
     config.setdefault("mode", "iud")
@@ -922,7 +918,7 @@ def Do_etl(tableNameMaster, tableNameSlave=None, structureMaster=None,
     config.setdefault("conflictExtra", ())
     config.setdefault("conflictWhere", None)
     config.update(overrides)
-
+    print('caps name ', tableNameEtlJobs or config["tableNameMaster"] or tableNameMaster, tableNameEtlJobs,' or ', config["tableNameMaster"], ' or ', tableNameMaster)
     return _run(config)
 
 
@@ -999,8 +995,8 @@ def _run(cfg):
                 dbSlave, cfg["tableNameSlave"], structSlave,
                 cfg.get("conflictExtra"),
                 cfg.get("conflictWhere"),
-                cfg.get("filterClauseSlave"),
-                cfg["mode"],
+                cfg.get("filterClauseSlave"),                
+                cfg.get("mode"),
             ),
             "deleteByIdSql": _buildDeleteByIdSql(
                 dbSlave, cfg["tableNameSlave"],
@@ -1034,8 +1030,7 @@ def _run(cfg):
 
         # 6a. Массовое обновление (isokaudit = 4) — обрабатывается всегда.
         groups = _selectGroupsForMassUpdate(
-            cursorMaster, dbMaster, tableNameMaster, tableNameEtlJobs,
-            cfg["periodColumn"],
+            cursorMaster, dbMaster, tableNameEtlJobs
         )
         if groups:
             logger.info("Группы для массового обновления: %s",

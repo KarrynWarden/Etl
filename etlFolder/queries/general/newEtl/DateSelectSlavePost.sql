@@ -1,3 +1,3 @@
-SELECT DISTINCT {period_col} AS createdate, lastupdate
+SELECT distinct {period_col}, lastupdate AS lastupdate
 FROM {tablename}
 WHERE {filter}

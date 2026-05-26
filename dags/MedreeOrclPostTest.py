@@ -18,36 +18,43 @@ import datetime as dt
 
 from airflow.models import DAG
 
-from Functions._dagHelpers import DEFAULT_ARGS, buildOperator, configureLogger, runEtl
+from Functions._dagHelpers import DEFAULT_ARGS, buildOperator, configureLogger, runEtl, makeEtlOperator, addPauseWatcher, addFreezeWatcher
 
 
-MEDREE_TABLES = ["medree_cons", "medree_consdet"]
+MEDREE_TABLES = ["medree_cons", "medree_consdet", "koknaev.MEDREE_STRUCTURE_STACIONAR"]
 
 
 with DAG(
-    dag_id="MedreeOrclPostProd",
+    dag_id="MedreeOrclPostTest",
     default_args=DEFAULT_ARGS,
     max_active_runs=1,
-    tags=["OrclPost", "medree", "prod", "DbSync", "section"],
-    schedule_interval=dt.timedelta(minutes=5),
+    tags=["OrclPost", "medree", "test", "DbSync", "section"],
+    schedule_interval=dt.timedelta(minutes=3),
     catchup=False,
 ) as dag:
     configureLogger()
 
-    # Задачи идут последовательно (`>>`). triggerRule="all_done" нужен,
-    # чтобы AirflowSkipException на первой не каскадил на вторую: каждая
-    # сама красится в свой цвет независимо.
     previous = None
-    for tableName in MEDREE_TABLES:
-        task = buildOperator(
-            f"do_etl_{tableName}",
-            runEtl(
-                tableNameMaster=tableName,
-                dbMaster="Orcl",
-                dbSlave="Post",
-            ),
-            triggerRule="all_done",
+    tasks = [
+        makeEtlOperator(
+            f"do_etl_{group}",
+            tableNameMaster=group, dbMaster="Orcl", dbSlave="Post",
+            tableNameEtlJobs=group, retryMode="frequent",
         )
-        if previous is not None:
-            previous >> task
-        previous = task
+        for group in MEDREE_TABLES
+    ]
+    #addPauseWatcher(tasks)
+    addFreezeWatcher(tasks, retryMode="frequent")
+    #for tableName in MEDREE_TABLES:
+    #    task = buildOperator(
+    #        f"do_etl_{tableName}",
+    #        runEtl(
+    #            tableNameMaster=tableName,
+    #            dbMaster="Orcl",
+    #            dbSlave="Post",
+    #        ),
+    #        triggerRule ="all_done"
+    #    )
+        #if previous is not None:
+        #    previous >> task
+        #previous = task

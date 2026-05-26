@@ -33,3 +33,52 @@ CREATE INDEX ix_etl_log_iud_row_tabl_isetl
 
 CREATE INDEX ix_etl_log_iud_row_per
     ON etl_log_iud_row(period, id);
+
+
+CREATE TABLE etl_log_iud_row (
+    idrw      NUMBER       PRIMARY KEY, -- Убрали DEFAULT
+    tablename VARCHAR2(100) NOT NULL,
+    timeoper  TIMESTAMP    DEFAULT systimestamp,
+    oper      VARCHAR2(2)  NOT NULL,
+    period    DATE,
+    id        VARCHAR2(200) NOT NULL,
+    isetl     NUMBER(1)    DEFAULT 0
+);
+
+-- 3. Создаем триггер для автозаполнения ID
+CREATE OR REPLACE TRIGGER trg_etl_log_iud_row_bi
+BEFORE INSERT ON etl_log_iud_row
+FOR EACH ROW
+BEGIN
+    IF :NEW.idrw IS NULL THEN
+        SELECT etl_log_iud_row_seq.NEXTVAL INTO :NEW.idrw FROM DUAL;
+    END IF;
+END;
+/
+
+-- 4. Создаем индексы
+CREATE INDEX ix_etl_log_iud_row_tabl_isetl ON etl_log_iud_row(tablename, isetl);
+CREATE INDEX ix_etl_log_iud_row_per ON etl_log_iud_row(period, id);
+
+grant select, insert, update, delete on etl_log_iud_row to etl_user
+
+
+
+CREATE OR REPLACE TRIGGER tr_planoms_after_iud
+AFTER INSERT OR UPDATE OR DELETE ON planoms
+FOR EACH ROW
+DECLARE
+    p_id     VARCHAR2(200);
+    p_oper   VARCHAR2(2);
+    p_period DATE;
+BEGIN
+    IF INSERTING THEN
+        p_id := TO_CHAR(:new.idrw); p_oper := 'IU'; p_period := :new.createdate;
+    ELSIF UPDATING THEN
+        p_id := TO_CHAR(:new.idrw); p_oper := 'IU'; p_period := :new.createdate;
+    ELSIF DELETING THEN
+        p_id := TO_CHAR(:old.idrw); p_oper := 'D'; p_period := :old.createdate;
+    END IF;
+    INSERT INTO etl_log_iud_row(tablename, timeoper, oper, period, id, isetl)
+    VALUES ('PLANOMS', systimestamp, p_oper, p_period, p_id, 0);
+END;
