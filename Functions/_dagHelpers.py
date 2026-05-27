@@ -3,15 +3,18 @@ FSM-ретраев по тикам расписания, watcher с авто-у�
 заморозке, ссылки на первую ошибку.
 
 Классы ошибок (записываются в XCom 'error_class' на упавшей задаче):
-  - 'record'    — ошибка по конкретной записи (Integrity/Data/неизвестное):
-                   запись припаркована (isetl=-1), линия НЕ морозится, но
-                   квадрат 🟥 для видимости в общем списке;
-  - 'retryable' — соединение умерло (Operational/Interface) — FSM считает
-                   в backoff-серию;
-  - 'fatal'     — структурная (Programming, FLK) — FSM сразу frozen.
+  - 'record'    — ошибка по конкретной записи: запись припаркована
+                   (isetl=-1), линия НЕ морозится, квадрат 🟥 для видимости;
+  - 'retryable' — соединение умерло — FSM считает в backoff-серию;
+  - 'fatal'     — структурная (Programming, FLK, битый JSON конфига) —
+                   FSM сразу frozen, ретраи бессмысленны.
 
-SIGTERM при перезапуске airflow специально конвертируется в SkipException
-(🟪) — не загрязняет историю ложными красными квадратами при деплое.
+Заморозка линии и пустой запуск визуально одинаково розовые (🟪 skipped),
+но различимы по XCom 'frozen=True' — watcher по этому маркеру решает,
+удерживать DAG-run или нет.
+
+SIGTERM при перезапуске airflow конвертируется в SkipException (🟪) —
+не загрязняет историю ложными красными квадратами при деплое.
 """
 import datetime as dt
 import logging
@@ -76,7 +79,7 @@ def configureLogger():
 
 
 # ----------------------------------------------------------------------------
-#               История задачи + класс ошибки из XCom
+#               История задачи + XCom-маркеры
 # ----------------------------------------------------------------------------
 
 def _taskHistory(context, taskId=None, limit=150):
@@ -99,19 +102,25 @@ def _taskHistory(context, taskId=None, limit=150):
         )
 
 
-def _xcomErrorClass(dagId, taskId, runId):
-    """Прочитать XCom 'error_class' конкретного TI. None если нет."""
+def _xcom(dagId, taskId, runId, key):
+    """Прочитать произвольный XCom-ключ конкретного TI. None если нет."""
     try:
         with create_session() as session:
             return XCom.get_one(
-                run_id=runId,
-                task_id=taskId,
-                dag_id=dagId,
-                key="error_class",
-                session=session,
+                run_id=runId, task_id=taskId, dag_id=dagId,
+                key=key, session=session,
             )
     except Exception:
         return None
+
+
+def _xcomErrorClass(dagId, taskId, runId):
+    return _xcom(dagId, taskId, runId, "error_class")
+
+
+def _xcomFrozenMark(dagId, taskId, runId):
+    """True, если на этом TI стоит маркер 'это skip из-за заморозки'."""
+    return bool(_xcom(dagId, taskId, runId, "frozen"))
 
 
 # ----------------------------------------------------------------------------
@@ -122,13 +131,12 @@ def _retryDecision(context):
     """Решение FREQUENT-режима. Возвращает (action, info).
 
     action: 'run'   — выполнять Do_etl;
-            'wait'  — ещё рано (skip);
-            'frozen'— серия исчерпана или fatal-ошибка (fail без работы).
+            'wait'  — ещё рано (skip, не маркируем frozen);
+            'frozen'— серия исчерпана или fatal-ошибка.
 
     Логика серии:
-    - RECORD-падения прозрачны (не считаются, серию не рвут) — линия
-      продолжает работать как ни в чём не бывало.
-    - FATAL-падение сразу даёт frozen, ретраи бессмысленны.
+    - RECORD-падения прозрачны (не считаются, серию не рвут).
+    - FATAL-падение сразу даёт frozen.
     - RETRYABLE / неклассифицированное — копится в серию по backoff.
     """
     ti = context["ti"]
@@ -137,9 +145,8 @@ def _retryDecision(context):
         if state == State.FAILED:
             cls = _xcomErrorClass(ti.dag_id, ti.task_id, runId)
             if cls == "record":
-                continue                  # прозрачно — это запись, не линия
+                continue
             if cls == "fatal":
-                # фатальная ошибка — сразу заморозка, ретраи не нужны
                 return "frozen", {
                     "failCount": 1,
                     "firstFailRunId": runId,
@@ -212,7 +219,6 @@ def _previousRunFailed(context):
     """Вернуть (failed, firstRunId, firstExecDate) для RARE-режима.
 
     RECORD-падения прозрачны: не считаются за «упавшую линию».
-    FATAL и retryable, после исчерпания airflow-ретраев — считаются.
     """
     ti = context["ti"]
     firstFailRunId = None
@@ -237,20 +243,30 @@ def _isSigterm(err):
     return "SIGTERM" in str(err)
 
 
+def _markFrozen(ti, errorClass):
+    """Маркеры на TI для заморозки: error_class + явный frozen=True.
+    XCom 'frozen' нужен watcher'у, чтобы отличить «skip от заморозки»
+    от «skip потому что нет записей»."""
+    ti.xcom_push(key="error_class", value=errorClass)
+    ti.xcom_push(key="frozen", value=True)
+
+
 def runEtl(tableNameMaster, dbMaster, dbSlave, tableNameEtlJobs=None,
            retryMode="frequent", **opts):
-    """Обёртка ETL-задачи: ретраи + заморозка упавшей линии + XCom error_class.
+    """Обёртка ETL-задачи: ретраи + заморозка упавшей линии + XCom-маркеры.
 
     retryMode='frequent' — кастомный FSM (_retryDecision) по тикам расписания;
     retryMode='rare'     — ретраи делает airflow (экспонента), затем заморозка
                            через _previousRunFailed.
 
-    SIGTERM (перезапуск airflow) специально конвертируется в SkipException —
-    не загрязняет историю ложными красными квадратами.
+    Заморозка отдаёт 🟪 (AirflowSkipException), но с XCom-меткой frozen=True —
+    watcher по этой метке решает, удерживать DAG-run или нет.
     """
     line = tableNameEtlJobs or tableNameMaster
 
     def _task(**context):
+        ti = context["ti"]
+
         # ---------- FREQUENT: FSM-ретраев ----------
         if retryMode == "frequent":
             action, info = _retryDecision(context)
@@ -258,17 +274,20 @@ def runEtl(tableNameMaster, dbMaster, dbSlave, tableNameEtlJobs=None,
                 url = _logsUrl(context, info["firstFailRunId"],
                                info["firstFailExecDate"])
                 msg = (f"линия {line}, падений {info['failCount']}, "
-                       f"backoff {FREQUENT_BACKOFF_MIN} мин; "
-                       f"первая ошибка: {url}")
+                       f"backoff {FREQUENT_BACKOFF_MIN} мин")
                 if action == "wait":
                     logging.warning("ОЖИДАНИЕ РЕТРАЯ — %s; следующий не "
                                     "раньше %s", msg, info["dueAt"])
+                    logging.warning("Первая ошибка: %s", url)
                     raise AirflowSkipException
                 why = "FATAL — структурная/SQL-ошибка" \
-                    if info.get("errorClass") == "fatal" else "исчерпаны backoff-ретраи"
+                    if info.get("errorClass") == "fatal" \
+                    else "исчерпаны backoff-ретраи"
                 logging.error("ЛИНИЯ ЗАМОРОЖЕНА (%s) — %s; разморозка: "
                               "mark success на упавшей задаче", why, msg)
-                raise AirflowFailException(f"Линия {line} заморожена")
+                logging.error("Первая ошибка: %s", url)
+                _markFrozen(ti, info.get("errorClass", "retryable"))
+                raise AirflowSkipException(f"Линия {line} заморожена")
             logging.info("ЗАПУСК ETL — линия %s, попытка %s",
                          line, info["attempt"])
         else:
@@ -276,17 +295,19 @@ def runEtl(tableNameMaster, dbMaster, dbSlave, tableNameEtlJobs=None,
             failed, firstRunId, firstExecDate = _previousRunFailed(context)
             if failed:
                 url = _logsUrl(context, firstRunId, firstExecDate)
-                logging.error("ЛИНИЯ ЗАМОРОЖЕНА — линия %s; первая ошибка: "
-                              "%s; разморозка: mark success на упавшей задаче",
-                              line, url)
-                raise AirflowFailException(f"Линия {line} заморожена")
+                logging.error("ЛИНИЯ ЗАМОРОЖЕНА — линия %s; разморозка: "
+                              "mark success на упавшей задаче", line)
+                logging.error("Первая ошибка: %s", url)
+                _markFrozen(ti, "retryable")
+                raise AirflowSkipException(f"Линия {line} заморожена")
 
         # ---------- Сам ETL + классификация результата ----------
-        ti = context["ti"]
         try:
             Do_etl(tableNameMaster=tableNameMaster, dbMaster=dbMaster,
                    dbSlave=dbSlave, tableNameEtlJobs=tableNameEtlJobs, **opts)
         except AirflowSkipException:
+            # «нет записей для обновления» — пробрасываем как обычный skip,
+            # БЕЗ frozen-маркера → watcher видит «линия жива».
             raise
         except RecordScopeError as err:
             # часть записей не перенесена — линию НЕ морозим, квадрат 🟥
@@ -294,18 +315,21 @@ def runEtl(tableNameMaster, dbMaster, dbSlave, tableNameEtlJobs=None,
             logging.error("RECORD-ошибки в запуске линии %s: %s", line, err)
             raise AirflowException(f"Линия {line}: {err}")
         except AirflowFailException as err:
-            # FLK или иное мгновенно-фатальное — будет frozen на следующем тике
+            # FLK или иное мгновенно-фатальное (raise из Do_etl)
             ti.xcom_push(key="error_class", value="fatal")
             logging.error("FATAL в линии %s: %s", line, err)
             raise
         except Exception as err:
-            # SIGTERM при перезапуске airflow — это не ошибка ETL, помечаем skip,
-            # чтобы деплой не плодил десятки ложно-красных квадратов
+            # SIGTERM при перезапуске airflow — это не ошибка ETL, помечаем
+            # skip (без frozen-метки), чтобы деплой не плодил красных квадратов
             if _isSigterm(err):
                 logging.warning("Линия %s: получен SIGTERM (перезапуск "
                                 "airflow) — помечаю как skip", line)
                 raise AirflowSkipException("Прервано SIGTERM")
-            cls = classifyError(err)
+            # Дефолт неклассифицированного снаружи per-record loop — fatal:
+            # это системные вещи (битый JSON конфига, ImportError и т.п.),
+            # ретраи их не починят, нужен человек.
+            cls = classifyError(err) or "fatal"
             ti.xcom_push(key="error_class", value=cls)
             logging.error("Линия %s (класс=%s): %s", line, cls, err)
             if cls == "fatal":
@@ -320,7 +344,7 @@ def runEtl(tableNameMaster, dbMaster, dbSlave, tableNameEtlJobs=None,
 # ----------------------------------------------------------------------------
 
 def buildOperator(taskId, callable_, triggerRule=None):
-    """Простой PythonOperator без ETL-обвязки (для редких ручных задач)."""
+    """Простой PythonOperator без ETL-обвязки."""
     kwargs = dict(
         task_id=taskId,
         pool="Test",
@@ -375,8 +399,8 @@ def _lineStates(context):
 
 
 def _streakLen(context, taskId):
-    """Длина серии «настоящих» падений линии (RECORD — прозрачны;
-    FATAL — заведомо «уже за порогом», возвращаем заведомо большое число)."""
+    """Длина серии «настоящих» падений линии (RECORD прозрачны;
+    FATAL → заведомо «уже за порогом»)."""
     ti = context["ti"]
     n = 0
     for state, _end, runId, _ed in _taskHistory(context, taskId=taskId):
@@ -385,7 +409,7 @@ def _streakLen(context, taskId):
             if cls == "record":
                 continue
             if cls == "fatal":
-                return len(FREQUENT_BACKOFF_MIN) + 1   # уже заморожена
+                return len(FREQUENT_BACKOFF_MIN) + 1
             n += 1
         elif state == State.SKIPPED:
             continue
@@ -394,29 +418,53 @@ def _streakLen(context, taskId):
     return n
 
 
-def _allLinesFrozen(context, retryMode):
-    """True, только если ВСЕ линии исчерпали ретраи (с учётом текущего run).
+def _isLineFrozenNow(context, taskId, state, retryMode):
+    """Заморожена ли линия по итогам ТЕКУЩЕГО run'а?
 
-    RECORD-падение в текущем run НЕ считается за заморозку — линия живая,
-    просто конкретные записи провалились. Watcher не удерживает даг.
+    SKIPPED + XCom frozen=True   → ДА (заморожена FSM в runEtl).
+    SKIPPED без frozen-маркера   → НЕТ (это «нет записей для обновления»).
+    SUCCESS / RUNNING / прочее   → НЕТ.
+    FAILED + error_class=record  → НЕТ (отдельные записи провалены, линия жива).
+    FAILED + error_class=fatal   → ДА (заморозится на следующем тике в любом случае).
+    FAILED (retryable/unknown):
+       - в frequent: ДА только если backoff-серия исчерпана с учётом текущего;
+       - в rare: ДА (один failed = retries уже исчерпаны внутри run'а).
     """
     ti = context["ti"]
     currentRunId = context["dag_run"].run_id
+    if state == State.SKIPPED:
+        return _xcomFrozenMark(ti.dag_id, taskId, currentRunId)
+    if state != State.FAILED:
+        return False
+    cls = _xcomErrorClass(ti.dag_id, taskId, currentRunId)
+    if cls == "record":
+        return False
+    if cls == "fatal":
+        return True
+    if retryMode == "rare":
+        return True
+    # frequent: учитываем backoff-серию + текущий failed
+    return _streakLen(context, taskId) + 1 > len(FREQUENT_BACKOFF_MIN)
+
+
+def _allLinesFrozen(context, retryMode):
+    """True, только если ВСЕ линии заморожены (по правилам _isLineFrozenNow).
+
+    «Пустые» SKIPPED-линии без frozen-маркера трактуются как живые → даг
+    не удерживается, продолжает работать в штатном режиме.
+    """
     lines = _lineStates(context)
     if not lines:
         return False
     for taskId, state in lines:
-        if state != State.FAILED:
+        if not _isLineFrozenNow(context, taskId, state, retryMode):
             return False
-        currentCls = _xcomErrorClass(ti.dag_id, taskId, currentRunId)
-        if currentCls == "record":
-            return False                  # линия жива
-        if retryMode == "frequent":
-            if currentCls == "fatal":
-                continue                  # эта точно заморожена
-            if _streakLen(context, taskId) + 1 <= len(FREQUENT_BACKOFF_MIN):
-                return False              # есть ещё backoff-попытки
     return True
+
+
+def _hasAnyFailed(context):
+    """Есть ли в текущем run'е хотя бы один FAILED (для сводного 🟥)."""
+    return any(st == State.FAILED for _, st in _lineStates(context))
 
 
 def _freezeWatcher(retryMode):
@@ -425,15 +473,16 @@ def _freezeWatcher(retryMode):
         if _allLinesFrozen(context, retryMode):
             logging.error("Watcher: ВСЕ линии заморожены. Удерживаю DAG-run "
                           "(новые запуски не плодятся). Разморозка — mark "
-                          "success на упавших линиях этого запуска.")
+                          "success на упавших/замороженных линиях этого "
+                          "запуска.")
             while _allLinesFrozen(context, retryMode):
                 time.sleep(WATCHER_RECHECK_SEC)
             logging.info("Watcher: линии разморожены — отпускаю DAG-run.")
             return
-        # 2) не все заморожены, но есть упавшие → сводный статус run'а в 🟥
-        failed = [tid for tid, st in _lineStates(context)
-                  if st == State.FAILED]
-        if failed:
+        # 2) есть упавшие → сводный статус run'а 🟥
+        if _hasAnyFailed(context):
+            failed = [tid for tid, st in _lineStates(context)
+                      if st == State.FAILED]
             raise AirflowException(
                 f"В запуске есть упавшие линии: {', '.join(failed)}. "
                 f"Сводный статус — ошибка; ретраи и причина — в самих линиях."
@@ -443,9 +492,9 @@ def _freezeWatcher(retryMode):
 
 
 def addFreezeWatcher(lineTasks, retryMode="frequent"):
-    """Сторож после всех линий. Если ВСЕ линии исчерпали ретраи —
-    зависает в sleep'е, удерживая DAG-run открытым: max_active_runs=1 не
-    даёт плодить новые красные запуски, а DAG остаётся в фильтре активных."""
+    """Сторож после всех линий. Если ВСЕ линии заморожены — зависает в
+    sleep'е, удерживая DAG-run открытым: max_active_runs=1 не даёт плодить
+    новые квадраты, а DAG остаётся в фильтре активных."""
     watcher = PythonOperator(
         task_id="freeze_watcher",
         provide_context=True,

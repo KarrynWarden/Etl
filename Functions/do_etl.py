@@ -152,9 +152,11 @@ def classifyError(err):
     fatal     — битый SQL/структура (ProgrammingError, FLK) — сразу
                 заморозка, ретраи бессмысленны.
 
-    Неизвестный класс → record (см. обсуждение: системный код-баг
-    засигналит чередой 🟥 и счётчиком провальных в общем списке,
-    но не заморозит линию из-за одной странной записи).
+    Возвращает строку 'record' / 'retryable' / 'fatal' либо None для
+    неклассифицированного — вызывающий сам решает, что подставить:
+      - в per-record цикле дефолт 'record' (паркуем запись, не морозим);
+      - в runEtl снаружи дефолт 'fatal' (системная вещь — битый JSON
+        конфига, ImportError и т.п. — морозим, иначе будет 600 🟥 за ночь).
     """
     # AirflowException обычно обёрнут вокруг настоящей причины через
     # `raise ... from err` — раскручиваем до корня.
@@ -166,7 +168,7 @@ def classifyError(err):
         return "fatal"
     if isinstance(err, _RECORD_EXCEPTIONS):
         return "record"
-    return "record"
+    return None
 
 
 # ----------------------------------------------------------------------------
@@ -660,7 +662,7 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords):
                 _markEtlIud(cursorMaster, dbMaster, idrws, 1)
                 conMaster.commit()
             except Exception as err:
-                cls = classifyError(err)
+                cls = classifyError(err) or "record"     # дефолт в per-record loop
                 if conSlave:
                     conSlave.rollback()
                 if cls != "record":
