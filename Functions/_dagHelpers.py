@@ -17,6 +17,7 @@ SIGTERM при перезапуске airflow конвертируется в Sk
 не загрязняет историю ложными красными квадратами при деплое.
 """
 import datetime as dt
+import json
 import logging
 import time
 from urllib.parse import quote
@@ -33,7 +34,8 @@ from airflow.utils.state import State
 from airflow.utils.timezone import utcnow
 
 from Functions.do_etl import Do_etl, RecordScopeError, classifyError
-from Src.fullPath import WEB_BASE_URL
+from Functions.do_audit import Do_audit
+from Src.fullPath import FULL_PATH, MODE, WEB_BASE_URL
 
 
 DEFAULT_ARGS = {
@@ -251,6 +253,49 @@ def _markFrozen(ti, errorClass):
     ti.xcom_push(key="frozen", value=True)
 
 
+def _retryGate(context, line, retryMode, label):
+    """Общая преамбула ретраев/заморозки для ETL- и Audit-линий.
+
+    Возвращает управление, если линию нужно выполнять; иначе сама бросает
+    AirflowSkipException (ожидание ретрая или заморозка с frozen-меткой).
+    label — что писать в лог при старте ('ETL' / 'AUDIT')."""
+    ti = context["ti"]
+
+    # ---------- FREQUENT: FSM-ретраев ----------
+    if retryMode == "frequent":
+        action, info = _retryDecision(context)
+        if action in ("wait", "frozen"):
+            url = _logsUrl(context, info["firstFailRunId"],
+                           info["firstFailExecDate"])
+            msg = (f"линия {line}, падений {info['failCount']}, "
+                   f"backoff {FREQUENT_BACKOFF_MIN} мин")
+            if action == "wait":
+                logging.warning("ОЖИДАНИЕ РЕТРАЯ — %s; следующий не "
+                                "раньше %s", msg, info["dueAt"])
+                logging.warning("Первая ошибка: %s", url)
+                raise AirflowSkipException
+            why = "FATAL — структурная/SQL-ошибка" \
+                if info.get("errorClass") == "fatal" \
+                else "исчерпаны backoff-ретраи"
+            logging.error("ЛИНИЯ ЗАМОРОЖЕНА (%s) — %s; разморозка: "
+                          "mark success на упавшей задаче", why, msg)
+            logging.error("Первая ошибка: %s", url)
+            _markFrozen(ti, info.get("errorClass", "retryable"))
+            raise AirflowSkipException(f"Линия {line} заморожена")
+        logging.info("ЗАПУСК %s — линия %s, попытка %s",
+                     label, line, info["attempt"])
+    else:
+        # ---------- RARE: airflow-ретраи + 1-shot freeze ----------
+        failed, firstRunId, firstExecDate = _previousRunFailed(context)
+        if failed:
+            url = _logsUrl(context, firstRunId, firstExecDate)
+            logging.error("ЛИНИЯ ЗАМОРОЖЕНА — линия %s; разморозка: "
+                          "mark success на упавшей задаче", line)
+            logging.error("Первая ошибка: %s", url)
+            _markFrozen(ti, "retryable")
+            raise AirflowSkipException(f"Линия {line} заморожена")
+
+
 def runEtl(tableNameMaster, dbMaster, dbSlave, tableNameEtlJobs=None,
            retryMode="frequent", **opts):
     """Обёртка ETL-задачи: ретраи + заморозка упавшей линии + XCom-маркеры.
@@ -266,40 +311,7 @@ def runEtl(tableNameMaster, dbMaster, dbSlave, tableNameEtlJobs=None,
 
     def _task(**context):
         ti = context["ti"]
-
-        # ---------- FREQUENT: FSM-ретраев ----------
-        if retryMode == "frequent":
-            action, info = _retryDecision(context)
-            if action in ("wait", "frozen"):
-                url = _logsUrl(context, info["firstFailRunId"],
-                               info["firstFailExecDate"])
-                msg = (f"линия {line}, падений {info['failCount']}, "
-                       f"backoff {FREQUENT_BACKOFF_MIN} мин")
-                if action == "wait":
-                    logging.warning("ОЖИДАНИЕ РЕТРАЯ — %s; следующий не "
-                                    "раньше %s", msg, info["dueAt"])
-                    logging.warning("Первая ошибка: %s", url)
-                    raise AirflowSkipException
-                why = "FATAL — структурная/SQL-ошибка" \
-                    if info.get("errorClass") == "fatal" \
-                    else "исчерпаны backoff-ретраи"
-                logging.error("ЛИНИЯ ЗАМОРОЖЕНА (%s) — %s; разморозка: "
-                              "mark success на упавшей задаче", why, msg)
-                logging.error("Первая ошибка: %s", url)
-                _markFrozen(ti, info.get("errorClass", "retryable"))
-                raise AirflowSkipException(f"Линия {line} заморожена")
-            logging.info("ЗАПУСК ETL — линия %s, попытка %s",
-                         line, info["attempt"])
-        else:
-            # ---------- RARE: airflow-ретраи + 1-shot freeze ----------
-            failed, firstRunId, firstExecDate = _previousRunFailed(context)
-            if failed:
-                url = _logsUrl(context, firstRunId, firstExecDate)
-                logging.error("ЛИНИЯ ЗАМОРОЖЕНА — линия %s; разморозка: "
-                              "mark success на упавшей задаче", line)
-                logging.error("Первая ошибка: %s", url)
-                _markFrozen(ti, "retryable")
-                raise AirflowSkipException(f"Линия {line} заморожена")
+        _retryGate(context, line, retryMode, "ETL")
 
         # ---------- Сам ETL + классификация результата ----------
         try:
@@ -335,6 +347,48 @@ def runEtl(tableNameMaster, dbMaster, dbSlave, tableNameEtlJobs=None,
             if cls == "fatal":
                 raise AirflowFailException(f"Линия {line}: {err}")
             raise AirflowException(f"Линия {line}: {err}")
+
+    return _task
+
+
+# ----------------------------------------------------------------------------
+#                       Обёртка задачи: runAudit
+# ----------------------------------------------------------------------------
+
+def runAudit(tableNameMaster, dbMaster, dbSlave, tableNameEtlJobs=None,
+             retryMode="rare", **opts):
+    """Обёртка Audit-задачи: та же машина ретраев/заморозки, что у runEtl,
+    но вызывает Do_audit. RecordScopeError у аудита нет — он коммитит статус
+    по каждой группе сам (см. do_audit._auditGroup), поэтому SIGTERM на
+    середине просто прерывает текущую группу, а остаток доберёт следующий
+    запуск (isokaudit != 1)."""
+    line = tableNameEtlJobs or tableNameMaster
+
+    def _task(**context):
+        ti = context["ti"]
+        _retryGate(context, line, retryMode, "AUDIT")
+
+        try:
+            Do_audit(tableNameMaster=tableNameMaster, dbMaster=dbMaster,
+                     dbSlave=dbSlave, tableNameEtlJobs=tableNameEtlJobs, **opts)
+        except AirflowSkipException:
+            # «нет групп для проверки» — обычный skip без frozen-метки.
+            raise
+        except AirflowFailException as err:
+            ti.xcom_push(key="error_class", value="fatal")
+            logging.error("FATAL в аудите линии %s: %s", line, err)
+            raise
+        except Exception as err:
+            if _isSigterm(err):
+                logging.warning("Аудит %s: получен SIGTERM — помечаю как skip "
+                                "(проверенные группы уже закоммичены)", line)
+                raise AirflowSkipException("Прервано SIGTERM")
+            cls = classifyError(err) or "fatal"
+            ti.xcom_push(key="error_class", value=cls)
+            logging.error("Аудит %s (класс=%s): %s", line, cls, err)
+            if cls == "fatal":
+                raise AirflowFailException(f"Аудит {line}: {err}")
+            raise AirflowException(f"Аудит {line}: {err}")
 
     return _task
 
@@ -381,6 +435,68 @@ def makeEtlOperator(taskId, tableNameMaster, dbMaster, dbSlave,
     if triggerRule is not None:
         kwargs["trigger_rule"] = triggerRule
     return PythonOperator(**kwargs)
+
+
+def makeAuditOperator(taskId, tableNameMaster, dbMaster, dbSlave,
+                      tableNameEtlJobs=None, retryMode="rare",
+                      triggerRule=None, pool="Test", **opts):
+    """Собрать PythonOperator аудит-линии (callable runAudit + ретраи).
+
+    По умолчанию retryMode='rare': аудит запускается редко (в конце дня),
+    ретраи внутри дня делает airflow, заморозка — после исчерпания.
+    """
+    kwargs = dict(
+        task_id=taskId,
+        pool=pool,
+        provide_context=True,
+        priority_weight=1,
+        python_callable=runAudit(tableNameMaster, dbMaster, dbSlave,
+                                 tableNameEtlJobs, retryMode=retryMode, **opts),
+    )
+    if retryMode == "rare":
+        kwargs.update(_RARE_RETRY_ARGS)
+    else:
+        kwargs["retries"] = 0
+    if triggerRule is not None:
+        kwargs["trigger_rule"] = triggerRule
+    return PythonOperator(**kwargs)
+
+
+# ----------------------------------------------------------------------------
+#                Перечисление линий из config.json (для общего AuditDag)
+# ----------------------------------------------------------------------------
+
+def iterAuditLines():
+    """Все линии переноса из config.json — по одной на каждый ключ.
+
+    Ключ конфига = tableNameEtlJobs + dbMaster + dbSlave, где последние 8
+    символов — два имени СУБД по 4 буквы (Post/Orcl). Отсюда разбираем
+    направление и имя группы; tableNameMaster берём из самой записи
+    (или = префиксу ключа). Возвращает список словарей, готовых к передаче
+    в makeAuditOperator.
+    """
+    with open(f"{FULL_PATH}etlFolder{MODE}/config.json", encoding="utf-8") as fp:
+        data = json.load(fp)["data"]
+
+    lines = []
+    for key, entry in data.items():
+        if not isinstance(entry, dict):
+            continue
+        dbMaster, dbSlave = key[-8:-4], key[-4:]
+        if dbMaster not in ("Post", "Orcl") or dbSlave not in ("Post", "Orcl"):
+            logging.warning("AuditDag: пропускаю ключ '%s' — не распознано "
+                            "направление", key)
+            continue
+        tableNameEtlJobs = key[:-8]
+        tableNameMaster = entry.get("tableNameMaster", tableNameEtlJobs)
+        lines.append({
+            "key": key,
+            "tableNameMaster": tableNameMaster,
+            "dbMaster": dbMaster,
+            "dbSlave": dbSlave,
+            "tableNameEtlJobs": tableNameEtlJobs,
+        })
+    return lines
 
 
 # ----------------------------------------------------------------------------

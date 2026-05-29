@@ -2,14 +2,17 @@
 
 Один универсальный процесс `Functions.do_etl.Do_etl` поверх стратегии
 `etl_log_iud_row` для всех 4 направлений: Orcl→Post, Post→Orcl, Post→Post,
-Orcl→Orcl.
+Orcl→Orcl. Корректность переноса проверяет такой же универсальный аудит
+`Functions.do_audit.Do_audit` (один на все таблицы и направления).
 
 ## Структура
 
 ```
 Functions/
-    do_etl.py                  — ядро алгоритма
+    do_etl.py                  — ядро переноса
+    do_audit.py                — ядро аудита (тот же config.json)
     updateLog.py               — запись в etl_log
+    _dagHelpers.py             — обвязка DAG'ов (runEtl/runAudit, watcher)
     functionsFile/
         jsonLoad.py            — загрузка json-структур
         loadConfig.py          — config.json
@@ -25,11 +28,47 @@ etlFolder/
         general/               — структурные запросы
         general/log/           — добавление лога
         general/newEtl/        — стратегия etl_log_iud_row + section
+        general/audit/         — запросы аудита (do_audit)
         oracleSetup/           — DDL etl_log_iud_row + шаблон триггера
         customQueries/         — пользовательские SELECT-источники
     structures/                — json-описания таблиц
-dags/                          — примеры DAG'ов под все 4 направления
+dags/                          — примеры DAG'ов под все 4 направления + AuditAllTest
 ```
+
+## Аудит
+
+`Functions.do_audit.Do_audit` — единая, универсальная проверка корректности
+переноса; параметры берёт из того же `config.json`, что и ETL (ключ
+`tableNameEtlJobs+dbMaster+dbSlave`). Никаких `doctype`/`iperson`/`medree` в
+коде: всё, что отличается между таблицами, лежит в конфиге.
+
+Логика: из `etl_jobs` берутся группы линии с `isokaudit != 1` (и `!= 4` —
+это зона ETL), за каждый период сравниваются множества записей ведущей и
+ведомой (с приведением Oracle NUMBER/DATE → Postgres decimal/date), и в
+`etl_jobs.isokaudit` пишется результат:
+
+| isokaudit | смысл |
+|-----------|-------|
+| `1`  | данные идентичны |
+| `-4` | есть отличия / дубликаты |
+| `-2` | ошибка при проверке группы |
+
+Ключевые решения:
+
+- **Без разбиения по направлениям.** Одно ядро на все 4 направления; один
+  DAG `AuditAllTest` итерирует все линии из `config.json`
+  (`iterAuditLines`) — отдельных файлов под `orcl→pg` / `pg→orcl` нет.
+- **doctype** — никаких `handle_doctype()`: срез задаётся теми же
+  `filterClause` / `filterClauseSlave`, что и при переносе.
+- **iperson: сравнивать не все поля.** Переносятся все колонки, а аудит
+  сравнивает все *кроме* перечисленных в `auditExcludeFields` (для iperson —
+  join-поля `doctype, docser, docnum, docdate, name_vp` из `idoc`/`spdocper`).
+  Список — в `config.json`, не в коде.
+- **Чекпоинт по группам.** Статус коммитится сразу после каждой группы.
+  Долгий iperson (~1000 групп, иногда по ~500k строк) при SIGTERM на 5-м
+  часу теряет только текущую группу; оставшиеся (`isokaudit != 1`) добирает
+  следующий запуск. `AuditAllTest` запускается ежечасно 18–23ч —
+  это заменяет старый костыль с двумя запусками в 17/18ч.
 
 ## Режимы обработки
 

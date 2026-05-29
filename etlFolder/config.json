@@ -20,6 +20,7 @@
       "structureSlave": "/opt/airflow/airflow/etlFolderProd/structures/iperson/IPERSON.json",
       "selectSql": "/opt/airflow/airflow/etlFolderProd/queries/customQueries/iperson.sql",
       "mode": "iud",
+      "auditExcludeFields": ["doctype", "docser", "docnum", "docdate", "name_vp"]
     },
 
     "reqprepmoPostOrcl": {
