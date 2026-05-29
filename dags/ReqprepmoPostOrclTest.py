@@ -3,7 +3,7 @@ import datetime as dt
 
 from airflow.models import DAG
 
-from Functions._dagHelpers import DEFAULT_ARGS, buildOperator, configureLogger, runEtl, makeEtlOperator, addPauseWatcher, addFreezeWatcher
+from Functions._dagHelpers import DEFAULT_ARGS, buildOperator, configureLogger, runEtl, makeEtlOperator, addFreezeWatcher
 
 #with DAG(
 #    dag_id="ReqprepmoPostOrclTest",

@@ -152,11 +152,9 @@ def classifyError(err):
     fatal     — битый SQL/структура (ProgrammingError, FLK) — сразу
                 заморозка, ретраи бессмысленны.
 
-    Возвращает строку 'record' / 'retryable' / 'fatal' либо None для
-    неклассифицированного — вызывающий сам решает, что подставить:
-      - в per-record цикле дефолт 'record' (паркуем запись, не морозим);
-      - в runEtl снаружи дефолт 'fatal' (системная вещь — битый JSON
-        конфига, ImportError и т.п. — морозим, иначе будет 600 🟥 за ночь).
+    Неизвестный класс → record (см. обсуждение: системный код-баг
+    засигналит чередой 🟥 и счётчиком провальных в общем списке,
+    но не заморозит линию из-за одной странной записи).
     """
     # AirflowException обычно обёрнут вокруг настоящей причины через
     # `raise ... from err` — раскручиваем до корня.
@@ -354,8 +352,17 @@ def _buildDeleteByIdSql(dbSlave, tableNameSlave, pkCols, filterClauseSlave):
 
 
 def _buildDeletePeriodSql(dbSlave, tableNameSlave, slavePeriodColumn,
-                          filterClauseSlave):
-    cond = f"{slavePeriodColumn} = " + _bindName(dbSlave, "createdate")
+                          filterClauseSlave, truncatePeriod=False):
+    """SQL для удаления записей группы по периоду."""
+    if truncatePeriod:
+        if _isPost(dbSlave):
+            periodExpr = f"DATE({slavePeriodColumn})"
+        else:
+            periodExpr = f"TRUNC({slavePeriodColumn})"
+    else:
+        periodExpr = slavePeriodColumn
+
+    cond = f"{periodExpr} = " + _bindName(dbSlave, "createdate")
     if filterClauseSlave:
         cond += " AND " + " AND ".join(filterClauseSlave)
     sqlTpl = _pickSql(dbSlave, deletePeriodPostSql, deletePeriodOrclSql)
@@ -383,7 +390,8 @@ def _buildFieldsStr(dbMaster, structMaster, periodColumn):
 
 
 def _buildRecordByIdSql(dbMaster, selectSql, structMaster, pkColsMaster,
-                        periodColumn, filterClauseMaster):
+                        periodColumn, filterClauseMaster, truncatePeriod=False):
+    """SQL для выбора записи по PK (для индивидуальных обновлений)."""
     fieldsStr = _buildFieldsStr(dbMaster, structMaster, periodColumn)
     primaryCond = " AND ".join(
         f"p.{c} = " + _bindName(dbMaster, f"id{i}")
@@ -400,9 +408,26 @@ def _buildRecordByIdSql(dbMaster, selectSql, structMaster, pkColsMaster,
 
 
 def _buildRecordGroupSql(dbMaster, selectSql, structMaster, periodColumn,
-                         filterClauseMaster):
+                         filterClauseMaster, truncatePeriod=False):
+    """Собрать SQL для выбора группы записей по периоду.
+
+    truncatePeriod: если True, для Oracle применяется TRUNC(period),
+                    для Postgres — DATE(period). Это нужно, когда в БД
+                    колонка периода содержит время (например, dcalc в medree),
+                    а в ETL процесс передается только дата.
+    """
     fieldsStr = _buildFieldsStr(dbMaster, structMaster, periodColumn)
-    cond = f"p.{periodColumn} = " + _bindName(dbMaster, "createdate")
+
+    # Формируем выражение для периода с учетом truncatePeriod
+    if truncatePeriod:
+        if _isPost(dbMaster):
+            periodExpr = f"DATE(p.{periodColumn})"
+        else:
+            periodExpr = f"TRUNC(p.{periodColumn})"
+    else:
+        periodExpr = f"p.{periodColumn}"
+
+    cond = f"{periodExpr} = " + _bindName(dbMaster, "createdate")
     if filterClauseMaster:
         cond += " AND " + " AND ".join(filterClauseMaster)
     sqlTpl = _pickSql(dbMaster, recordSelectGroupPostSql, recordSelectGroupOrclSql)
@@ -597,14 +622,12 @@ def _bulkUpsert(cursorSlave, dbSlave, upsertSql, structSlave, records):
 def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords):
     """Точечная синхронизация по событиям из etl_log_iud_row.
 
-    distinctIds: [(id, period, timeoper, oper), ...] — уникальные строки
-                  с последней актуальной операцией.
-    iudRecords:  [(id, idrw), ...] — все исходные записи журнала.
+    ИЗМЕНЕНИЕ: Master-запрос может вернуть НЕСКОЛЬКО записей для одного id.
+    Все записи обрабатываются атомарно: если одна упала — роллбек всей пачки.
     """
     if not distinctIds:
         logger.info("Записи для индивидуального обновления отсутствуют")
         return
-    print('hii')
 
     dbMaster = cfg["dbMaster"]
     dbSlave = cfg["dbSlave"]
@@ -612,8 +635,8 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords):
     cursorMaster = ctx["cursorMaster"]
     conMaster = ctx["conMaster"]
     action = "ETL_LOG_IUD_ROW"
-    logger.info("Старт индивидуальных обновлений: %d записей", len(distinctIds))
 
+    logger.info("Старт индивидуальных обновлений: %d записей", len(distinctIds))
     groupsData = _groupSummary(distinctIds)
 
     conSlave = None
@@ -633,52 +656,68 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords):
                 f"FLK: структура ведомой {cfg['tableNameSlave']} не совпадает с json-эталоном"
             )
 
-        recordErrors = []        # [(recId, period, errStr), ...] для финального RecordScopeError
+        recordErrors = []  # [(recId, period, errStr), ...]
+
         for entry in distinctIds:
             recId, period, _timeoper, oper = entry[0], entry[1], entry[2], entry[3]
+
             try:
                 pkParams = _splitPkValue(recId, len(ctx["pkColsMaster"]))
 
                 if oper == "IU":
+                    # ИЗМЕНЕНИЕ: fetchall() вместо fetchone()
                     cursorMaster.execute(ctx["recordByIdSql"],
-                                         {**pkParams,
-                                          **(cfg.get("filterParams") or {})})
-                    rowDb = cursorMaster.fetchone()
-                    if rowDb is None:
+                                         {**pkParams, **(cfg.get("filterParams") or {})})
+                    rowsDb = cursorMaster.fetchall()
+
+                    if not rowsDb:
                         logger.warning(
                             "Запись id=%s в ведущей не найдена — пропуск",
                             recId,
                         )
-                    elif _isPost(dbSlave):
-                        cursorSlave.execute(ctx["upsertSql"], rowDb)
                     else:
-                        params = {str(i + 1): v for i, v in enumerate(rowDb)}
-                        cursorSlave.execute(ctx["upsertSql"], params)
-                else:  # 'D'
-                    cursorSlave.execute(ctx["deleteByIdSql"], pkParams)
+                        logger.info(
+                            "Запись id=%s: найдено %d строк для переноса",
+                            recId, len(rowsDb),
+                        )
+                        # Переносим ВСЕ найденные записи
+                        for rowDb in rowsDb:
+                            if _isPost(dbSlave):
+                                cursorSlave.execute(ctx["upsertSql"], rowDb)
+                            else:
+                                params = {str(i + 1): v for i, v in enumerate(rowDb)}
+                                cursorSlave.execute(ctx["upsertSql"], params)
 
+                else:  # 'D' — удаление
+                    # Для DELETE удаляем ВСЕ записи с этим PK из slave
+                    cursorSlave.execute(ctx["deleteByIdSql"], pkParams)
+                    logger.info("Запись id=%s: удалена из ведомой", recId)
+
+                # Коммитим только после успешной обработки ВСЕХ записей для этого id
                 conSlave.commit()
+
+                # Помечаем записи в etl_log_iud_row как обработанные
                 idrws = [b for a, b in iudRecords if a == recId]
                 _markEtlIud(cursorMaster, dbMaster, idrws, 1)
                 conMaster.commit()
+
             except Exception as err:
-                cls = classifyError(err) or "record"     # дефолт в per-record loop
+                cls = classifyError(err) or "record"
+
                 if conSlave:
                     conSlave.rollback()
+
                 if cls != "record":
-                    # connection / programming / fatal: одна и та же ошибка
-                    # сломает все следующие записи — прерываем цикл наверх,
-                    # запись не паркуем (она не виновата).
+                    # connection / programming / fatal: прерываем цикл
                     logger.error(
-                        "Ошибка по id=%s КЛАСС=%s — прерываю цикл (остальные "
-                        "записи не трогаем): %s", recId, cls, err,
+                        "Ошибка по id=%s КЛАСС=%s — прерываю цикл: %s",
+                        recId, cls, err,
                     )
                     raise
-                # RECORD-ошибка: паркуем именно эту запись (isetl=-1),
-                # продолжаем остальные. В конце выбросим RecordScopeError →
-                # запуск 🟥, но FSM/watcher не сочтут линию сломанной.
+
+                # RECORD-ошибка: паркуем запись (isetl=-1)
                 logger.error(
-                    "RECORD-ошибка по id=%s, паркую isetl=-1, продолжаю: %s",
+                    "RECORD-ошибка по id=%s, паркую isetl=-1: %s",
                     recId, err,
                 )
                 idrws = [b for a, b in iudRecords if a == recId]
@@ -687,10 +726,10 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords):
                 recordErrors.append((recId, period, str(err)))
                 _markFailGroup(groupsData, period)
 
-        # перепроверить новые createdate, которые могли появиться, и
-        # выставить статус группам без ошибок
+        # Перепроверить новые createdate
         _registerNewPeriods(cursorMaster, dbMaster, ctx["selectSql"],
                             tableNameEtlJobs, cfg["periodColumn"])
+
         for groupId, count, status in groupsData:
             if status == "ok":
                 cursorMaster.execute(
@@ -709,6 +748,7 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords):
                 )
                 UpdateLog(tableNameEtlJobs, dbMaster, action,
                           cursorMaster, conMaster, count, groupId)
+
         conMaster.commit()
 
         if recordErrors:
@@ -720,6 +760,7 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords):
                 f"Повторить ручкой: UPDATE etl_log_iud_row SET isetl=0 "
                 f"WHERE tablename='{tableNameEtlJobs}' AND isetl=-1;"
             )
+
     finally:
         if conSlave:
             conSlave.close()
@@ -821,7 +862,7 @@ def _diffPeriods(masterRows, slaveRows):
 
     masterMap = _bucket(masterRows)
     slaveMap = _bucket(slaveRows)
-    
+
     diff = []
     for period, masterSet in masterMap.items():
         if masterSet != slaveMap.get(period, set()):
@@ -933,7 +974,7 @@ def _runSectionCompare(cfg, ctx, selectSql):
     masterRows = _selectMasterPeriods(
         ctx["cursorMaster"], dbMaster, selectSql, cfg["periodColumn"],
     )
-    
+
     needUpdate = set(_diffPeriods(masterRows, slaveRows))
 
     # 2. сигналы из etl_log_iud_row
@@ -999,6 +1040,7 @@ def Do_etl(tableNameMaster, tableNameSlave=None, structureMaster=None,
     config.setdefault("filterParams", {})
     config.setdefault("conflictExtra", ())
     config.setdefault("conflictWhere", None)
+    config.setdefault("truncatePeriod", False)
     config.update(overrides)
     print('caps name ', tableNameEtlJobs or config["tableNameMaster"] or tableNameMaster, tableNameEtlJobs,' or ', config["tableNameMaster"], ' or ', tableNameMaster)
     return _run(config)
@@ -1082,7 +1124,7 @@ def _run(cfg):
                 dbSlave, cfg["tableNameSlave"], structSlave,
                 cfg.get("conflictExtra"),
                 cfg.get("conflictWhere"),
-                cfg.get("filterClauseSlave"),                
+                cfg.get("filterClauseSlave"),
                 cfg.get("mode"),
             ),
             "deleteByIdSql": _buildDeleteByIdSql(
@@ -1094,17 +1136,20 @@ def _run(cfg):
                 dbSlave, cfg["tableNameSlave"],
                 cfg["slavePeriodColumn"],
                 cfg.get("filterClauseSlave"),
+                cfg.get("truncatePeriod"),  # <-- ДОБАВЛЕНО
             ),
             "recordByIdSql": _buildRecordByIdSql(
                 dbMaster, selectSql, structMaster,
                 _primaryKeys(structMaster),
                 cfg["periodColumn"],
                 cfg.get("filterClauseMaster"),
+                cfg.get("truncatePeriod"),  # <-- ДОБАВЛЕНО
             ),
             "recordGroupSql": _buildRecordGroupSql(
                 dbMaster, selectSql, structMaster,
                 cfg["periodColumn"],
                 cfg.get("filterClauseMaster"),
+                cfg.get("truncatePeriod"),  # <-- ДОБАВЛЕНО
             ),
         }
 

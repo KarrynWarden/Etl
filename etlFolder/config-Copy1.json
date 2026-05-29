@@ -1,0 +1,266 @@
+{
+  "_comment": "Конфигурация ETL по парам tableNameEtlJobs+dbMaster+dbSlave. Все пути относительно FULL_PATH+etlFolder+MODE.",
+
+  "_mocheckCommon": {
+    "_doc": "Все 9 логических групп mocheck шарят один master-запрос MOCHECK.sql (UNION ALL по 9 doctype), один slave-table 'mocheck' и работают в режиме section_compare. Различаются filterClause/filterClauseSlave/conflictExtra по doctype.",
+    "tableNameSlave": "mocheck",
+    "structureMaster": "/opt/airflow/airflow/etlFolder/structures/mocheck_orcl.json",
+    "structureSlave": "/opt/airflow/airflow/etlFolder/structures/mocheck_post.json",
+    "selectSql": "/opt/airflow/airflow/etlFolder/queries/customQueries/MOCHECK.sql",
+    "periodColumn": "createdate",
+    "slavePeriodColumn": "createdate",
+    "conflictExtra": ["doctype"],
+    "mode": "section_compare"
+  },
+
+  "data": {
+    "iperson_OrclPost": {
+      "_doc": "oracle->postgres, простой PK, mode=iud (точечные апдейты по triggers).",
+      "tableNameMaster": "iperson",
+      "tableNameSlave": "iperson",
+      "structureMaster": "/opt/airflow/airflow/etlFolder/structures/iperson_orcl.json",
+      "structureSlave": "/opt/airflow/airflow/etlFolder/structures/iperson_post.json",
+      "selectSql": "/opt/airflow/airflow/etlFolder/queries/customQueries/iperson.sql",
+      "periodColumn": "createdate",
+      "mode": "iud"
+    },
+
+    "reqprepmoPostOrcl": {
+      "_doc": "postgres->oracle, master-таблица напрямую, период reqdt.",
+      "tableNameMaster": "reqprepmo",
+      "tableNameSlave": "REQPREPMO",
+      "structureMaster": "/opt/airflow/airflow/etlFolderProd/structures/reqprepmo/reqprepmo.json",
+      "structureSlave": "/opt/airflow/airflow/etlFolderProd/structures/reqprepmo/REQPREPMO.json",
+      "periodColumn": "dcalc",
+      "slavePeriodColumn": "dcalc",
+      "mode": "iud"
+    },
+
+    "reqprepmomocheckPostPost": {
+      "_doc": "postgres->postgres: reqprepmo -> mocheck (doctype=7), частичный уникальный индекс mocheck по (idrw, doctype) WHERE doctype=7.",
+      "tableNameMaster": "reqprepmo",
+      "tableNameSlave": "mocheck",
+      "structureMaster": "/opt/airflow/airflow/etlFolderProd/structures/reqprepmo/reqprepmomocheck.json",
+      "structureSlave": "/opt/airflow/airflow/etlFolderProd/structures/MOCHECK/mocheck.json",
+      "selectSql": "/opt/airflow/airflow/etlFolderProd/queries/customQueries/reqprepmomocheck.sql",
+      "periodColumn": "createdate",
+      "filterClauseSlave": ["doctype = 7"],
+      "conflictExtra": ["doctype"],
+      "conflictWhere":"doctype = 7",
+      "mode": "iud"
+    },
+
+    "MEDCHECKOrclPost": {
+      "_doc": "oracle->postgres, mocheck doctype=1 (источник MEDCHECK).",
+      "tableNameMaster": "MEDCHECK",
+      "tableNameSlave": "mocheck",
+      "structureMaster": "/opt/airflow/airflow/etlFolderProd/structures/MOCHECK/MOCHECK.json",
+      "structureSlave": "/opt/airflow/airflow/etlFolderProd/structures/MOCHECK/mocheck.json",
+      "selectSql": "/opt/airflow/airflow/etlFolderProd/queries/customQueries/MOCHECK.sql",
+      "periodColumn": "createdate",
+      "slavePeriodColumn": "createdate",
+      "filterClause": "doctype = 1",
+      "filterClauseSlave": ["doctype = 1"],
+      "conflictExtra": ["doctype"],
+      "mode": "iud"
+    },
+    "EXPMED2OrclPost": {
+      "_doc": "oracle->postgres, mocheck doctype=2 (EXPMED, ветка stepexp/typecont/typemaker).",
+      "tableNameMaster": "EXPMED2",
+      "tableNameSlave": "mocheck",
+      "structureMaster": "/opt/airflow/airflow/etlFolderProd/structures/MOCHECK/MOCHECK.json",
+      "structureSlave": "/opt/airflow/airflow/etlFolderProd/structures/MOCHECK/mocheck.json",
+      "selectSql": "/opt/airflow/airflow/etlFolderProd/queries/customQueries/MOCHECK.sql",
+      "periodColumn": "createdate",
+      "slavePeriodColumn": "createdate",
+      "filterClause": "doctype = 2",
+      "filterClauseSlave": ["doctype = 2"],
+      "conflictExtra": ["doctype"],
+      "mode": "iud"
+    },
+    "EXPMED3OrclPost": {
+      "_doc": "oracle->postgres, mocheck doctype=3 (EXPMED, RECLBASE+RECLUPKEEP<>0).",
+      "tableNameMaster": "EXPMED3",
+      "tableNameSlave": "mocheck",
+      "structureMaster": "/opt/airflow/airflow/etlFolderProd/structures/MOCHECK/MOCHECK.json",
+      "structureSlave": "/opt/airflow/airflow/etlFolderProd/structures/MOCHECK/mocheck.json",
+      "selectSql": "/opt/airflow/airflow/etlFolderProd/queries/customQueries/MOCHECK.sql",
+      "periodColumn": "createdate",
+      "slavePeriodColumn": "createdate",
+      "filterClause": "doctype = 3",
+      "filterClauseSlave": ["doctype = 3"],
+      "conflictExtra": ["doctype"],
+      "mode": "iud"
+    },
+    "EXPMED4OrclPost": {
+      "_doc": "oracle->postgres, mocheck doctype=4 (EXPMED, PENALTY).",
+      "tableNameMaster": "EXPMED4",
+      "tableNameSlave": "mocheck",
+      "structureMaster": "/opt/airflow/airflow/etlFolderProd/structures/MOCHECK/MOCHECK.json",
+      "structureSlave": "/opt/airflow/airflow/etlFolderProd/structures/MOCHECK/mocheck.json",
+      "selectSql": "/opt/airflow/airflow/etlFolderProd/queries/customQueries/MOCHECK.sql",
+      "periodColumn": "createdate",
+      "slavePeriodColumn": "createdate",
+      "filterClause": "doctype = 4",
+      "filterClauseSlave": ["doctype = 4"],
+      "conflictExtra": ["doctype"],
+      "mode": "iud"
+    },
+    "PODCHECK3OrclPost": {
+      "_doc": "oracle->postgres, mocheck doctype=5 (PODCHECK + SPMUMAIN, typehelp=3).",
+      "tableNameMaster": "PODCHECK3",
+      "tableNameSlave": "mocheck",
+      "structureMaster": "/opt/airflow/airflow/etlFolderProd/structures/MOCHECK/MOCHECK.json",
+      "structureSlave": "/opt/airflow/airflow/etlFolderProd/structures/MOCHECK/mocheck.json",
+      "selectSql": "/opt/airflow/airflow/etlFolderProd/queries/customQueries/MOCHECK.sql",
+      "periodColumn": "createdate",
+      "slavePeriodColumn": "createdate",
+      "filterClause": "doctype = 5",
+      "filterClauseSlave": ["doctype = 5"],
+      "conflictExtra": ["doctype"],
+      "mode": "iud"
+    },
+    "PODCHECK4OrclPost": {
+      "_doc": "oracle->postgres, mocheck doctype=6 (PODCHECK / SPPODNORM, typehelp=4).",
+      "tableNameMaster": "PODCHECK4",
+      "tableNameSlave": "mocheck",
+      "structureMaster": "/opt/airflow/airflow/etlFolderProd/structures/MOCHECK/MOCHECK.json",
+      "structureSlave": "/opt/airflow/airflow/etlFolderProd/structures/MOCHECK/mocheck.json",
+      "selectSql": "/opt/airflow/airflow/etlFolderProd/queries/customQueries/MOCHECK.sql",
+      "periodColumn": "createdate",
+      "slavePeriodColumn": "createdate",
+      "filterClause": "doctype = 6",
+      "filterClauseSlave": ["doctype = 6"],
+      "conflictExtra": ["doctype"],
+      "mode": "iud"
+    },
+    "REQPREPMOOrclPost": {
+      "_doc": "oracle->postgres, mocheck doctype=7 (REQPREPMO+REQPREPSMO).",
+      "tableNameMaster": "REQPREPMO",
+      "tableNameSlave": "mocheck",
+      "structureMaster": "/opt/airflow/airflow/etlFolderProd/structures/MOCHECK/MOCHECK.json",
+      "structureSlave": "/opt/airflow/airflow/etlFolderProd/structures/MOCHECK/mocheck.json",
+      "selectSql": "/opt/airflow/airflow/etlFolderProd/queries/customQueries/MOCHECK.sql",
+      "periodColumn": "createdate",
+      "slavePeriodColumn": "createdate",
+      "filterClause": "doctype = 7",
+      "filterClauseSlave": ["doctype = 7"],
+      "conflictExtra": ["doctype"],
+      "mode": "iud"
+    },
+    "TFOUTSCHETOrclPost": {
+      "_doc": "oracle->postgres, mocheck doctype=8 (TFOUTSCHET).",
+      "tableNameMaster": "TFOUTSCHET",
+      "tableNameSlave": "mocheck",
+      "structureMaster": "/opt/airflow/airflow/etlFolderProd/structures/MOCHECK/MOCHECK.json",
+      "structureSlave": "/opt/airflow/airflow/etlFolderProd/structures/MOCHECK/mocheck.json",
+      "selectSql": "/opt/airflow/airflow/etlFolderProd/queries/customQueries/MOCHECK.sql",
+      "periodColumn": "createdate",
+      "slavePeriodColumn": "createdate",
+      "filterClause": "doctype = 8",
+      "filterClauseSlave": ["doctype = 8"],
+      "conflictExtra": ["doctype"],
+      "mode": "iud"
+    },
+    "TFINSCHETOrclPost": {
+      "_doc": "oracle->postgres, mocheck doctype=9 (TFINSCHET).",
+      "tableNameMaster": "TFINSCHET",
+      "tableNameSlave": "mocheck",
+      "structureMaster": "/opt/airflow/airflow/etlFolderProd/structures/MOCHECK/MOCHECK.json",
+      "structureSlave": "/opt/airflow/airflow/etlFolderProd/structures/MOCHECK/mocheck.json",
+      "selectSql": "/opt/airflow/airflow/etlFolderProd/queries/customQueries/MOCHECK.sql",
+      "periodColumn": "createdate",
+      "slavePeriodColumn": "createdate",
+      "filterClause": "doctype = 9",
+      "filterClauseSlave": ["doctype = 9"],
+      "conflictExtra": ["doctype"],
+      "mode": "iud"
+    },
+
+    "medree_consOrclPost": {
+      "_doc": "oracle->postgres, medree_cons. Mode=section_compare: dcalc выступает как createdate, сравниваются (dcalc, max(lastupdate)) на двух сторонах + сигналы из etl_log_iud_row.",
+      "tableNameMaster": "MEDREE_CONS",
+      "tableNameSlave": "medree_cons",
+      "structureMaster": "/opt/airflow/airflow/etlFolderProd/structures/MEDREE_CONS/MEDREE_CONS.json",
+      "structureSlave": "/opt/airflow/airflow/etlFolderProd/structures/MEDREE_CONS/medree_cons.json",
+      "mode": "section_compare"
+    },
+    "medree_consdetOrclPost": {
+      "_doc": "oracle->postgres, medree_consdet. Аналогично medree_cons.",
+      "tableNameMaster": "MEDREE_CONSDET",
+      "tableNameSlave": "medree_consdet",
+      "structureMaster": "/opt/airflow/airflow/etlFolderProd/structures/MEDREE_CONSDET/MEDREE_CONSDET.json",
+      "structureSlave": "/opt/airflow/airflow/etlFolderProd/structures/MEDREE_CONSDET/medree_consdet.json",
+      "mode": "section_compare"
+    },
+
+    "etljobsOrclOrcl": {
+      "_doc": "oracle->oracle (на случай миграции внутри одной СУБД).",
+      "tableNameMaster": "etl_jobs_src",
+      "tableNameSlave": "etl_jobs_dst",
+      "structureMaster": "/opt/airflow/airflow/etlFolder/structures/etl_jobs_orcl.json",
+      "structureSlave": "/opt/airflow/airflow/etlFolder/structures/etl_jobs_orcl.json",
+      "periodColumn": "period",
+      "mode": "iud"
+    },
+    "LOG_EINDPROLONGOrclPost": {
+      "tableNameSlave": "log_eindprolong",
+      "structureMaster": "/opt/airflow/airflow/etlFolderProd/structures/log_eindprolong/LOG_EINDPROLONG.json",
+      "structureSlave": "/opt/airflow/airflow/etlFolderProd/structures/log_eindprolong/log_eindprolong.json"
+    },
+    "PLANOMSOrclPost": {
+      "tableNameSlave": "tpplanoms",
+      "structureMaster": "/opt/airflow/airflow/etlFolderProd/structures/PLANOMS/PLANOMS.json",
+      "structureSlave": "/opt/airflow/airflow/etlFolderProd/structures/PLANOMS/tpplanoms.json",
+      "periodColumn": "dcalc",
+      "slavePeriodColumn": "dcalc"
+    },
+    "koknaev.MEDREE_STRUCTURE_STACIONAROrclPost": {
+      "tableNameSlave": "medree_structure_stacionar",
+      "structureMaster": "/opt/airflow/airflow/etlFolderProd/structures/medree_structure_stacionar/MEDREE_STRUCTURE_STACIONAR.json",
+      "structureSlave": "/opt/airflow/airflow/etlFolderProd/structures/medree_structure_stacionar/medree_structure_stacionar.json",
+      "mode": "section_compare"
+    }
+  }
+}
+
+
+"EXPMED2OrclPost": {
+      "_doc": "oracle->postgres, mocheck doctype=2 (EXPMED, ветка stepexp/typecont/typemaker).",
+      "tableNameMaster": "EXPMED2",
+      "tableNameSlave": "mocheck",
+      "structureMaster": "/opt/airflow/airflow/etlFolderProd/structures/MOCHECK/MOCHECK.json",
+      "structureSlave": "/opt/airflow/airflow/etlFolderProd/structures/MOCHECK/mocheck.json",
+      "selectSql": "/opt/airflow/airflow/etlFolderProd/queries/customQueries/MOCHECK.sql",
+      "filterClause": "doctype = 2",
+      "filterClauseSlave": ["doctype = 2"],
+      "conflictExtra": ["doctype"],
+      "conflictWhere": "doctype = 2",
+      "mode": "iud"
+    },
+    "EXPMED3OrclPost": {
+      "_doc": "oracle->postgres, mocheck doctype=3 (EXPMED, RECLBASE+RECLUPKEEP<>0).",
+      "tableNameMaster": "EXPMED3",
+      "tableNameSlave": "mocheck",
+      "structureMaster": "/opt/airflow/airflow/etlFolderProd/structures/MOCHECK/MOCHECK.json",
+      "structureSlave": "/opt/airflow/airflow/etlFolderProd/structures/MOCHECK/mocheck.json",
+      "selectSql": "/opt/airflow/airflow/etlFolderProd/queries/customQueries/MOCHECK.sql",
+      "filterClause": "doctype = 3",
+      "filterClauseSlave": ["doctype = 3"],
+      "conflictExtra": ["doctype"],
+      "conflictWhere": "doctype = 3",
+      "mode": "iud"
+    },
+    "EXPMED4OrclPost": {
+      "_doc": "oracle->postgres, mocheck doctype=4 (EXPMED, PENALTY).",
+      "tableNameMaster": "EXPMED4",
+      "tableNameSlave": "mocheck",
+      "structureMaster": "/opt/airflow/airflow/etlFolderProd/structures/MOCHECK/MOCHECK.json",
+      "structureSlave": "/opt/airflow/airflow/etlFolderProd/structures/MOCHECK/mocheck.json",
+      "selectSql": "/opt/airflow/airflow/etlFolderProd/queries/customQueries/MOCHECK.sql",
+      "filterClause": "doctype = 4",
+      "filterClauseSlave": ["doctype = 4"],
+      "conflictExtra": ["doctype"],
+      "conflictWhere": "doctype = 4",
+      "mode": "iud"
+    },

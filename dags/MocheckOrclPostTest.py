@@ -18,15 +18,13 @@ import datetime as dt
 
 from airflow.models import DAG
 
-from Functions._dagHelpers import DEFAULT_ARGS, buildOperator, configureLogger, runEtl, makeEtlOperator, addPauseWatcher, addFreezeWatcher
+from Functions._dagHelpers import DEFAULT_ARGS, buildOperator, configureLogger, runEtl, makeEtlOperator, addFreezeWatcher
 
 
 # (tableNameEtlJobs, doctype) — порядок соответствует CASE-выражению в SQL.
 MOCHECK_LOGICAL_GROUPS = [
     ("MEDCHECK", 1),
-    ("EXPMED2", 2),
-    ("EXPMED3", 3),
-    ("EXPMED4", 4),
+    ("EXPMED", "2,3,4"),
     ("PODCHECK3", 5),
     ("PODCHECK4", 6),
     ("REQPREPMO", 7),

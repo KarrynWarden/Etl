@@ -359,7 +359,7 @@ def buildOperator(taskId, callable_, triggerRule=None):
 
 def makeEtlOperator(taskId, tableNameMaster, dbMaster, dbSlave,
                     tableNameEtlJobs=None, retryMode="frequent",
-                    triggerRule=None, pool="Prod", **opts):
+                    triggerRule=None, pool="Test", **opts):
     """Собрать PythonOperator ETL-линии целиком (callable + параметры ретраев).
 
     retryMode='frequent' — airflow не ретраит (retries=0), ретраи делает

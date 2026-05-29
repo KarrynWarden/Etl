@@ -18,7 +18,7 @@ import datetime as dt
 
 from airflow.models import DAG
 
-from Functions._dagHelpers import DEFAULT_ARGS, buildOperator, configureLogger, runEtl, makeEtlOperator, addPauseWatcher, addFreezeWatcher
+from Functions._dagHelpers import DEFAULT_ARGS, buildOperator, configureLogger, runEtl, makeEtlOperator, addFreezeWatcher
 
 
 MEDREE_TABLES = ["medree_cons", "medree_consdet", "koknaev.MEDREE_STRUCTURE_STACIONAR"]

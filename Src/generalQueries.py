@@ -17,8 +17,6 @@ structureCheckOrclSql = _q("general/StructureCheckOrcl.sql")
 structureEmptyQuerySql = _q("general/StructureEmptyQuery.sql")
 
 # --- newEtl: выбор групп / id ---
-dateSelectStatusPostSql = _q("general/newEtl/DateSelectStatusPost.sql")
-dateSelectStatusOrclSql = _q("general/newEtl/DateSelectStatusOrcl.sql")
 selectEtlIudPostSql = _q("general/newEtl/SelectEtlIudPost.sql")
 selectEtlIudOrclSql = _q("general/newEtl/SelectEtlIudOrcl.sql")
 selectDistinctPostSql = _q("general/newEtl/SelectDistinctPost.sql")
