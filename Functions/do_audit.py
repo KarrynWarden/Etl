@@ -78,6 +78,19 @@ _MAX_PRINT_DIFF = 100
 _SENTINEL = "TO_DATE('1900-01-01', 'YYYY-MM-DD')"
 
 
+class AuditScopeError(AirflowException):
+    """Аудит отработал, но НЕ все группы идентичны: есть отличия (-4) и/или
+    группы, которые не удалось проверить из-за per-group ошибки данных (-2).
+
+    Статусы по группам уже записаны в etl_jobs (коммит per-group). Этот
+    эксепшен лишь красит запуск 🟥 для видимости — линию НЕ морозит (аналог
+    RecordScopeError в ETL). Зелёным аудит становится только когда все
+    проверенные группы вернули 1. Подхватывается в runAudit:
+    XCom error_class='record'.
+    """
+    pass
+
+
 # ----------------------------------------------------------------------------
 #                       Поля, участвующие в сравнении
 # ----------------------------------------------------------------------------
@@ -252,9 +265,16 @@ def _writeStatus(cfg, ctx, origPeriod, status):
     )
 
 
-def _auditGroup(cfg, ctx, origPeriod, differing):
+def _auditGroup(cfg, ctx, origPeriod, report):
     """Проверить одну группу (period) и записать результат. Коммит — здесь же,
-    чтобы прерывание (SIGTERM) не откатывало уже проверенные группы."""
+    чтобы прерывание (SIGTERM) не откатывало уже проверенные группы.
+
+    report — аккумулятор с ключами 'differing' и 'errored' (списки периодов),
+    по которым _run в конце решает цвет квадрата. Системные ошибки
+    (retryable/fatal — мёртвое соединение, битый SQL/структура) НЕ глотаем
+    по группам: они одинаково сломают все группы, поэтому пробрасываем наверх,
+    чтобы прогон сразу упал и ушёл в ретрай/заморозку. Глотаем (ставим -2 и
+    идём дальше) только record-class — порча данных в конкретной группе."""
     dbMaster = cfg["dbMaster"]
     tableNameEtlJobs = cfg["tableNameEtlJobs"]
     tableNameSlave = cfg["tableNameSlave"]
@@ -280,17 +300,22 @@ def _auditGroup(cfg, ctx, origPeriod, differing):
         status = _evaluate(period, tableNameEtlJobs, tableNameSlave,
                            masterRows, slaveRows, set1, set2)
         if status != 1:
-            differing.append((origPeriod, tableNameEtlJobs))
+            report["differing"].append(origPeriod)
 
         _writeStatus(cfg, ctx, origPeriod, status)
         UpdateLog(tableNameEtlJobs, dbMaster, "Audit",
                   cursorMaster, conMaster, len(set1), origPeriod, status)
         conMaster.commit()
     except Exception as err:
-        # откатываем незакоммиченное и фиксируем -2 по этой группе
         _safeRollback(conMaster)
         _safeRollback(conSlave)
-        logger.error("Ошибка аудита группы %s (%s): %s",
+        # Системная ошибка — прерываем весь прогон, не плодим -2 по всем группам.
+        if classifyError(err) in ("retryable", "fatal"):
+            logger.error("Системная ошибка аудита на группе %s (%s) — "
+                         "прерываю прогон: %s", origPeriod, tableNameEtlJobs, err)
+            raise
+        # record/неизвестный класс — порча данных в этой группе: -2 и дальше.
+        logger.error("Ошибка данных группы %s (%s), помечаю -2: %s",
                      origPeriod, tableNameEtlJobs, err)
         try:
             _writeStatus(cfg, ctx, origPeriod, -2)
@@ -298,12 +323,12 @@ def _auditGroup(cfg, ctx, origPeriod, differing):
                       cursorMaster, conMaster, 0, origPeriod, -2)
             conMaster.commit()
         except Exception as markErr:
+            # не смогли даже записать -2 — это уже системно, прерываем прогон
+            _safeRollback(conMaster)
             logger.error("Не удалось пометить группу %s как -2: %s",
                          origPeriod, markErr)
-            _safeRollback(conMaster)
-        # мёртвое соединение чинить нет смысла — пусть линия ретраится/морозится
-        if classifyError(err) == "retryable":
             raise
+        report["errored"].append(origPeriod)
 
 
 def _safeRollback(con):
@@ -421,17 +446,26 @@ def _run(cfg):
             raise AirflowSkipException
 
         logger.info("Аудит %s: %d групп на проверку", tableNameEtlJobs, len(groups))
-        differing = []
+        report = {"differing": [], "errored": []}
         for tablename, period in groups:
-            _auditGroup(cfg, ctx, period, differing)
+            _auditGroup(cfg, ctx, period, report)
 
+        differing, errored = report["differing"], report["errored"]
         if differing:
             logger.warning("Аудит %s: отличия в %d группах: %s",
-                           tableNameEtlJobs, len(differing),
-                           [d[0] for d in differing])
-        else:
-            logger.info("Аудит %s: все группы идентичны", tableNameEtlJobs)
-    except (AirflowSkipException, AirflowFailException):
+                           tableNameEtlJobs, len(differing), differing)
+        if errored:
+            logger.error("Аудит %s: не проверено %d групп (ошибки данных, -2): %s",
+                         tableNameEtlJobs, len(errored), errored)
+        # Зелёным аудит становится ТОЛЬКО когда все проверенные группы — 1.
+        # Любые -4/-2 → 🟥 (без заморозки линии), статусы уже в etl_jobs.
+        if differing or errored:
+            raise AuditScopeError(
+                f"Аудит {tableNameEtlJobs}: отличий {len(differing)}, "
+                f"не проверено {len(errored)} (см. etl_jobs.isokaudit)"
+            )
+        logger.info("Аудит %s: все %d групп идентичны", tableNameEtlJobs, len(groups))
+    except (AirflowSkipException, AirflowFailException, AuditScopeError):
         raise
     except Exception as err:
         raise AirflowException(f"Аудит остановлен, ошибка: {err}") from err

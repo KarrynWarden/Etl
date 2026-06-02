@@ -34,7 +34,7 @@ from airflow.utils.state import State
 from airflow.utils.timezone import utcnow
 
 from Functions.do_etl import Do_etl, RecordScopeError, classifyError
-from Functions.do_audit import Do_audit
+from Functions.do_audit import Do_audit, AuditScopeError
 from Src.fullPath import FULL_PATH, MODE, WEB_BASE_URL
 
 
@@ -374,6 +374,13 @@ def runAudit(tableNameMaster, dbMaster, dbSlave, tableNameEtlJobs=None,
         except AirflowSkipException:
             # «нет групп для проверки» — обычный skip без frozen-метки.
             raise
+        except AuditScopeError as err:
+            # не все группы идентичны (-4/-2): красим 🟥 для видимости, но
+            # линию НЕ морозим — статусы уже в etl_jobs, следующий прогон
+            # перепроверит. Аналог RecordScopeError в ETL.
+            ti.xcom_push(key="error_class", value="record")
+            logging.error("Аудит линии %s: %s", line, err)
+            raise AirflowException(f"Аудит {line}: {err}")
         except AirflowFailException as err:
             ti.xcom_push(key="error_class", value="fatal")
             logging.error("FATAL в аудите линии %s: %s", line, err)
