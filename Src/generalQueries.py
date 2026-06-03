@@ -31,6 +31,8 @@ deletePeriodPostSql = _q("general/newEtl/DeletePeriodPost.sql")
 deletePeriodOrclSql = _q("general/newEtl/DeletePeriodOrcl.sql")
 insertPostSql = _q("general/newEtl/InsertPost.sql")
 insertOrclSql = _q("general/newEtl/InsertOrcl.sql")
+slavePeriodsByIdPostSql = _q("general/newEtl/SlavePeriodsByIdPost.sql")
+slavePeriodsByIdOrclSql = _q("general/newEtl/SlavePeriodsByIdOrcl.sql")
 
 # --- newEtl: выборка из ведущей ---
 recordSelectByIdPostSql = _q("general/newEtl/RecordSelectByIdPost.sql")

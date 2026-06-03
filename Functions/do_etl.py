@@ -79,6 +79,8 @@ from Src.generalQueries import (
     deletePeriodPostSql,
     insertOrclSql,
     insertPostSql,
+    slavePeriodsByIdOrclSql,
+    slavePeriodsByIdPostSql,
     # выборка из ведущей
     recordSelectByIdOrclSql,
     recordSelectByIdPostSql,
@@ -297,7 +299,9 @@ def _buildUpsertSql(dbSlave, tableNameSlave, structSlave,
     if _isPost(dbSlave):
         columnsStr = ", ".join(columns)
         valuesStr = ", ".join(["%s"] * len(columns))
-        if mode in ("section", "section_compare"):
+        if mode in ("section", "section_compare", "delete_insert"):
+            # delete_insert тоже сначала удаляет (по idrw), поэтому конфликта
+            # нет — простой INSERT без ON CONFLICT.
             return insertPostSql.format(
                 tablename=tableNameSlave,
                 columns_str=columnsStr,
@@ -349,6 +353,31 @@ def _buildDeleteByIdSql(dbSlave, tableNameSlave, pkCols, filterClauseSlave):
         primaryCond += " AND " + " AND ".join(filterClauseSlave)
     sqlTpl = _pickSql(dbSlave, deleteByIdPostSql, deleteByIdOrclSql)
     return sqlTpl.format(tablename=tableNameSlave, primary_cond=primaryCond)
+
+
+def _buildSlavePeriodsByIdSql(dbSlave, tableNameSlave, pkColsSlave,
+                              slavePeriodColumn, filterClauseSlave,
+                              truncatePeriod=False):
+    """SQL для DISTINCT периодов строк ведомой по логическому id (idrw).
+
+    Нужен режиму delete_insert: перед удалением узнаём, какие группы
+    etl_jobs затронуты на стороне ведомой (period в etl_log_iud_row для
+    expmed декоративный и в логике не участвует).
+    """
+    if truncatePeriod:
+        periodExpr = (f"DATE({slavePeriodColumn})" if _isPost(dbSlave)
+                      else f"TRUNC({slavePeriodColumn})")
+    else:
+        periodExpr = slavePeriodColumn
+    primaryCond = " AND ".join(
+        f"{c} = " + _bindName(dbSlave, f"id{i}")
+        for i, c in enumerate(pkColsSlave)
+    )
+    if filterClauseSlave:
+        primaryCond += " AND " + " AND ".join(filterClauseSlave)
+    sqlTpl = _pickSql(dbSlave, slavePeriodsByIdPostSql, slavePeriodsByIdOrclSql)
+    return sqlTpl.format(period_expr=periodExpr, tablename=tableNameSlave,
+                         primary_cond=primaryCond)
 
 
 def _buildDeletePeriodSql(dbSlave, tableNameSlave, slavePeriodColumn,
@@ -766,6 +795,162 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords):
             conSlave.close()
 
 
+def _processDeleteInsert(cfg, ctx, distinctIds, iudRecords):
+    """Режим delete_insert: один логический id (idrw) = НЕСКОЛЬКО строк ведомой.
+
+    Событийный, как iud (читает etl_log_iud_row по idrw), но на каждое
+    событие idrw: удаляет ВСЕ строки этого idrw в ведомой и (для IU)
+    заливает актуальные строки ведущей. Это убирает «осиротевшие» строки
+    при смене doctype (старый doctype=2 idrw=123 остаётся, когда запись
+    переехала в doctype=3) — чего upsert в режиме iud не ловит.
+
+    period из etl_log_iud_row здесь ДЕКОРАТИВНЫЙ (для expmed это docexpdt,
+    неверный для doctype=4) и в логике НЕ участвует. Реальные затронутые
+    периоды берём из данных: для удаляемых строк — из ведомой (до удаления),
+    для вставляемых — из ведущей.
+    """
+    if not distinctIds:
+        logger.info("delete_insert: записей для обработки нет")
+        return
+
+    dbMaster = cfg["dbMaster"]
+    dbSlave = cfg["dbSlave"]
+    tableNameEtlJobs = cfg["tableNameEtlJobs"]
+    cursorMaster = ctx["cursorMaster"]
+    conMaster = ctx["conMaster"]
+    action = "ETL_DELETE_INSERT"
+    # позиция колонки периода в строках ведущей (для periodColumn=createdate)
+    periodIdx = _columnNames(ctx["structMaster"]).index(cfg["periodColumn"])
+
+    logger.info("Старт delete_insert: %d событий", len(distinctIds))
+    okPeriods, failPeriods = set(), set()
+    periodCount = defaultdict(int)
+    recordErrors = []  # [(recId, errStr), ...]
+
+    conSlave = None
+    try:
+        conSlave = _connect(dbSlave)
+        cursorSlave = conSlave.cursor()
+
+        if not StructCheckDataBase(
+            ctx["structSlave"], cursorSlave,
+            _pickSql(dbSlave, structureCheckPostSql, structureCheckOrclSql),
+            cfg["tableNameSlave"],
+        ):
+            logger.error("Структуры ведомой %s не совпадают", cfg["tableNameSlave"])
+            UpdateLog(tableNameEtlJobs, dbMaster, "FLK",
+                      cursorMaster, conMaster, "ведомых")
+            raise AirflowFailException(
+                f"FLK: структура ведомой {cfg['tableNameSlave']} не совпадает с json-эталоном"
+            )
+
+        for entry in distinctIds:
+            recId, _logPeriod, _timeoper, oper = entry[0], entry[1], entry[2], entry[3]
+            affected = set()
+            try:
+                pkParamsSlave = _splitPkValue(recId, len(ctx["pkColsSlave"]))
+
+                # 1) реальные периоды удаляемых строк — из ведомой, ДО удаления
+                cursorSlave.execute(ctx["slavePeriodsByIdSql"], pkParamsSlave)
+                for row in cursorSlave.fetchall():
+                    p = _normalizePeriod(row[0])
+                    if p is not None:
+                        affected.add(p)
+
+                # 2) удалить ВСЕ строки этого idrw в ведомой
+                cursorSlave.execute(ctx["deleteByIdSql"], pkParamsSlave)
+
+                # 3) для IU — залить актуальные строки ведущей
+                if oper == "IU":
+                    pkParamsMaster = _splitPkValue(recId, len(ctx["pkColsMaster"]))
+                    cursorMaster.execute(
+                        ctx["recordByIdSql"],
+                        {**pkParamsMaster, **(cfg.get("filterParams") or {})},
+                    )
+                    rowsDb = cursorMaster.fetchall()
+                    for rowDb in rowsDb:
+                        if _isPost(dbSlave):
+                            cursorSlave.execute(ctx["upsertSql"], rowDb)
+                        else:
+                            params = {str(i + 1): v for i, v in enumerate(rowDb)}
+                            cursorSlave.execute(ctx["upsertSql"], params)
+                        # реальный период вставляемой строки — из ведущей
+                        p = _normalizePeriod(rowDb[periodIdx])
+                        if p is not None:
+                            affected.add(p)
+                            periodCount[p] += 1
+                    logger.info("idrw=%s: -%s/+%d строк, периоды %s",
+                                recId, "all", len(rowsDb),
+                                sorted(x for x in affected if x is not None))
+                else:  # 'D'
+                    logger.info("idrw=%s: удалено из ведомой, периоды %s",
+                                recId, sorted(x for x in affected if x is not None))
+
+                conSlave.commit()
+
+                idrws = [b for a, b in iudRecords if a == recId]
+                _markEtlIud(cursorMaster, dbMaster, idrws, 1)
+                conMaster.commit()
+
+                okPeriods |= affected
+
+            except Exception as err:
+                cls = classifyError(err) or "record"
+                if conSlave:
+                    conSlave.rollback()
+                if cls != "record":
+                    logger.error("Ошибка idrw=%s КЛАСС=%s — прерываю цикл: %s",
+                                 recId, cls, err)
+                    raise
+                logger.error("RECORD-ошибка idrw=%s, паркую isetl=-1: %s",
+                             recId, err)
+                idrws = [b for a, b in iudRecords if a == recId]
+                _markEtlIud(cursorMaster, dbMaster, idrws, -1)
+                conMaster.commit()
+                recordErrors.append((recId, str(err)))
+                # затронутые этой записью периоды — под подозрение (-1)
+                failPeriods |= affected
+
+        # зарегистрировать новые периоды (insert-side из ведущей) и обновить статус
+        _registerNewPeriods(cursorMaster, dbMaster, ctx["selectSql"],
+                            tableNameEtlJobs, cfg["periodColumn"])
+
+        for period in okPeriods - failPeriods:
+            cursorMaster.execute(
+                _pickSql(dbMaster, etlUpdatePostSql, etlUpdateOrclSql),
+                {"LAST_SUCCESS_TS": ctx["currDt"],
+                 "TABLENAME": tableNameEtlJobs,
+                 "PERIOD": period},
+            )
+            UpdateLog(tableNameEtlJobs, dbMaster, action,
+                      cursorMaster, conMaster, periodCount.get(period, 0),
+                      period, 1)
+        for period in failPeriods:
+            cursorMaster.execute(
+                _pickSql(dbMaster, etlErrorPostSql, etlErrorOrclSql),
+                {"ISOKAUDIT": -1, "tablename": tableNameEtlJobs,
+                 "PERIOD": period},
+            )
+            UpdateLog(tableNameEtlJobs, dbMaster, action,
+                      cursorMaster, conMaster, 0, period)
+
+        conMaster.commit()
+
+        if recordErrors:
+            sample = ", ".join(str(r[0]) for r in recordErrors[:5])
+            more = f" (+{len(recordErrors) - 5} ещё)" if len(recordErrors) > 5 else ""
+            raise RecordScopeError(
+                f"delete_insert: {len(recordErrors)} idrw не перенесено: {sample}{more}. "
+                f"Записи припаркованы (isetl=-1); линия продолжает работать. "
+                f"Повторить ручкой: UPDATE etl_log_iud_row SET isetl=0 "
+                f"WHERE tablename='{tableNameEtlJobs}' AND isetl=-1;"
+            )
+
+    finally:
+        if conSlave:
+            conSlave.close()
+
+
 def _splitPkValue(value, pkCount):
     """id из etl_log_iud_row может быть составным — храним через '/'.
 
@@ -1132,6 +1317,13 @@ def _run(cfg):
                 _primaryKeys(structSlave),
                 cfg.get("filterClauseSlave"),
             ),
+            "slavePeriodsByIdSql": _buildSlavePeriodsByIdSql(
+                dbSlave, cfg["tableNameSlave"],
+                _primaryKeys(structSlave),
+                cfg["slavePeriodColumn"],
+                cfg.get("filterClauseSlave"),
+                cfg.get("truncatePeriod"),
+            ),
             "deletePeriodSql": _buildDeletePeriodSql(
                 dbSlave, cfg["tableNameSlave"],
                 cfg["slavePeriodColumn"],
@@ -1186,7 +1378,10 @@ def _run(cfg):
         distinctIds = _selectDistinctIds(
             cursorMaster, dbMaster, [r[1] for r in iudRecords],
         )
-        _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords)
+        if mode == "delete_insert":
+            _processDeleteInsert(cfg, ctx, distinctIds, iudRecords)
+        else:
+            _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords)
     except (AirflowSkipException, AirflowFailException, RecordScopeError):
         # пропускаем через — это специальные классы, runEtl их различает
         # (skip / fatal / record) и проставляет XCom error_class

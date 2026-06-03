@@ -54,6 +54,15 @@ FREQUENT_BACKOFF_MIN = [1, 1]
 # Период перепроверки watcher'ом при удержании "бесконечного дага".
 WATCHER_RECHECK_SEC = 60
 
+# Сколько слотов пула "Test" занимает КАЖДАЯ аудит-задача. Должно равняться
+# полному размеру пула — тогда пока идёт аудит любой линии, ETL-переносы
+# (pool_slots=1) и другие аудит-линии ждут: аудит не пометит недоношенный
+# перенос как успешный. freeze_watcher сидит в default_pool, поэтому
+# замороженные ETL-даги слоты "Test" не держат и аудит не блокируют.
+# ВАЖНО: значение НЕ должно превышать реальный размер пула, иначе аудит-задача
+# никогда не получит слоты (дедлок). Пул "Test" = 100 слотов.
+AUDIT_POOL_SLOTS = 100
+
 # airflow-ретраи для RARE-режима: задержки ≈ 1, 2, 4, 8, 16, 30 мин (потолок 30).
 _RARE_RETRY_ARGS = dict(
     retries=6,
@@ -376,11 +385,18 @@ def runAudit(tableNameMaster, dbMaster, dbSlave, tableNameEtlJobs=None,
             raise
         except AuditScopeError as err:
             # не все группы идентичны (-4/-2): красим 🟥 для видимости, но
-            # линию НЕ морозим — статусы уже в etl_jobs, следующий прогон
-            # перепроверит. Аналог RecordScopeError в ETL.
+            # БЕЗ авто-ретраев и БЕЗ заморозки. Ретрай аудита почти никогда не
+            # помогает (если в переносе реальная ошибка — она повторится), а
+            # 6 ретраев по несколько часов зря грузят железо. Поэтому
+            # AirflowFailException (пропускает оставшиеся retries), а
+            # error_class='record' — чтобы FSM/watcher не морозили линию.
+            # Статусы по группам уже в etl_jobs; человек смотрит и решает,
+            # перезапускать аудит/перенос вручную или нет.
             ti.xcom_push(key="error_class", value="record")
-            logging.error("Аудит линии %s: %s", line, err)
-            raise AirflowException(f"Аудит {line}: {err}")
+            logging.error("Аудит линии %s: %s. Авто-ретрая не будет — "
+                          "нужен разбор человеком (см. etl_jobs.isokaudit).",
+                          line, err)
+            raise AirflowFailException(f"Аудит {line}: {err}")
         except AirflowFailException as err:
             ti.xcom_push(key="error_class", value="fatal")
             logging.error("FATAL в аудите линии %s: %s", line, err)
@@ -455,6 +471,9 @@ def makeAuditOperator(taskId, tableNameMaster, dbMaster, dbSlave,
     kwargs = dict(
         task_id=taskId,
         pool=pool,
+        # Занимаем ВЕСЬ пул на время прогона: пока идёт аудит, ETL не стартует
+        # и не подсунет недоношенный перенос под «успешную» проверку.
+        pool_slots=AUDIT_POOL_SLOTS,
         provide_context=True,
         priority_weight=1,
         python_callable=runAudit(tableNameMaster, dbMaster, dbSlave,
