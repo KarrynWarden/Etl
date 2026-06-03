@@ -23,7 +23,7 @@ from airflow.models import DAG
 
 from Functions._dagHelpers import (
     DEFAULT_ARGS, configureLogger, makeAuditOperator, addFreezeWatcher,
-    iterAuditLines,
+    addEtlLock, iterAuditLines,
 )
 
 
@@ -36,6 +36,9 @@ with DAG(
     dag_id="AuditAllTest",
     default_args=DEFAULT_ARGS,
     max_active_runs=1,
+    # Замок + все аудит-линии должны идти одновременно: ставим лимит задач с
+    # запасом, иначе линии заняли бы все слоты задач и замок не стартовал бы.
+    max_active_tasks=128,
     tags=["audit", "test", "DbSync"],
     # Аудит — в конце дня, ежечасно с 18:00 до 23:00. max_active_runs=1 не
     # даёт прогонам наслаиваться; если airflow прибьёт долгий iperson SIGTERM'ом
@@ -58,4 +61,7 @@ with DAG(
         )
         for line in iterAuditLines()
     ]
+    # Замок ETL: держит весь пул переносов, пока идут аудит-линии (линии при
+    # этом параллельны между собой, т.к. живут в default_pool).
+    addEtlLock(tasks)
     addFreezeWatcher(tasks, retryMode="rare")

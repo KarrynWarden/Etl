@@ -54,14 +54,21 @@ FREQUENT_BACKOFF_MIN = [1, 1]
 # Период перепроверки watcher'ом при удержании "бесконечного дага".
 WATCHER_RECHECK_SEC = 60
 
-# Сколько слотов пула "Test" занимает КАЖДАЯ аудит-задача. Должно равняться
-# полному размеру пула — тогда пока идёт аудит любой линии, ETL-переносы
-# (pool_slots=1) и другие аудит-линии ждут: аудит не пометит недоношенный
-# перенос как успешный. freeze_watcher сидит в default_pool, поэтому
-# замороженные ETL-даги слоты "Test" не держат и аудит не блокируют.
-# ВАЖНО: значение НЕ должно превышать реальный размер пула, иначе аудит-задача
-# никогда не получит слоты (дедлок). Пул "Test" = 100 слотов.
-AUDIT_POOL_SLOTS = 100
+# Пул ETL-переносов и его полный размер. Задача-замок etl_lock в аудит-DAG
+# занимает ВЕСЬ этот пул на время прогона аудита, поэтому ETL-переносы
+# (pool_slots=1) на это время не стартуют. САМИ аудит-линии идут в другом
+# пуле (default_pool) и потому выполняются ПАРАЛЛЕЛЬНО друг другу.
+# freeze_watcher тоже в default_pool, поэтому замороженные ETL-даги слоты
+# ETL-пула не держат и взять замок не мешают.
+# ВАЖНО: ETL_POOL_SLOTS не должен превышать реальный размер пула, иначе замок
+# никогда не получит все слоты (дедлок). Пул "Test" = 100 слотов.
+ETL_POOL = "Test"
+ETL_POOL_SLOTS = 100
+
+# Задача-замок: id, XCom-сигнал «пул занят», таймаут ожидания сигнала аудитом.
+ETL_LOCK_TASK_ID = "etl_lock"
+ETL_LOCK_XCOM_KEY = "etl_locked"
+ETL_LOCK_WAIT_TIMEOUT_SEC = 600
 
 # airflow-ретраи для RARE-режима: задержки ≈ 1, 2, 4, 8, 16, 30 мин (потолок 30).
 _RARE_RETRY_ARGS = dict(
@@ -376,6 +383,9 @@ def runAudit(tableNameMaster, dbMaster, dbSlave, tableNameEtlJobs=None,
     def _task(**context):
         ti = context["ti"]
         _retryGate(context, line, retryMode, "AUDIT")
+        # Не трогаем БД, пока замок не занял пул ETL (иначе аудит мог бы
+        # стартовать параллельно с переносом и принять недоношенные данные).
+        _waitEtlLock(context)
 
         try:
             Do_audit(tableNameMaster=tableNameMaster, dbMaster=dbMaster,
@@ -462,18 +472,19 @@ def makeEtlOperator(taskId, tableNameMaster, dbMaster, dbSlave,
 
 def makeAuditOperator(taskId, tableNameMaster, dbMaster, dbSlave,
                       tableNameEtlJobs=None, retryMode="rare",
-                      triggerRule=None, pool="Test", **opts):
+                      triggerRule=None, pool="default_pool", **opts):
     """Собрать PythonOperator аудит-линии (callable runAudit + ретраи).
 
     По умолчанию retryMode='rare': аудит запускается редко (в конце дня),
     ретраи внутри дня делает airflow, заморозка — после исчерпания.
+
+    Аудит-линии живут в default_pool (НЕ в пуле ETL) и потому параллельны
+    между собой. Блокировку ETL на время прогона даёт отдельная задача-замок
+    etl_lock (см. addEtlLock), а не занятость слотов каждой линией.
     """
     kwargs = dict(
         task_id=taskId,
         pool=pool,
-        # Занимаем ВЕСЬ пул на время прогона: пока идёт аудит, ETL не стартует
-        # и не подсунет недоношенный перенос под «успешную» проверку.
-        pool_slots=AUDIT_POOL_SLOTS,
         provide_context=True,
         priority_weight=1,
         python_callable=runAudit(tableNameMaster, dbMaster, dbSlave,
@@ -631,6 +642,93 @@ def _freezeWatcher(retryMode):
             )
         logging.info("Watcher: упавших линий нет — даг зелёный.")
     return _watch
+
+
+# ----------------------------------------------------------------------------
+#         Замок ETL на время аудита (ETL стоит, аудит-линии параллельны)
+# ----------------------------------------------------------------------------
+
+def _tasksTerminal(context, taskIds):
+    """True, если ВСЕ задачи taskIds в этом dag-run завершены (терминальны).
+
+    Перечитывает состояния из БД каждый вызов (как _lineStates) — иначе в
+    долгоживущем замке состояние было бы закэшировано на старте."""
+    dagRun = context["dag_run"]
+    wanted = set(taskIds)
+    terminal = {State.SUCCESS, State.FAILED, State.SKIPPED,
+                State.UPSTREAM_FAILED}
+    with create_session() as session:
+        states = {t.task_id: t.state
+                  for t in dagRun.get_task_instances(session=session)
+                  if t.task_id in wanted}
+    for tid in wanted:
+        if states.get(tid) not in terminal:
+            return False
+    return True
+
+
+def _etlLock(auditTaskIds):
+    """Задача-замок: держит ВЕСЬ пул ETL, пока идут аудит-линии этого dag-run.
+
+    Зависимостей с аудит-линиями НЕ имеет — стартует параллельно, забирает все
+    слоты пула ETL (priority_weight выше ETL-задач, чтобы получить слоты
+    раньше) и опрашивает завершение линий. Пока замок жив — ETL-переносы
+    (pool_slots=1 в том же пуле) не стартуют, а сами аудит-линии в default_pool
+    идут параллельно.
+    """
+    def _lock(**context):
+        ti = context["ti"]
+        ti.xcom_push(key=ETL_LOCK_XCOM_KEY, value=1)
+        logging.info("ETL-замок взят: держу пул %s (%d слотов), пока идёт "
+                     "аудит (%d линий).", ETL_POOL, ETL_POOL_SLOTS,
+                     len(auditTaskIds))
+        while not _tasksTerminal(context, auditTaskIds):
+            time.sleep(WATCHER_RECHECK_SEC)
+        logging.info("ETL-замок снят: аудит-линии завершены, отпускаю пул %s.",
+                     ETL_POOL)
+    return _lock
+
+
+def _waitEtlLock(context):
+    """Подождать XCom-сигнал от задачи-замка, что пул ETL занят.
+
+    Если замка в DAG нет — гейт не используется, идём сразу. Если замок упал/
+    пропущен или сигнал не пришёл за таймаут — идём без гейта (лучше прогнать
+    аудит, чем зависнуть), залогировав предупреждение.
+    """
+    ti = context["ti"]
+    dagRun = context["dag_run"]
+    if dagRun.get_task_instance(ETL_LOCK_TASK_ID) is None:
+        return
+    waited = 0
+    while waited < ETL_LOCK_WAIT_TIMEOUT_SEC:
+        if ti.xcom_pull(task_ids=ETL_LOCK_TASK_ID, key=ETL_LOCK_XCOM_KEY):
+            return
+        lockTi = dagRun.get_task_instance(ETL_LOCK_TASK_ID)
+        if lockTi is not None and lockTi.state in (
+            State.FAILED, State.SKIPPED, State.UPSTREAM_FAILED,
+        ):
+            logging.warning("ETL-замок не взят (%s) — аудит идёт без гейта.",
+                            lockTi.state)
+            return
+        time.sleep(5)
+        waited += 5
+    logging.warning("ETL-замок не подтверждён за %d с — аудит идёт без гейта.",
+                    ETL_LOCK_WAIT_TIMEOUT_SEC)
+
+
+def addEtlLock(auditTasks):
+    """Добавить в аудит-DAG задачу-замок, занимающую весь пул ETL на время
+    прогона. Вызывать внутри `with DAG(...)`. Возвращает задачу-замок."""
+    return PythonOperator(
+        task_id=ETL_LOCK_TASK_ID,
+        pool=ETL_POOL,
+        pool_slots=ETL_POOL_SLOTS,
+        priority_weight=10_000,  # забрать слоты пула раньше ETL-задач
+        provide_context=True,
+        python_callable=_etlLock([t.task_id for t in auditTasks]),
+        retries=0,
+    )
 
 
 def addFreezeWatcher(lineTasks, retryMode="frequent"):
