@@ -26,6 +26,11 @@
 -- Диагностика:
 --   ALTER TRIGGER trg_etl_log_iud_row_bi COMPILE;
 --   SELECT text FROM user_errors WHERE name='TRG_ETL_LOG_IUD_ROW_BI';
+-- Если в ошибке PLS-00103 «end-of-file» — тело триггера залито ОБРЕЗАННЫМ:
+-- клиент порезал PL/SQL-блок по внутреннему ';'. Пересоздать триггер ЦЕЛИКОМ
+-- (одним блоком, вместе с '/'), а не построчно. На Oracle 12c+ можно вообще
+-- без триггера: ALTER TABLE etl_log_iud_row MODIFY idrw
+-- DEFAULT etl_log_iud_row_seq.NEXTVAL; затем DROP TRIGGER trg_etl_log_iud_row_bi.
 --------------------------------------------------------------------------------
 
 -- 1. Последовательность для idrw.
