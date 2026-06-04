@@ -95,6 +95,17 @@ class AuditScopeError(AirflowException):
 #                       Поля, участвующие в сравнении
 # ----------------------------------------------------------------------------
 
+def _asNameSet(value):
+    """auditExcludeFields: принять строку 'a, b' ИЛИ список ['a', 'b'] и
+    вернуть множество имён колонок в нижнем регистре. Канон — строка через
+    запятую; список тоже принимается (легаси). Пусто -> пустое множество."""
+    if not value:
+        return set()
+    if isinstance(value, str):
+        value = value.split(",")
+    return {f.strip().lower() for f in value if f.strip()}
+
+
 def _auditFields(jsonStructFull, etlFields, auditExcludeFields):
     """Поля для сравнения = перенесённые поля минус auditExcludeFields.
 
@@ -103,9 +114,9 @@ def _auditFields(jsonStructFull, etlFields, auditExcludeFields):
     как и в ETL.
     """
     fields = _filterEtlFields(jsonStructFull, etlFields)
-    if not auditExcludeFields:
+    excluded = _asNameSet(auditExcludeFields)
+    if not excluded:
         return fields
-    excluded = {f.lower() for f in auditExcludeFields}
     return [f for f in fields
             if f[0].lower() not in excluded or f[3] == "Primary Key"]
 
