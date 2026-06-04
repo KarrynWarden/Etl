@@ -819,8 +819,11 @@ def _processDeleteInsert(cfg, ctx, distinctIds, iudRecords):
     cursorMaster = ctx["cursorMaster"]
     conMaster = ctx["conMaster"]
     action = "ETL_DELETE_INSERT"
-    # позиция колонки периода в строках ведущей (для periodColumn=createdate)
-    periodIdx = _columnNames(ctx["structMaster"]).index(cfg["periodColumn"])
+    # позиция колонки периода в строках ведущей (для periodColumn=createdate).
+    # Сравнение регистронезависимое: Oracle отдаёт имена колонок в ВЕРХНЕМ
+    # регистре, Postgres — в нижнем, а periodColumn в конфиге — в нижнем.
+    masterColsLower = [c.lower() for c in _columnNames(ctx["structMaster"])]
+    periodIdx = masterColsLower.index(cfg["periodColumn"].lower())
 
     logger.info("Старт delete_insert: %d событий", len(distinctIds))
     okPeriods, failPeriods = set(), set()
