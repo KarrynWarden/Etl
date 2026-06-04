@@ -139,7 +139,7 @@ dags/                          — примеры DAG'ов под все 4 на�
 | 4 направления | `dbMaster`/`dbSlave` ∈ {Post, Orcl} |
 | Кастомное имя `createdate` | `periodColumn`, `slavePeriodColumn` |
 | Составной PK | разделитель `'/'` в `etl_log_iud_row.id` (см. триггер) |
-| Doctype-split (mocheck) | `filterClause` (фильтрует источник) + `filterClauseSlave` (фильтрует DELETE / SELECT по ведомой) + `conflictExtra=['doctype']` (для частичного индекса) |
+| Doctype-split (mocheck) | `filterClause` (фильтрует источник) + `filterClauseSlave` (фильтрует DELETE / SELECT по ведомой) + `conflictExtra="doctype"` (для частичного индекса). Все эти ключи — строки (`filterClause*` могут содержать AND/OR, `conflictExtra` — колонки через запятую); список тоже принимается (легаси, склеивается через AND). |
 | 9 логических групп mocheck из 6 oracle-таблиц | один общий `MOCHECK.sql` UNION ALL + 9 entries в `config.json` (по одной на doctype), DAG итерирует через все 9 |
 | medree-стиль срезов (dcalc + lastupdate) | `mode: section_compare`, `periodColumn: dcalc` |
 | Master = SQL-запрос | `selectSql` |

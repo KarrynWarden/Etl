@@ -7,7 +7,7 @@
     "structureMaster": "/opt/airflow/airflow/etlFolder/structures/mocheck_orcl.json",
     "structureSlave": "/opt/airflow/airflow/etlFolder/structures/mocheck_post.json",
     "selectSql": "/opt/airflow/airflow/etlFolder/queries/customQueries/MOCHECK.sql",
-    "conflictExtra": ["doctype"],
+    "conflictExtra": "doctype",
     "mode": "section_compare"
   },
 
@@ -39,8 +39,8 @@
       "structureMaster": "/opt/airflow/airflow/etlFolderProd/structures/reqprepmo/reqprepmomocheck.json",
       "structureSlave": "/opt/airflow/airflow/etlFolderProd/structures/MOCHECK/mocheck.json",
       "selectSql": "/opt/airflow/airflow/etlFolderProd/queries/customQueries/reqprepmomocheck.sql",
-      "filterClauseSlave": ["doctype = 7"],
-      "conflictExtra": ["doctype"],
+      "filterClauseSlave": "doctype = 7",
+      "conflictExtra": "doctype",
       "conflictWhere":"doctype = 7",
       "mode": "iud"
     },
@@ -53,8 +53,8 @@
       "structureSlave": "/opt/airflow/airflow/etlFolderProd/structures/MOCHECK/mocheck.json",
       "selectSql": "/opt/airflow/airflow/etlFolderProd/queries/customQueries/MOCHECK.sql",
       "filterClause": "doctype = 1",
-      "filterClauseSlave": ["doctype = 1"],
-      "conflictExtra": ["doctype"],
+      "filterClauseSlave": "doctype = 1",
+      "conflictExtra": "doctype",
       "conflictWhere": "doctype = 1",
       "mode": "iud"
     },
@@ -67,8 +67,8 @@
         "structureSlave": "/opt/airflow/airflow/etlFolderProd/structures/MOCHECK/mocheck.json",
         "selectSql": "/opt/airflow/airflow/etlFolderProd/queries/customQueries/MOCHECK.sql",
         "filterClause": "doctype IN (2, 3, 4)",
-        "filterClauseSlave": ["doctype IN (2, 3, 4)"],
-        "conflictExtra": ["doctype"],
+        "filterClauseSlave": "doctype IN (2, 3, 4)",
+        "conflictExtra": "doctype",
         "conflictWhere": "doctype IN (2, 3, 4)",
         "mode": "delete_insert"
     },
@@ -80,8 +80,8 @@
       "structureSlave": "/opt/airflow/airflow/etlFolderProd/structures/MOCHECK/mocheck.json",
       "selectSql": "/opt/airflow/airflow/etlFolderProd/queries/customQueries/MOCHECK.sql",
       "filterClause": "doctype = 5",
-      "filterClauseSlave": ["doctype = 5"],
-      "conflictExtra": ["doctype"],
+      "filterClauseSlave": "doctype = 5",
+      "conflictExtra": "doctype",
       "conflictWhere": "doctype = 5",
       "mode": "iud"
     },
@@ -93,8 +93,8 @@
       "structureSlave": "/opt/airflow/airflow/etlFolderProd/structures/MOCHECK/mocheck.json",
       "selectSql": "/opt/airflow/airflow/etlFolderProd/queries/customQueries/MOCHECK.sql",
       "filterClause": "doctype = 6",
-      "filterClauseSlave": ["doctype = 6"],
-      "conflictExtra": ["doctype"],
+      "filterClauseSlave": "doctype = 6",
+      "conflictExtra": "doctype",
       "conflictWhere": "doctype = 6",
       "mode": "iud"
     },
@@ -106,8 +106,8 @@
       "structureSlave": "/opt/airflow/airflow/etlFolderProd/structures/MOCHECK/mocheck.json",
       "selectSql": "/opt/airflow/airflow/etlFolderProd/queries/customQueries/MOCHECK.sql",
       "filterClause": "doctype = 7",
-      "filterClauseSlave": ["doctype = 7"],
-      "conflictExtra": ["doctype"],
+      "filterClauseSlave": "doctype = 7",
+      "conflictExtra": "doctype",
       "conflictWhere": "doctype = 7",
       "mode": "iud"
     },
@@ -119,8 +119,8 @@
       "structureSlave": "/opt/airflow/airflow/etlFolderProd/structures/MOCHECK/mocheck.json",
       "selectSql": "/opt/airflow/airflow/etlFolderProd/queries/customQueries/MOCHECK.sql",
       "filterClause": "doctype = 8",
-      "filterClauseSlave": ["doctype = 8"],
-      "conflictExtra": ["doctype"],
+      "filterClauseSlave": "doctype = 8",
+      "conflictExtra": "doctype",
       "conflictWhere": "doctype = 8",
       "mode": "iud"
     },
@@ -132,8 +132,8 @@
       "structureSlave": "/opt/airflow/airflow/etlFolderProd/structures/MOCHECK/mocheck.json",
       "selectSql": "/opt/airflow/airflow/etlFolderProd/queries/customQueries/MOCHECK.sql",
       "filterClause": "doctype = 9",
-      "filterClauseSlave": ["doctype = 9"],
-      "conflictExtra": ["doctype"],
+      "filterClauseSlave": "doctype = 9",
+      "conflictExtra": "doctype",
       "conflictWhere": "doctype = 9",
       "mode": "iud"
     },

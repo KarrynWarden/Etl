@@ -53,7 +53,7 @@ from Functions.updateLog import UpdateLog
 from Functions.do_etl import (
     _connect, _isPost, _pickSql, _loadStructure, _normalizePeriod,
     _appendFilter, _filterEtlFields, _bindName, _buildFieldsStr,
-    _executeQuery, _configKey, classifyError,
+    _executeQuery, _configKey, classifyError, _asAndClause,
 )
 from Src.generalQueries import (
     structureCheckOrclSql,
@@ -139,9 +139,10 @@ def _buildSlaveSql(cfg, structSlave):
     fieldsStr = _buildFieldsStr(cfg["dbSlave"], structSlave, cfg["slavePeriodColumn"])
     cond = _periodCond(cfg["dbSlave"], cfg["slavePeriodColumn"], cfg["truncatePeriod"])
     # filterClauseSlave (тот же doctype-срез, что и при переносе) — на ведомую.
-    filterClauseSlave = cfg.get("filterClauseSlave")
+    # В скобках на случай OR внутри (склеиваем с условием по периоду через AND).
+    filterClauseSlave = _asAndClause(cfg.get("filterClauseSlave"))
     if filterClauseSlave:
-        cond += " AND " + " AND ".join(filterClauseSlave)
+        cond += f" AND ({filterClauseSlave})"
     tpl = _pickSql(cfg["dbSlave"], auditRecordsSlavePostSql, auditRecordsSlaveOrclSql)
     return tpl.format(fields_str=fieldsStr, tablename=cfg["tableNameSlave"],
                       period_cond=cond)

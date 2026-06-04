@@ -255,6 +255,32 @@ def _bindList(values, prefix):
     return placeholders, params
 
 
+def _asAndClause(value):
+    """filterClause / filterClauseSlave / filterClauseMaster: принять строку
+    ИЛИ список и вернуть единый предикат-строку.
+
+    Канон — строка: между частями условия может быть и OR, и удобно видеть
+    условие целиком. Список (легаси-форма) объединяется через AND. Пусто -> None.
+    ВНИМАНИЕ: вызывающий код, приклеивая результат к своим условиям через AND,
+    оборачивает его в скобки — иначе внутренний OR распарсится неверно.
+    """
+    if not value:
+        return None
+    if isinstance(value, (list, tuple)):
+        return " AND ".join(value)
+    return value
+
+
+def _asColumns(value):
+    """conflictExtra: принять строку 'a, b' ИЛИ список ['a', 'b'] и вернуть
+    строку 'a, b' (или '' если пусто)."""
+    if not value:
+        return ""
+    if isinstance(value, (list, tuple)):
+        return ", ".join(value)
+    return value
+
+
 def _appendFilter(sql, filterClause):
     """Добавить пользовательский WHERE-фильтр к подзапросу.
 
@@ -262,6 +288,7 @@ def _appendFilter(sql, filterClause):
     нескольких логических групп (mocheck doctype-split): selectSql у них
     общий, а отличается только дополнительный фильтр.
     """
+    filterClause = _asAndClause(filterClause)
     if not filterClause:
         return sql
     # Допускаем как полную форму "WHERE x = y", так и краткую "x = y".
@@ -307,7 +334,8 @@ def _buildUpsertSql(dbSlave, tableNameSlave, structSlave,
                 columns_str=columnsStr,
                 values_str=valuesStr,
             )
-        primaryStr = ", ".join(pkCols + list(conflictExtra or ()))
+        extra = _asColumns(conflictExtra)
+        primaryStr = ", ".join(pkCols) + (f", {extra}" if extra else "")
         updateStr = ", ".join(f"{c} = EXCLUDED.{c}" for c in columns)
         whereClause = f" WHERE {conflictWhere}" if conflictWhere else ""
         return upsertPostSql.format(
@@ -332,7 +360,9 @@ def _buildUpsertSql(dbSlave, tableNameSlave, structSlave,
             pkCondParts.append(f"{name} = {placeholder}")
         else:
             updateParts.append(f"{name} = {placeholder}")
-    pkCondParts.extend(filterClauseSlave or [])
+    fcs = _asAndClause(filterClauseSlave)
+    if fcs:
+        pkCondParts.append(f"({fcs})")
     return upsertOrclSql.format(
         tablename=tableNameSlave,
         primary_cond=" AND ".join(pkCondParts),
@@ -349,8 +379,9 @@ def _buildDeleteByIdSql(dbSlave, tableNameSlave, pkCols, filterClauseSlave):
         f"{c} = " + _bindName(dbSlave, f"id{i}")
         for i, c in enumerate(pkCols)
     )
-    if filterClauseSlave:
-        primaryCond += " AND " + " AND ".join(filterClauseSlave)
+    fcs = _asAndClause(filterClauseSlave)
+    if fcs:
+        primaryCond += f" AND ({fcs})"
     sqlTpl = _pickSql(dbSlave, deleteByIdPostSql, deleteByIdOrclSql)
     return sqlTpl.format(tablename=tableNameSlave, primary_cond=primaryCond)
 
@@ -373,8 +404,9 @@ def _buildSlavePeriodsByIdSql(dbSlave, tableNameSlave, pkColsSlave,
         f"{c} = " + _bindName(dbSlave, f"id{i}")
         for i, c in enumerate(pkColsSlave)
     )
-    if filterClauseSlave:
-        primaryCond += " AND " + " AND ".join(filterClauseSlave)
+    fcs = _asAndClause(filterClauseSlave)
+    if fcs:
+        primaryCond += f" AND ({fcs})"
     sqlTpl = _pickSql(dbSlave, slavePeriodsByIdPostSql, slavePeriodsByIdOrclSql)
     return sqlTpl.format(period_expr=periodExpr, tablename=tableNameSlave,
                          primary_cond=primaryCond)
@@ -392,8 +424,9 @@ def _buildDeletePeriodSql(dbSlave, tableNameSlave, slavePeriodColumn,
         periodExpr = slavePeriodColumn
 
     cond = f"{periodExpr} = " + _bindName(dbSlave, "createdate")
-    if filterClauseSlave:
-        cond += " AND " + " AND ".join(filterClauseSlave)
+    fcs = _asAndClause(filterClauseSlave)
+    if fcs:
+        cond += f" AND ({fcs})"
     sqlTpl = _pickSql(dbSlave, deletePeriodPostSql, deletePeriodOrclSql)
     return sqlTpl.format(tablename=tableNameSlave, period_cond=cond)
 
@@ -426,8 +459,9 @@ def _buildRecordByIdSql(dbMaster, selectSql, structMaster, pkColsMaster,
         f"p.{c} = " + _bindName(dbMaster, f"id{i}")
         for i, c in enumerate(pkColsMaster)
     )
-    if filterClauseMaster:
-        primaryCond += " AND " + " AND ".join(filterClauseMaster)
+    fcm = _asAndClause(filterClauseMaster)
+    if fcm:
+        primaryCond += f" AND ({fcm})"
     sqlTpl = _pickSql(dbMaster, recordSelectByIdPostSql, recordSelectByIdOrclSql)
     return sqlTpl.format(
         fields_str=fieldsStr,
@@ -457,8 +491,9 @@ def _buildRecordGroupSql(dbMaster, selectSql, structMaster, periodColumn,
         periodExpr = f"p.{periodColumn}"
 
     cond = f"{periodExpr} = " + _bindName(dbMaster, "createdate")
-    if filterClauseMaster:
-        cond += " AND " + " AND ".join(filterClauseMaster)
+    fcm = _asAndClause(filterClauseMaster)
+    if fcm:
+        cond += f" AND ({fcm})"
     sqlTpl = _pickSql(dbMaster, recordSelectGroupPostSql, recordSelectGroupOrclSql)
     return sqlTpl.format(
         fields_str=fieldsStr,
@@ -1005,7 +1040,7 @@ def _selectSlavePeriods(cursor, dbSlave, tableNameSlave,
                         slavePeriodColumn, filterClauseSlave):
     """Уникальные (createdate, max(lastupdate)) на стороне ведомой."""
     sqlTpl = _pickSql(dbSlave, dateSelectSlavePostSql, dateSelectSlaveOrclSql)
-    filterSql = " AND ".join(filterClauseSlave or ["1=1"])
+    filterSql = _asAndClause(filterClauseSlave) or "1=1"
     sql = sqlTpl.format(
         tablename=tableNameSlave,
         period_col=slavePeriodColumn,
