@@ -519,6 +519,12 @@ def iterAuditLines():
     for key, entry in data.items():
         if not isinstance(entry, dict):
             continue
+        # skipAudit: линия временно не проверяется (таблица «на ремонте» /
+        # даг ещё не готов). Задачу аудита вообще не создаём — не забыть снять
+        # пометку, когда линия будет готова.
+        if entry.get("skipAudit"):
+            logging.info("AuditDag: пропускаю ключ '%s' (skipAudit=true)", key)
+            continue
         dbMaster, dbSlave = key[-8:-4], key[-4:]
         if dbMaster not in ("Post", "Orcl") or dbSlave not in ("Post", "Orcl"):
             logging.warning("AuditDag: пропускаю ключ '%s' — не распознано "

@@ -170,13 +170,14 @@
         "truncatePeriod": true
     },
     "etljobsOrclOrcl": {
-      "_doc": "oracle->oracle (на случай миграции внутри одной СУБД).",
+      "_doc": "oracle->oracle (на случай миграции внутри одной СУБД). skipAudit: даг неактуален, аудит по нему пока не запускаем.",
       "tableNameMaster": "etl_jobs_src",
       "tableNameSlave": "etl_jobs_dst",
       "structureMaster": "/opt/airflow/airflow/etlFolder/structures/etl_jobs_orcl.json",
       "structureSlave": "/opt/airflow/airflow/etlFolder/structures/etl_jobs_orcl.json",
       "periodColumn": "period",
-      "mode": "iud"
+      "mode": "iud",
+      "skipAudit": true
     },
     "LOG_EINDPROLONGOrclPost": {
       "tableNameSlave": "log_eindprolong",
