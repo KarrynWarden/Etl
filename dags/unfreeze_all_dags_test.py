@@ -37,6 +37,29 @@ DEFAULT_ARGS = {
 TARGET_POOL = "Test"
 
 
+def _readXcom(session, dag_id, task_id, run_id, key):
+    """Прочитать XCom-значение задачи (error_class / frozen и т.п.)."""
+    row = (
+        session.query(XCom.value)
+        .filter(
+            XCom.dag_id == dag_id,
+            XCom.task_id == task_id,
+            XCom.run_id == run_id,
+            XCom.key == key,
+        )
+        .first()
+    )
+    if not row or row.value is None:
+        return None
+    val = row.value
+    if isinstance(val, bytes):
+        val = val.decode("utf-8")
+    try:
+        return json.loads(val) if isinstance(val, str) else val
+    except Exception:
+        return str(val)
+
+
 def _getAllFatalDagRuns(**context):
     """Найти ВСЕ DAG runs с fatal-ошибками (не только активные).
 
@@ -117,72 +140,52 @@ def _getAllFatalDagRuns(**context):
 
             logger.info(f"   ℹ️ Задач в пуле {TARGET_POOL}: {len(pool_tasks)}")
 
-            # Проверяем каждую задачу
-            has_fatal = False
-            has_record = False
-            has_retryable = False
-            has_other_errors = False
+            # Проверяем каждую задачу. Ключевой признак заморозки — XCom
+            # frozen=True (его ставит _markFrozen при заморозке линии), а НЕ
+            # обязательно FAILED+fatal: каскадные заморозки после рестартов
+            # airflow приходят как SKIPPED+frozen и могут нести error_class=
+            # 'retryable'. Чистим всё, что заморожено и ждёт человека; оставляем
+            # только реальные «живые» проблемы (record / незамороженный
+            # retryable / FAILED без класса).
+            has_frozen = False         # заморожено, ждёт человека -> чистим
+            has_record = False         # реальная проблема данных -> оставляем
+            has_retryable_live = False  # ещё ретраится (не заморожено) -> оставляем
+            has_other_errors = False   # FAILED без класса и не заморожено
 
             for task_id, state, pool in pool_tasks:
-                # Получаем error_class
-                xcom_error = (
-                    session.query(XCom.value)
-                    .filter(
-                        XCom.dag_id == dag_id,
-                        XCom.task_id == task_id,
-                        XCom.run_id == run_id,
-                        XCom.key == 'error_class',
-                    )
-                    .first()
-                )
+                error_class = _readXcom(session, dag_id, task_id, run_id, 'error_class')
+                frozen_mark = bool(_readXcom(session, dag_id, task_id, run_id, 'frozen'))
 
-                error_class = None
-                if xcom_error and xcom_error.value:
-                    val = xcom_error.value
-                    if isinstance(val, bytes):
-                        val = val.decode('utf-8')
-                    try:
-                        if isinstance(val, str):
-                            error_class = json.loads(val)
-                        else:
-                            error_class = val
-                    except:
-                        error_class = str(val)
-
-                # Классифицируем ошибку
-                if error_class == 'fatal':
-                    has_fatal = True
-                    logger.info(f"   ├─ [{task_id}]: FATAL ✅")
-                elif error_class == 'record':
+                if error_class == 'record':
                     has_record = True
                     logger.info(f"   ├─ [{task_id}]: RECORD ⚠️ (оставляем)")
+                elif frozen_mark or error_class == 'fatal':
+                    has_frozen = True
+                    logger.info(f"   ├─ [{task_id}]: FROZEN/FATAL ✅ "
+                                f"(class={error_class}, frozen={frozen_mark})")
                 elif error_class == 'retryable':
-                    has_retryable = True
-                    logger.info(f"   ├─ [{task_id}]: RETRYABLE ⚠️ (оставляем)")
+                    has_retryable_live = True
+                    logger.info(f"   ├─ [{task_id}]: RETRYABLE ⚠️ (ещё ретраится, оставляем)")
                 elif state == State.FAILED:
                     has_other_errors = True
                     logger.info(f"   ├─ [{task_id}]: FAILED без error_class ⚠️")
-                elif state == State.SUCCESS:
-                    logger.info(f"   ├─ [{task_id}]: SUCCESS ✓")
-                elif state == State.SKIPPED:
-                    logger.info(f"   ├─ [{task_id}]: SKIPPED")
                 else:
                     logger.info(f"   ├─ [{task_id}]: {state}")
 
-            # Решение: размораживаем только если ЕСТЬ fatal И НЕТ record/retryable
-            if has_fatal and not has_record and not has_retryable and not has_other_errors:
-                logger.info(f"   🎉 ПОДХОДИТ: Все ошибки fatal, размораживаем")
+            # Размораживаем, только если ЕСТЬ замороженные И НЕТ живых проблем.
+            if has_frozen and not has_record and not has_retryable_live and not has_other_errors:
+                logger.info(f"   🎉 ПОДХОДИТ: всё заморожено/решено, размораживаем")
                 candidates.append((dag_id, run_id))
             else:
                 reasons = []
-                if not has_fatal:
-                    reasons.append("нет fatal-ошибок")
+                if not has_frozen:
+                    reasons.append("нет замороженных задач")
                 if has_record:
                     reasons.append("есть record-ошибки")
-                if has_retryable:
-                    reasons.append("есть retryable-ошибки")
+                if has_retryable_live:
+                    reasons.append("есть незамороженные retryable")
                 if has_other_errors:
-                    reasons.append("есть другие ошибки")
+                    reasons.append("есть FAILED без класса")
                 logger.info(f"   ⛔ ОТКЛОНЕН: {', '.join(reasons)}")
 
         logger.info("-" * 80)

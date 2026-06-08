@@ -128,25 +128,26 @@ def _getActiveDagRunWithFatalErrors():
                 )
                 is_frozen = bool(frozen_record and frozen_record.value)
 
-                # Линия считается fatal-замороженной если:
-                # 1. state = skipped И frozen=True И error_class='fatal'
-                # 2. state = failed И error_class='fatal'
-                is_fatal_frozen = False
-
-                if state == State.SKIPPED and is_frozen and error_class == 'fatal':
-                    is_fatal_frozen = True
-                elif state == State.FAILED and error_class == 'fatal':
-                    is_fatal_frozen = True
-
-                if not is_fatal_frozen:
+                # Линия "заморожена и ждёт человека" если есть маркер frozen
+                # (его ставит _markFrozen) ИЛИ это FAILED+fatal. Класс
+                # retryable на ЗАМОРОЖЕННОЙ линии — каскадный артефакт после
+                # рестартов airflow, его тоже чистим. Реальную проблему данных
+                # (record) и незамороженные/живые ошибки — оставляем.
+                if error_class == 'record':
                     all_fatal = False
                     logging.debug(
-                        "Задача %s.%s (run=%s) не является fatal-замороженной: "
+                        "Задача %s.%s (run=%s): record — оставляем",
+                        dag_id, task_id, run_id
+                    )
+                elif is_frozen or error_class == 'fatal':
+                    fatal_tasks.append(task_id)
+                else:
+                    all_fatal = False
+                    logging.debug(
+                        "Задача %s.%s (run=%s) не заморожена: "
                         "state=%s, frozen=%s, error_class=%s",
                         dag_id, task_id, run_id, state, is_frozen, error_class
                     )
-                else:
-                    fatal_tasks.append(task_id)
 
             if all_fatal and fatal_tasks:
                 logging.info(

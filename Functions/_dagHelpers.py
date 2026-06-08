@@ -54,6 +54,15 @@ FREQUENT_BACKOFF_MIN = [1, 1]
 # Период перепроверки watcher'ом при удержании "бесконечного дага".
 WATCHER_RECHECK_SEC = 60
 
+# Watcher держит DAG-run сном; при перезапуске airflow он ловит SIGTERM и
+# падает. Чтобы удержание НЕ рвалось (иначе max_active_runs отпускает и
+# плодятся новые замороженные запуски), даём ему большой бюджет ретраев с
+# коротким фиксированным интервалом: каждый рестарт -> up_for_retry -> снова
+# держит. На исчерпание ушли бы тысячи рестартов. Сводный 🟥 (см. _freezeWatcher)
+# при этом бросает AirflowFailException и ретраи НЕ тратит.
+WATCHER_MAX_RETRIES = 10000
+WATCHER_RETRY_DELAY_SEC = 30
+
 # Пул ETL-переносов и его полный размер. Задача-замок etl_lock в аудит-DAG
 # занимает ВЕСЬ этот пул на время прогона аудита, поэтому ETL-переносы
 # (pool_slots=1) на это время не стартуют. САМИ аудит-линии идут в другом
@@ -638,11 +647,15 @@ def _freezeWatcher(retryMode):
                 time.sleep(WATCHER_RECHECK_SEC)
             logging.info("Watcher: линии разморожены — отпускаю DAG-run.")
             return
-        # 2) есть упавшие → сводный статус run'а 🟥
+        # 2) есть упавшие → сводный статус run'а 🟥.
+        # AirflowFailException (а не AirflowException): это терминальный 🟥, его
+        # НЕ нужно ретраить — иначе с большим WATCHER_MAX_RETRIES он бы крутился.
+        # SIGTERM же прилетает обычным AirflowException и уходит в ретрай (hold
+        # переживает рестарт).
         if _hasAnyFailed(context):
             failed = [tid for tid, st in _lineStates(context)
                       if st == State.FAILED]
-            raise AirflowException(
+            raise AirflowFailException(
                 f"В запуске есть упавшие линии: {', '.join(failed)}. "
                 f"Сводный статус — ошибка; ретраи и причина — в самих линиях."
             )
@@ -746,6 +759,10 @@ def addFreezeWatcher(lineTasks, retryMode="frequent"):
         provide_context=True,
         python_callable=_freezeWatcher(retryMode),
         trigger_rule="all_done",
+        # Переживать перезапуски airflow: SIGTERM -> up_for_retry -> снова держит.
+        retries=WATCHER_MAX_RETRIES,
+        retry_delay=dt.timedelta(seconds=WATCHER_RETRY_DELAY_SEC),
+        retry_exponential_backoff=False,
     )
     for task in lineTasks:
         task >> watcher
