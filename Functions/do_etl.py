@@ -42,6 +42,7 @@ from __future__ import annotations
 import datetime
 import logging
 from collections import defaultdict
+from decimal import Decimal
 
 import psycopg2
 import cx_Oracle
@@ -535,28 +536,182 @@ def _selectGroupsForMassUpdate(cursor, dbMaster, tableNameEtlJobs):
     )
 
 
-def _selectIudRecords(cursor, dbMaster, tableNameEtlJobs):
-    sqlTpl = _pickSql(dbMaster, selectEtlIudPostSql, selectEtlIudOrclSql)
-    #print('here is sqlTpl ', sqlTpl, tableNameEtlJobs)
-    return _executeQuery(cursor, sqlTpl, {"tablename": tableNameEtlJobs})
+def _selectIudWork(cursor, dbMaster, tableNameEtlJobs):
+    """Один запрос к журналу -> (iudRecords, distinctIds).
 
+    iudRecords  = [(id, idrw), ...] — все необработанные строки (для пометки
+                  isetl).
+    distinctIds = [(id, period, timeoper, oper), ...] — по одной на (period, id),
+                  последняя по timeoper операция (дедуп в Python).
 
-def _selectDistinctIds(cursor, dbMaster, idLogs):
-    """По списку idrw из etl_log_iud_row — уникальные (id, period, oper).
-
-    Postgres принимает массив через `= ANY(%(idlogs)s)` — psycopg2 это
-    биндит как обычный list. Oracle с cx_Oracle такое не умеет
-    (ORA-01484), поэтому для него разворачиваем IN-список в N именованных
-    плейсхолдеров.
+    Заменяет связку _selectIudRecords + _selectDistinctIds: без второго запроса
+    и без IN-списка по idrw — поэтому при тысячах изменений нет ORA-01795
+    (max 1000 expressions in a list).
     """
-    if not idLogs:
+    sqlTpl = _pickSql(dbMaster, selectEtlIudPostSql, selectEtlIudOrclSql)
+    rows = _executeQuery(cursor, sqlTpl, {"tablename": tableNameEtlJobs})
+    iudRecords = [(r[0], r[1]) for r in rows]
+    # rows идут ORDER BY timeoper (возр.) — перезапись оставляет последнюю
+    # операцию для каждой пары (period, id).
+    latest = {}
+    for rid, _idrw, period, timeoper, oper in rows:
+        latest[(period, rid)] = (timeoper, oper)
+    distinctIds = [(rid, period, timeoper, oper)
+                   for (period, rid), (timeoper, oper) in latest.items()]
+    return iudRecords, distinctIds
+
+
+# ----------------------------------------------------------------------------
+#         Батч-выборка строк ведущей/периодов ведомой по набору id
+# ----------------------------------------------------------------------------
+
+def _chunks(seq, size=1000):
+    """Резать список на куски (Oracle: max 1000 выражений в IN)."""
+    for i in range(0, len(seq), size):
+        yield seq[i:i + size]
+
+
+def _bindInList(dbType, values, prefix):
+    """(in_clause, params) для IN-выражения в нужном paramstyle.
+
+    Postgres — %(p0)s,..., Oracle — :p0,...; значения биндятся по одному
+    (как в одиночном `col = :id`), поэтому неявное приведение типа к колонке
+    работает так же и индекс используется.
+    """
+    if _isPost(dbType):
+        placeholders = ", ".join(f"%({prefix}{i})s" for i in range(len(values)))
+    else:
+        placeholders = ", ".join(f":{prefix}{i}" for i in range(len(values)))
+    params = {f"{prefix}{i}": v for i, v in enumerate(values)}
+    return placeholders, params
+
+
+def _idKey(value):
+    """Канонический ключ для сопоставления id из журнала (строка) и значения
+    PK из строки выборки (int/Decimal/float/строка). Целые числа — без дробной
+    части, чтобы '123' == 123 == Decimal('123')."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return str(int(value)) if value.is_integer() else repr(value)
+    if isinstance(value, Decimal):
+        return (str(value.to_integral_value())
+                if value == value.to_integral_value() else str(value))
+    return str(value).strip()
+
+
+def _recIdKey(recId, pkCols):
+    """Ключ для поиска в словарях префетча: одиночный PK нормализуем (_idKey),
+    составной оставляем строкой 'pk1/pk2' как есть."""
+    return _idKey(recId) if len(pkCols) == 1 else recId
+
+
+def _selectMasterRowsByIds(ctx, cfg, ids):
+    """Строки ведущей для набора id — батч-запросами (IN, чанки по 1000)
+    вместо запроса на каждый id. Возвращает плоский список строк."""
+    ids = list(ids)
+    if not ids:
         return []
-    if _isPost(dbMaster):
-        return _executeQuery(cursor, selectDistinctPostSql,
-                             {"idlogs": idLogs})
-    inClause, params = _bindList(idLogs, "id")
-    sql = selectDistinctOrclSql.format(in_clause=inClause)
-    return _executeQuery(cursor, sql, params)
+    dbMaster = cfg["dbMaster"]
+    pkCols = ctx["pkColsMaster"]
+    fieldsStr = _buildFieldsStr(dbMaster, ctx["structMaster"], cfg["periodColumn"])
+    selectSql = ctx["selectSql"]
+    fcm = _asAndClause(cfg.get("filterClauseMaster"))
+    filterParams = cfg.get("filterParams") or {}
+    tpl = _pickSql(dbMaster, recordSelectByIdPostSql, recordSelectByIdOrclSql)
+    cursor = ctx["cursorMaster"]
+    rows = []
+
+    if len(pkCols) == 1:
+        pk = pkCols[0]
+        for chunk in _chunks(ids):
+            inClause, params = _bindInList(dbMaster, chunk, "v")
+            cond = f"p.{pk} IN ({inClause})"
+            if fcm:
+                cond += f" AND ({fcm})"
+            params.update(filterParams)
+            cursor.execute(tpl.format(fields_str=fieldsStr, select_sql=selectSql,
+                                      primary_cond=cond), params)
+            rows.extend(cursor.fetchall())
+    else:
+        # Составной PK: IN по кортежам неудобен — идём по одному (редкий случай).
+        for recId in ids:
+            cond = " AND ".join(f"p.{c} = " + _bindName(dbMaster, f"id{i}")
+                                for i, c in enumerate(pkCols))
+            if fcm:
+                cond += f" AND ({fcm})"
+            params = {**_splitPkValue(recId, len(pkCols)), **filterParams}
+            cursor.execute(tpl.format(fields_str=fieldsStr, select_sql=selectSql,
+                                      primary_cond=cond), params)
+            rows.extend(cursor.fetchall())
+    return rows
+
+
+def _fetchMasterRowsById(ctx, cfg, ids):
+    """{ключ -> [строки ведущей]} для набора id. Ключ совместим с _recIdKey."""
+    pkCols = ctx["pkColsMaster"]
+    grouped = defaultdict(list)
+    if len(pkCols) == 1:
+        rows = _selectMasterRowsByIds(ctx, cfg, ids)
+        colsLower = [c.lower() for c in _columnNames(ctx["structMaster"])]
+        pkIdx = colsLower.index(pkCols[0].lower())
+        for r in rows:
+            grouped[_idKey(r[pkIdx])].append(r)
+    else:
+        for recId in ids:
+            grouped[recId] = _selectMasterRowsByIds(ctx, cfg, [recId])
+    return grouped
+
+
+def _fetchSlavePeriodsById(cursorSlave, cfg, ctx, ids):
+    """{ключ -> set(периодов)} — DISTINCT период ведомой по id, батч-запросами.
+
+    Нужно delete_insert: реальные затронутые группы etl_jobs со стороны
+    ведомой (до удаления). Раньше был SELECT на каждый id."""
+    ids = list(ids)
+    if not ids:
+        return {}
+    dbSlave = cfg["dbSlave"]
+    pkCols = ctx["pkColsSlave"]
+    tableNameSlave = cfg["tableNameSlave"]
+    fcs = _asAndClause(cfg.get("filterClauseSlave"))
+    if cfg.get("truncatePeriod"):
+        periodExpr = (f"DATE({cfg['slavePeriodColumn']})" if _isPost(dbSlave)
+                      else f"TRUNC({cfg['slavePeriodColumn']})")
+    else:
+        periodExpr = cfg["slavePeriodColumn"]
+    grouped = defaultdict(set)
+
+    def _run(idChunk):
+        inClause, params = _bindInList(dbSlave, idChunk, "v")
+        pk = pkCols[0]
+        cond = f"{pk} IN ({inClause})"
+        if fcs:
+            cond += f" AND ({fcs})"
+        sql = (f"SELECT DISTINCT {pk} AS idv, {periodExpr} AS createdate "
+               f"FROM {tableNameSlave} WHERE {cond}")
+        cursorSlave.execute(sql, params)
+        for idv, period in cursorSlave.fetchall():
+            p = _normalizePeriod(period)
+            if p is not None:
+                grouped[_idKey(idv)].add(p)
+
+    if len(pkCols) == 1:
+        for chunk in _chunks(ids):
+            _run(chunk)
+    else:
+        # составной PK — по одному через готовый per-id SQL
+        for recId in ids:
+            cursorSlave.execute(ctx["slavePeriodsByIdSql"],
+                                _splitPkValue(recId, len(pkCols)))
+            acc = {p for p in (_normalizePeriod(r[0])
+                               for r in cursorSlave.fetchall()) if p is not None}
+            grouped[recId] = acc
+    return grouped
 
 
 def _markEtlIud(cursor, dbMaster, idrws, isetl):
@@ -703,6 +858,16 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords):
     logger.info("Старт индивидуальных обновлений: %d записей", len(distinctIds))
     groupsData = _groupSummary(distinctIds)
 
+    # idrw по recId (для пометки isetl) — O(1) вместо обхода iudRecords на каждый id.
+    idrwsByRecId = defaultdict(list)
+    for rid, idrw in iudRecords:
+        idrwsByRecId[rid].append(idrw)
+    # Префетч строк ведущей по ВСЕМ IU-id одним батчем (IN, чанки по 1000),
+    # а не SELECT на каждую запись — главное ускорение при тысячах изменений.
+    iuIds = [e[0] for e in distinctIds if e[3] == "IU"]
+    masterById = _fetchMasterRowsById(ctx, cfg, iuIds)
+    pkKey = lambda recId: _recIdKey(recId, ctx["pkColsMaster"])
+
     conSlave = None
     try:
         conSlave = _connect(dbSlave)
@@ -729,10 +894,8 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords):
                 pkParams = _splitPkValue(recId, len(ctx["pkColsMaster"]))
 
                 if oper == "IU":
-                    # ИЗМЕНЕНИЕ: fetchall() вместо fetchone()
-                    cursorMaster.execute(ctx["recordByIdSql"],
-                                         {**pkParams, **(cfg.get("filterParams") or {})})
-                    rowsDb = cursorMaster.fetchall()
+                    # строки уже выбраны батчем — берём из префетча
+                    rowsDb = masterById.get(pkKey(recId), [])
 
                     if not rowsDb:
                         logger.warning(
@@ -761,7 +924,7 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords):
                 conSlave.commit()
 
                 # Помечаем записи в etl_log_iud_row как обработанные
-                idrws = [b for a, b in iudRecords if a == recId]
+                idrws = idrwsByRecId.get(recId, [])
                 _markEtlIud(cursorMaster, dbMaster, idrws, 1)
                 conMaster.commit()
 
@@ -784,7 +947,7 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords):
                     "RECORD-ошибка по id=%s, паркую isetl=-1: %s",
                     recId, err,
                 )
-                idrws = [b for a, b in iudRecords if a == recId]
+                idrws = idrwsByRecId.get(recId, [])
                 _markEtlIud(cursorMaster, dbMaster, idrws, -1)
                 conMaster.commit()
                 recordErrors.append((recId, period, str(err)))
@@ -865,6 +1028,16 @@ def _processDeleteInsert(cfg, ctx, distinctIds, iudRecords):
     periodCount = defaultdict(int)
     recordErrors = []  # [(recId, errStr), ...]
 
+    # idrw по recId (для пометки isetl) — O(1).
+    idrwsByRecId = defaultdict(list)
+    for rid, idrw in iudRecords:
+        idrwsByRecId[rid].append(idrw)
+    # Префетч строк ведущей по ВСЕМ IU-id одним батчем (вместо SELECT на id).
+    iuIds = [e[0] for e in distinctIds if e[3] == "IU"]
+    masterById = _fetchMasterRowsById(ctx, cfg, iuIds)
+    mKey = lambda recId: _recIdKey(recId, ctx["pkColsMaster"])
+    sKey = lambda recId: _recIdKey(recId, ctx["pkColsSlave"])
+
     conSlave = None
     try:
         conSlave = _connect(dbSlave)
@@ -882,30 +1055,24 @@ def _processDeleteInsert(cfg, ctx, distinctIds, iudRecords):
                 f"FLK: структура ведомой {cfg['tableNameSlave']} не совпадает с json-эталоном"
             )
 
+        # Префетч периодов ведомой по ВСЕМ id одним батчем (до удаления),
+        # вместо SELECT DISTINCT createdate на каждый id.
+        allIds = [e[0] for e in distinctIds]
+        slavePeriodsById = _fetchSlavePeriodsById(cursorSlave, cfg, ctx, allIds)
+
         for entry in distinctIds:
             recId, _logPeriod, _timeoper, oper = entry[0], entry[1], entry[2], entry[3]
-            affected = set()
+            # реальные периоды удаляемых строк — из префетча ведомой (до удаления)
+            affected = set(slavePeriodsById.get(sKey(recId)) or ())
             try:
                 pkParamsSlave = _splitPkValue(recId, len(ctx["pkColsSlave"]))
 
-                # 1) реальные периоды удаляемых строк — из ведомой, ДО удаления
-                cursorSlave.execute(ctx["slavePeriodsByIdSql"], pkParamsSlave)
-                for row in cursorSlave.fetchall():
-                    p = _normalizePeriod(row[0])
-                    if p is not None:
-                        affected.add(p)
-
-                # 2) удалить ВСЕ строки этого idrw в ведомой
+                # удалить ВСЕ строки этого idrw в ведомой
                 cursorSlave.execute(ctx["deleteByIdSql"], pkParamsSlave)
 
-                # 3) для IU — залить актуальные строки ведущей
+                # для IU — залить актуальные строки ведущей (из префетча)
                 if oper == "IU":
-                    pkParamsMaster = _splitPkValue(recId, len(ctx["pkColsMaster"]))
-                    cursorMaster.execute(
-                        ctx["recordByIdSql"],
-                        {**pkParamsMaster, **(cfg.get("filterParams") or {})},
-                    )
-                    rowsDb = cursorMaster.fetchall()
+                    rowsDb = masterById.get(mKey(recId), [])
                     for rowDb in rowsDb:
                         if _isPost(dbSlave):
                             cursorSlave.execute(ctx["upsertSql"], rowDb)
@@ -926,7 +1093,7 @@ def _processDeleteInsert(cfg, ctx, distinctIds, iudRecords):
 
                 conSlave.commit()
 
-                idrws = [b for a, b in iudRecords if a == recId]
+                idrws = idrwsByRecId.get(recId, [])
                 _markEtlIud(cursorMaster, dbMaster, idrws, 1)
                 conMaster.commit()
 
@@ -942,7 +1109,7 @@ def _processDeleteInsert(cfg, ctx, distinctIds, iudRecords):
                     raise
                 logger.error("RECORD-ошибка idrw=%s, паркую isetl=-1: %s",
                              recId, err)
-                idrws = [b for a, b in iudRecords if a == recId]
+                idrws = idrwsByRecId.get(recId, [])
                 _markEtlIud(cursorMaster, dbMaster, idrws, -1)
                 conMaster.commit()
                 recordErrors.append((recId, str(err)))
@@ -1407,15 +1574,14 @@ def _run(cfg):
             return
 
         # 7. Точечные обновления через etl_log_iud_row (mode='iud')
-        iudRecords = _selectIudRecords(cursorMaster, dbMaster, tableNameEtlJobs)
+        iudRecords, distinctIds = _selectIudWork(
+            cursorMaster, dbMaster, tableNameEtlJobs,
+        )
         if not iudRecords:
             logger.info("В etl_log_iud_row для %s ничего нет", tableNameEtlJobs)
             if not groups:
                 raise AirflowSkipException
             return
-        distinctIds = _selectDistinctIds(
-            cursorMaster, dbMaster, [r[1] for r in iudRecords],
-        )
         if mode == "delete_insert":
             _processDeleteInsert(cfg, ctx, distinctIds, iudRecords)
         else:
