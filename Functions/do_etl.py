@@ -610,9 +610,11 @@ def _recIdKey(recId, pkCols):
     return _idKey(recId) if len(pkCols) == 1 else recId
 
 
-def _selectMasterRowsByIds(ctx, cfg, ids):
-    """Строки ведущей для набора id — батч-запросами (IN, чанки по 1000)
-    вместо запроса на каждый id. Возвращает плоский список строк."""
+def _masterRowsInChunks(ctx, cfg, ids):
+    """Строки ведущей для набора id IN-запросами чанками по 1000 (fallback и
+    путь для составного PK). Минус: тяжёлый исходник (UNION в MOCHECK.sql)
+    пересчитывается на КАЖДЫЙ чанк — для тысяч id медленно. Быстрый путь
+    (исходник считается 1-2 раза) — в _selectMasterRowsByIds."""
     ids = list(ids)
     if not ids:
         return []
@@ -648,6 +650,81 @@ def _selectMasterRowsByIds(ctx, cfg, ids):
             cursor.execute(tpl.format(fields_str=fieldsStr, select_sql=selectSql,
                                       primary_cond=cond), params)
             rows.extend(cursor.fetchall())
+    return rows
+
+
+def _columnType(jsonStruct, name):
+    nl = name.lower()
+    for f in jsonStruct:
+        if f[0].lower() == nl:
+            return f[1] or ""
+    return ""
+
+
+def _isNumericType(dataType):
+    t = (dataType or "").upper()
+    return any(k in t for k in ("NUMBER", "NUMERIC", "INT", "DECIMAL",
+                                "FLOAT", "DOUBLE", "REAL"))
+
+
+# SYS.ODCINUMBERLIST/ODCIVARCHAR2LIST — VARRAY(32767); берём с запасом.
+_ORA_COLL_MAX = 30000
+
+
+def _selectMasterRowsByIds(ctx, cfg, ids):
+    """Строки ведущей для набора id, считая тяжёлый исходник минимум раз.
+
+    Postgres: ОДИН запрос `pk = ANY(:ids)` (без лимита на размер).
+    Oracle: `pk IN (TABLE(:ids))` через табличную коллекцию SYS.ODCI*LIST,
+    чанками до 32767 элементов — для 42k id это 2 прохода исходника вместо
+    ~43 (по проходу на каждую 1000 при IN-списке). При недоступности типа
+    коллекции — fallback на IN-чанки. Составной PK — тоже через IN-чанки.
+    """
+    ids = list(ids)
+    if not ids:
+        return []
+    dbMaster = cfg["dbMaster"]
+    pkCols = ctx["pkColsMaster"]
+    if len(pkCols) != 1:
+        return _masterRowsInChunks(ctx, cfg, ids)
+
+    pk = pkCols[0]
+    numeric = _isNumericType(_columnType(ctx["structMaster"], pk))
+    fieldsStr = _buildFieldsStr(dbMaster, ctx["structMaster"], cfg["periodColumn"])
+    selectSql = ctx["selectSql"]
+    fcm = _asAndClause(cfg.get("filterClauseMaster"))
+    filterParams = cfg.get("filterParams") or {}
+    tpl = _pickSql(dbMaster, recordSelectByIdPostSql, recordSelectByIdOrclSql)
+    cursor = ctx["cursorMaster"]
+
+    if _isPost(dbMaster):
+        arr = [int(i) for i in ids] if numeric else [str(i) for i in ids]
+        cond = f"p.{pk} = ANY(%(ids)s)"
+        if fcm:
+            cond += f" AND ({fcm})"
+        cursor.execute(tpl.format(fields_str=fieldsStr, select_sql=selectSql,
+                                  primary_cond=cond), {"ids": arr, **filterParams})
+        return cursor.fetchall()
+
+    # Oracle — табличная коллекция (исходник считается 1 раз на чанк <=32767)
+    con = ctx["conMaster"]
+    typeName = "SYS.ODCINUMBERLIST" if numeric else "SYS.ODCIVARCHAR2LIST"
+    try:
+        collType = con.gettype(typeName)
+    except Exception as err:
+        logger.warning("Коллекция %s недоступна (%s) — fallback на IN-чанки",
+                       typeName, err)
+        return _masterRowsInChunks(ctx, cfg, ids)
+    cond = f"p.{pk} IN (SELECT column_value FROM TABLE(:ids))"
+    if fcm:
+        cond += f" AND ({fcm})"
+    sql = tpl.format(fields_str=fieldsStr, select_sql=selectSql, primary_cond=cond)
+    rows = []
+    for chunk in _chunks(ids, _ORA_COLL_MAX):
+        obj = collType.newobject()
+        obj.extend([int(i) for i in chunk] if numeric else [str(i) for i in chunk])
+        cursor.execute(sql, {"ids": obj, **filterParams})
+        rows.extend(cursor.fetchall())
     return rows
 
 
