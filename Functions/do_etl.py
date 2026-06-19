@@ -96,8 +96,6 @@ from Src.generalQueries import (
     etlUpdatePostSql,
     etlErrorOrclSql,
     etlErrorPostSql,
-    newDatesOrclSql,
-    newDatesPostSql,
     registerPeriodOrclSql,
     registerPeriodPostSql,
     # section_compare (mocheck / medree)
@@ -510,39 +508,16 @@ def _buildRecordGroupSql(dbMaster, selectSql, structMaster, periodColumn,
 #                              Группа ↔ периоды
 # ----------------------------------------------------------------------------
 
-def _registerNewPeriods(cursor, dbMaster, sourceFromClause, tableNameEtlJobs,
-                        periodColumn):
-    """Добавить в etl_jobs ВСЕ группы (createdate) источника, которых ещё нет.
-
-    Сканирует источник целиком (тяжёлый UNION в mocheck) ради DISTINCT
-    createdate — поэтому дорогой. Используется только режимом
-    section_compare, который ищет группы сравнением master/slave и
-    рассчитывает на то, что все периоды источника уже есть в etl_jobs.
-
-    Для iud/delete_insert полный скан не нужен: новые группы дат появляются
-    только вместе с событиями etl_log_iud_row, поэтому там регистрируем
-    лишь реально затронутые периоды через _registerAffectedPeriods.
-
-    sourceFromClause — то, что подставляется в FROM: имя таблицы либо
-    обёрнутый '(...) ' для произвольного SQL.
-    """
-    sqlTpl = _pickSql(dbMaster, newDatesPostSql, newDatesOrclSql)
-    cursor.execute(
-        sqlTpl.format(sourceFromClause, periodColumn),
-        {"tablename": tableNameEtlJobs},
-    )
-
-
 def _registerAffectedPeriods(cursor, dbMaster, periods, tableNameEtlJobs):
     """Добавить в etl_jobs затронутые переносом группы (period), которых ещё нет.
 
-    В отличие от _registerNewPeriods НЕ сканирует источник. Новый период
-    появляется только когда вставлена строка с новым createdate, а любая
-    такая вставка проходит через триггер и порождает событие в
-    etl_log_iud_row. Значит достаточно зарегистрировать периоды, реально
-    затронутые этим прогоном (для iud — периоды из лога, для delete_insert —
-    периоды из данных). Их на прогон единицы, поэтому дешёвый
-    INSERT ... WHERE NOT EXISTS на каждый дешевле полного прохода UNION.
+    НЕ сканирует источник. Регистрируем только реально переносимые периоды:
+    для iud — периоды из лога, для delete_insert — из данных, для
+    section_compare — группы needUpdate. Смысл: непереносившуюся группу
+    аудитить незачем (slave по ней пуст, отличие очевидно), а как только
+    ETL её перенесёт — она тут и появится, и аудит её подхватит. Периодов
+    на прогон единицы, поэтому дешёвый INSERT ... WHERE NOT EXISTS на каждый
+    дешевле полного прохода тяжёлого UNION источника.
     """
     if not periods:
         return
@@ -1493,6 +1468,14 @@ def _runSectionCompare(cfg, ctx, selectSql):
 
     logger.info("section_compare %s: %d групп для обновления: %s",
                 tableNameEtlJobs, len(needUpdate), sorted(needUpdate))
+    # Регистрируем в etl_jobs только реально переносимые группы (как в iud):
+    # непереносившуюся группу аудитить незачем — она заведомо различается,
+    # а после переноса аудит подхватит её сам.
+    _registerAffectedPeriods(
+        ctx["cursorMaster"], dbMaster,
+        [p for p in needUpdate if p is not None], tableNameEtlJobs,
+    )
+    ctx["conMaster"].commit()
     for period in sorted(needUpdate, key=lambda x: (x is None, x)):
         _processSectionGroup(cfg, ctx, period, idrwBefore)
 
@@ -1662,12 +1645,9 @@ def _run(cfg):
         # 6. Диспатч по режиму
         mode = cfg["mode"]
         if mode == "section_compare":
-            # Универсальный режим срезов для mocheck / medree. Ищет группы
-            # сравнением master/slave, поэтому ему нужны все периоды источника
-            # в etl_jobs — регистрируем полным сканом (как и раньше).
-            _registerNewPeriods(cursorMaster, dbMaster, selectSql,
-                                tableNameEtlJobs, cfg["periodColumn"])
-            conMaster.commit()
+            # Универсальный режим срезов для mocheck / medree. Группы ищет
+            # сравнением master/slave; в etl_jobs регистрирует только реально
+            # переносимые периоды (внутри _runSectionCompare).
             _runSectionCompare(cfg, ctx, selectSql)
             return
 

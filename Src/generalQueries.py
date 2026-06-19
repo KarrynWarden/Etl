@@ -61,8 +61,6 @@ etlUpdatePostSql = _q("general/newEtl/EtlUpdatePost.sql")
 etlUpdateOrclSql = _q("general/newEtl/EtlUpdateOrcl.sql")
 etlErrorPostSql = _q("general/newEtl/EtlErrorPost.sql")
 etlErrorOrclSql = _q("general/newEtl/EtlErrorOrcl.sql")
-newDatesPostSql = _q("general/newEtl/NewDatesPost.sql")
-newDatesOrclSql = _q("general/newEtl/NewDatesOrcl.sql")
 registerPeriodPostSql = _q("general/newEtl/RegisterPeriodPost.sql")
 registerPeriodOrclSql = _q("general/newEtl/RegisterPeriodOrcl.sql")
 
