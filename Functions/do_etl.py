@@ -98,6 +98,8 @@ from Src.generalQueries import (
     etlErrorPostSql,
     newDatesOrclSql,
     newDatesPostSql,
+    registerPeriodOrclSql,
+    registerPeriodPostSql,
     # section_compare (mocheck / medree)
     dateSelectMasterPostSql,
     dateSelectMasterOrclSql,
@@ -510,20 +512,44 @@ def _buildRecordGroupSql(dbMaster, selectSql, structMaster, periodColumn,
 
 def _registerNewPeriods(cursor, dbMaster, sourceFromClause, tableNameEtlJobs,
                         periodColumn):
-    """Добавить в etl_jobs группы (createdate), которых ещё нет.
+    """Добавить в etl_jobs ВСЕ группы (createdate) источника, которых ещё нет.
+
+    Сканирует источник целиком (тяжёлый UNION в mocheck) ради DISTINCT
+    createdate — поэтому дорогой. Используется только режимом
+    section_compare, который ищет группы сравнением master/slave и
+    рассчитывает на то, что все периоды источника уже есть в etl_jobs.
+
+    Для iud/delete_insert полный скан не нужен: новые группы дат появляются
+    только вместе с событиями etl_log_iud_row, поэтому там регистрируем
+    лишь реально затронутые периоды через _registerAffectedPeriods.
 
     sourceFromClause — то, что подставляется в FROM: имя таблицы либо
     обёрнутый '(...) ' для произвольного SQL.
     """
     sqlTpl = _pickSql(dbMaster, newDatesPostSql, newDatesOrclSql)
-    print(sqlTpl.format(sourceFromClause, periodColumn), ' and ', tableNameEtlJobs, tableNameEtlJobs.lower())
     cursor.execute(
         sqlTpl.format(sourceFromClause, periodColumn),
-        {
-            "tablename": tableNameEtlJobs,
-            #"tablenamelow": tableNameEtlJobs.lower(),
-        },
+        {"tablename": tableNameEtlJobs},
     )
+
+
+def _registerAffectedPeriods(cursor, dbMaster, periods, tableNameEtlJobs):
+    """Добавить в etl_jobs затронутые переносом группы (period), которых ещё нет.
+
+    В отличие от _registerNewPeriods НЕ сканирует источник. Новый период
+    появляется только когда вставлена строка с новым createdate, а любая
+    такая вставка проходит через триггер и порождает событие в
+    etl_log_iud_row. Значит достаточно зарегистрировать периоды, реально
+    затронутые этим прогоном (для iud — периоды из лога, для delete_insert —
+    периоды из данных). Их на прогон единицы, поэтому дешёвый
+    INSERT ... WHERE NOT EXISTS на каждый дешевле полного прохода UNION.
+    """
+    if not periods:
+        return
+    sqlTpl = _pickSql(dbMaster, registerPeriodPostSql, registerPeriodOrclSql)
+    for period in periods:
+        cursor.execute(sqlTpl,
+                       {"tablename": tableNameEtlJobs, "period": period})
 
 
 def _selectGroupsForMassUpdate(cursor, dbMaster, tableNameEtlJobs):
@@ -1030,9 +1056,10 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords):
                 recordErrors.append((recId, period, str(err)))
                 _markFailGroup(groupsData, period)
 
-        # Перепроверить новые createdate
-        _registerNewPeriods(cursorMaster, dbMaster, ctx["selectSql"],
-                            tableNameEtlJobs, cfg["periodColumn"])
+        # Зарегистрировать затронутые периоды (из лога) — без полного скана
+        # источника: новые createdate приходят только вместе с событиями iud.
+        _registerAffectedPeriods(cursorMaster, dbMaster,
+                                 [g[0] for g in groupsData], tableNameEtlJobs)
 
         for groupId, count, status in groupsData:
             if status == "ok":
@@ -1193,9 +1220,13 @@ def _processDeleteInsert(cfg, ctx, distinctIds, iudRecords):
                 # затронутые этой записью периоды — под подозрение (-1)
                 failPeriods |= affected
 
-        # зарегистрировать новые периоды (insert-side из ведущей) и обновить статус
-        _registerNewPeriods(cursorMaster, dbMaster, ctx["selectSql"],
-                            tableNameEtlJobs, cfg["periodColumn"])
+        # зарегистрировать реально затронутые периоды (из данных, без скана
+        # источника) — затем обновить статус
+        _registerAffectedPeriods(
+            cursorMaster, dbMaster,
+            [p for p in (okPeriods | failPeriods) if p is not None],
+            tableNameEtlJobs,
+        )
 
         for period in okPeriods - failPeriods:
             cursorMaster.execute(
@@ -1572,10 +1603,11 @@ def _run(cfg):
                 f"FLK: структура ведущего источника {tableNameEtlJobs} не совпадает"
             )
 
-        # 4. Регистрация новых периодов
-        _registerNewPeriods(cursorMaster, dbMaster, selectSql,
-                            tableNameEtlJobs, cfg["periodColumn"])
-        conMaster.commit()
+        # 4. Регистрацию периодов делаем адресно — только когда есть работа.
+        #    Холостые прогоны iud (а их большинство) больше не сканируют
+        #    источник: новые группы дат не могут появиться без событий в
+        #    etl_log_iud_row. section_compare регистрирует полным сканом ниже,
+        #    так как ищет группы сравнением master/slave.
 
         # 5. Подготовить контекст с готовыми SQL-шаблонами
         ctx = {
@@ -1630,7 +1662,12 @@ def _run(cfg):
         # 6. Диспатч по режиму
         mode = cfg["mode"]
         if mode == "section_compare":
-            # Универсальный режим срезов для mocheck / medree.
+            # Универсальный режим срезов для mocheck / medree. Ищет группы
+            # сравнением master/slave, поэтому ему нужны все периоды источника
+            # в etl_jobs — регистрируем полным сканом (как и раньше).
+            _registerNewPeriods(cursorMaster, dbMaster, selectSql,
+                                tableNameEtlJobs, cfg["periodColumn"])
+            conMaster.commit()
             _runSectionCompare(cfg, ctx, selectSql)
             return
 
