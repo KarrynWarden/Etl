@@ -19,19 +19,13 @@ python-dotenv — ещё и автоматически этим модулем.
                              библиотеки ищутся через LD_LIBRARY_PATH).
 """
 import os
-from pathlib import Path
 
 import psycopg2
 import cx_Oracle
 
-# Если установлен python-dotenv — подгрузим .env автоматически. Не обязателен:
-# при запуске через local/airflow-local.sh .env уже экспортирован в окружение.
-try:
-    from dotenv import load_dotenv
-
-    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
-except Exception:
-    pass
+# Загрузить .env (побочный эффект импорта) — реквизиты попадут в os.environ
+# в любом процессе, в т.ч. в подпроцессе задачи airflow.
+import Src.loadEnv  # noqa: F401
 
 
 _oracleClientInitialized = False
