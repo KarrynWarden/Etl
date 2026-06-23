@@ -6,23 +6,27 @@
 # берёт прямо из этого репозитория. Правишь файл в VS Code → airflow видит его
 # сразу, без копирования. Останавливается по Ctrl-C.
 #
-# Подробная инструкция по переносу runtime с сервера — в local/README.md.
+# На Astra SE запись в /opt закрыта даже для root (мандатный контроль), поэтому
+# runtime распаковывается в домашнюю папку и перенастраивается скриптом
+# local/relocate-venv.sh. Подробности — в local/README.md.
 #
 set -euo pipefail
 
 # ─── Настройки (правь при необходимости или задавай через переменные окружения) ───
-VENV="${ETL_LOCAL_VENV:-/opt/airflow/venv}"            # venv, перенесённый с сервера
-ORACLE_CLIENT="${ETL_ORACLE_LIB:-/opt/oracle/instantclient_19_3}"
-AIRFLOW_HOME="${AIRFLOW_HOME:-$HOME/airflow-local}"    # рантайм airflow, ВНЕ репозитория
+RUNTIME="${ETL_LOCAL_RUNTIME:-$HOME/airflow-runtime}"   # куда распакован архив с сервера
+VENV="${ETL_LOCAL_VENV:-$RUNTIME/opt/airflow/venv}"     # venv внутри него
+PYBASE="${ETL_LOCAL_PYBASE:-$RUNTIME/opt/python3.10}"   # базовый python3.10
+ORACLE_CLIENT="${ETL_ORACLE_LIB:-$RUNTIME/opt/oracle/instantclient_19_3}"
+AIRFLOW_HOME="${AIRFLOW_HOME:-$HOME/airflow-local}"     # рантайм airflow, ВНЕ репозитория
 WEB_PORT="${ETL_LOCAL_PORT:-8080}"
 
 # Корень репозитория = папка на уровень выше этого скрипта.
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # ─── Проверки ───
-if [[ ! -x "$VENV/bin/airflow" ]]; then
+if [[ ! -e "$VENV/bin/airflow" ]]; then
     echo "ОШИБКА: не найден $VENV/bin/airflow" >&2
-    echo "Сначала перенеси runtime с сервера — см. local/README.md (шаги 1–2)." >&2
+    echo "Сначала перенеси и перенастрой runtime — см. local/README.md (шаги 1–3)." >&2
     exit 1
 fi
 
@@ -31,9 +35,11 @@ export ETL_FULL_PATH="$REPO_ROOT/"    # ВАЖНО: со слешем на ко�
 export ETL_MODE=""                     # "" = dev → используется etlFolder (не Prod)
 export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
-# Oracle Instant Client нужен только при реальном запуске задач, не для парсинга DAG.
+# Библиотеки: базовый python (если собран с разделяемой libpython) и Oracle-клиент.
+# Oracle нужен только при реальном запуске задач, не для парсинга DAG.
+export LD_LIBRARY_PATH="$PYBASE/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 if [[ -d "$ORACLE_CLIENT" ]]; then
-    export LD_LIBRARY_PATH="$ORACLE_CLIENT${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    export LD_LIBRARY_PATH="$ORACLE_CLIENT:$LD_LIBRARY_PATH"
 fi
 
 # Реквизиты БД из .env (он в .gitignore) — если есть, экспортируем в окружение.
@@ -62,4 +68,5 @@ echo "   Логин/пароль : будут напечатаны ниже пр
 echo "   Стоп         : Ctrl-C"
 echo "──────────────────────────────────────────────────────"
 
-exec "$VENV/bin/airflow" standalone
+# Запускаем через интерпретатор venv напрямую — не зависим от шебангов.
+exec "$VENV/bin/python" "$VENV/bin/airflow" standalone

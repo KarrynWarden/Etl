@@ -28,6 +28,7 @@ chown devel:devel "$OUT" 2>/dev/null || true
 
 echo "Готово: $OUT  ($(du -h "$OUT" | cut -f1))"
 echo
-echo "Теперь с dev-PC выполни:"
+echo "Теперь с dev-PC (без sudo — /opt на Astra SE закрыт даже root'у):"
 echo "  scp devel@airflow:$OUT ~/"
-echo "  sudo tar xzf ~/$(basename "$OUT") -C /"
+echo "  mkdir -p ~/airflow-runtime && tar xzf ~/$(basename "$OUT") -C ~/airflow-runtime"
+echo "  bash local/relocate-venv.sh ~/airflow-runtime"
