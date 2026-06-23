@@ -35,6 +35,10 @@ export ETL_FULL_PATH="$REPO_ROOT/"    # ВАЖНО: со слешем на ко�
 export ETL_MODE=""                     # "" = dev → используется etlFolder (не Prod)
 export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
+# venv в PATH: `airflow standalone` запускает scheduler/webserver/triggerer
+# дочерними процессами командой `airflow`, ища её в PATH (шебанги чинит relocate-venv.sh).
+export PATH="$VENV/bin:$PATH"
+
 # Библиотеки: базовый python (если собран с разделяемой libpython) и Oracle-клиент.
 # Oracle нужен только при реальном запуске задач, не для парсинга DAG.
 export LD_LIBRARY_PATH="$PYBASE/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"

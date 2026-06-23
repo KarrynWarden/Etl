@@ -103,6 +103,10 @@ cp .env.example .env
   `LD_LIBRARY_PATH` к `~/airflow-runtime/opt/python3.10/lib` (скрипт его выставляет сам).
 - **`DPI-1047` / Oracle не находит клиент** — всплывает только при запуске задачи к
   Oracle, не при парсинге; разбираем на Шаге 5.
+- **`FileNotFoundError: ... 'airflow'` при `standalone`** — `airflow` не в PATH или
+  шебанги не починены. `airflow-local.sh` добавляет venv в PATH сам, а шебанги чинит
+  `relocate-venv.sh` (Шаг 3). Если чинишь шебанги вручную в интерактивном bash —
+  сначала `set +H` (иначе `!` в `#!` раскроется как история команд).
 - **`port 8080 in use`** — `ETL_LOCAL_PORT=8081 bash local/airflow-local.sh`.
 - **Мало памяти** — закрой лишнее; `airflow standalone` в лёгком режиме ест ~0.7–1 ГБ.
 - **Распаковал не в `~/airflow-runtime`** — укажи свой путь:
