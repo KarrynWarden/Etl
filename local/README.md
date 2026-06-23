@@ -103,6 +103,16 @@ cp .env.example .env
   `LD_LIBRARY_PATH` к `~/airflow-runtime/opt/python3.10/lib` (скрипт его выставляет сам).
 - **`DPI-1047` / Oracle не находит клиент** — всплывает только при запуске задачи к
   Oracle, не при парсинге; разбираем на Шаге 5.
+- **`Не задана переменная окружения ETL_ORACLE_MAIN_HOST`**, хотя она в `.env` —
+  `.env` не был загружен при запуске standalone. Запускай через `local/airflow-local.sh`
+  (он читает `.env`) либо инлайн с `set -a; . .env; set +a`. После правок `.env`
+  standalone нужно **перезапустить**.
+- **Postgres `could not initiate GSSAPI ... not found in Kerberos database`** — на dev-PC
+  из-за доменного Kerberos. Добавь в `.env` строку `PGGSSENCMODE=disable` (libpq читает
+  её для всех подключений, включая metadata-БД airflow). Для разовой команды передай
+  `gssencmode='disable'` в `psycopg2.connect(...)`.
+- **Postgres `база данных "<логин>" не существует`** — не указан `dbname`; libpq берёт
+  имя БД = имя пользователя. Укажи `dbname='postgres'` для подключения к существующей БД.
 - **`DPI-1047 ... libaio.so.1: cannot open shared object file`** — Instant Client
   тянет системную libaio, которой нет на dev-PC. Скопируй её с сервера в каталог
   instantclient (он в `LD_LIBRARY_PATH`):
