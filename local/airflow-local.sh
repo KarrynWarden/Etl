@@ -52,13 +52,19 @@ if [[ -d "$ORACLE_CLIENT" ]]; then
     export LD_LIBRARY_PATH="$ORACLE_CLIENT:$LD_LIBRARY_PATH"
 fi
 
-# ─── Окружение airflow (лёгкий режим: SQLite + SequentialExecutor) ───
+# ─── Окружение airflow (по умолчанию лёгкий режим: SQLite + SequentialExecutor) ───
+# Для параллелизма/пулов/замков (аудит) задай:
+#   ETL_LOCAL_EXECUTOR=LocalExecutor
+#   ETL_LOCAL_DB_CONN=postgresql+psycopg2://USER:PWD@HOST:5432/airflow_local
+# SQLite параллелизм не поддерживает — только SequentialExecutor (одна задача за раз).
 export AIRFLOW_HOME
 export AIRFLOW__CORE__DAGS_FOLDER="$REPO_ROOT/dags"
-export AIRFLOW__CORE__EXECUTOR=SequentialExecutor
+export AIRFLOW__CORE__EXECUTOR="${ETL_LOCAL_EXECUTOR:-SequentialExecutor}"
 export AIRFLOW__CORE__LOAD_EXAMPLES=False
-export AIRFLOW__DATABASE__SQL_ALCHEMY_CONN="sqlite:///$AIRFLOW_HOME/airflow.db"
+export AIRFLOW__DATABASE__SQL_ALCHEMY_CONN="${ETL_LOCAL_DB_CONN:-sqlite:///$AIRFLOW_HOME/airflow.db}"
 export AIRFLOW__WEBSERVER__WEB_SERVER_PORT="$WEB_PORT"
+# Скромный параллелизм для dev-PC (актуально при LocalExecutor).
+export AIRFLOW__CORE__PARALLELISM="${ETL_LOCAL_PARALLELISM:-4}"
 
 mkdir -p "$AIRFLOW_HOME"
 

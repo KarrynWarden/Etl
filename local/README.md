@@ -103,6 +103,20 @@ cp .env.example .env
   `LD_LIBRARY_PATH` к `~/airflow-runtime/opt/python3.10/lib` (скрипт его выставляет сам).
 - **`DPI-1047` / Oracle не находит клиент** — всплывает только при запуске задачи к
   Oracle, не при парсинге; разбираем на Шаге 5.
+- **`DPI-1047 ... libaio.so.1: cannot open shared object file`** — Instant Client
+  тянет системную libaio, которой нет на dev-PC. Скопируй её с сервера в каталог
+  instantclient (он в `LD_LIBRARY_PATH`):
+  `cp -L /usr/lib/x86_64-linux-gnu/libaio.so.1 …` на сервере →
+  `scp … ~/airflow-runtime/opt/oracle/instantclient_19_3/` на dev-PC.
+- **«scheduler does not appear to be running» при пулах/замках (аудит)** — это
+  `SequentialExecutor`: одна задача за раз, выполняется внутри scheduler, поэтому
+  долгая задача (`etl_lock`) морозит heartbeat, а параллельные линии стоят `queued`.
+  Для параллелизма нужен `LocalExecutor` + Postgres (SQLite параллелизм не умеет):
+  `ETL_LOCAL_EXECUTOR=LocalExecutor ETL_LOCAL_DB_CONN=postgresql+psycopg2://USER:PWD@HOST:5432/airflow_local bash local/airflow-local.sh`.
+  Параллелизм на dev-PC стоит ограничить: `ETL_LOCAL_PARALLELISM=4` (по умолчанию уже 4).
+- **`DPI-1047 ... Cannot locate a 64-bit Oracle Client`** (без libaio) — не найден сам
+  Instant Client; задай `ETL_ORACLE_LIB_DIR=~/airflow-runtime/opt/oracle/instantclient_19_3`
+  в `.env`.
 - **`FileNotFoundError: ... 'airflow'` при `standalone`** — `airflow` не в PATH или
   шебанги не починены. `airflow-local.sh` добавляет venv в PATH сам, а шебанги чинит
   `relocate-venv.sh` (Шаг 3). Если чинишь шебанги вручную в интерактивном bash —
