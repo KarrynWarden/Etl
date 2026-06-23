@@ -30,7 +30,13 @@ if [[ ! -e "$VENV/bin/airflow" ]]; then
     exit 1
 fi
 
-# ─── Окружение проекта ───
+# Реквизиты БД из .env (он в .gitignore) — сначала, чтобы локальные структурные
+# значения ниже (ETL_MODE/ETL_FULL_PATH) гарантированно их перекрыли.
+if [[ -f "$REPO_ROOT/.env" ]]; then
+    set -a; . "$REPO_ROOT/.env"; set +a
+fi
+
+# ─── Окружение проекта (всегда побеждает значения из .env) ───
 export ETL_FULL_PATH="$REPO_ROOT/"    # ВАЖНО: со слешем на конце
 export ETL_MODE=""                     # "" = dev → используется etlFolder (не Prod)
 export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
@@ -44,11 +50,6 @@ export PATH="$VENV/bin:$PATH"
 export LD_LIBRARY_PATH="$PYBASE/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 if [[ -d "$ORACLE_CLIENT" ]]; then
     export LD_LIBRARY_PATH="$ORACLE_CLIENT:$LD_LIBRARY_PATH"
-fi
-
-# Реквизиты БД из .env (он в .gitignore) — если есть, экспортируем в окружение.
-if [[ -f "$REPO_ROOT/.env" ]]; then
-    set -a; . "$REPO_ROOT/.env"; set +a
 fi
 
 # ─── Окружение airflow (лёгкий режим: SQLite + SequentialExecutor) ───

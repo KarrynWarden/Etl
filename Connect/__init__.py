@@ -1,91 +1,107 @@
 """Подключения к БД.
 
-Параметры подтягиваются из переменных окружения. Удобный способ
-их задать — файл `.env` рядом с корнем проекта (см. `.env.example`).
-Файл .env лежит в .gitignore и в репозиторий не попадает.
+Все реквизиты берутся из переменных окружения — в коде ни логинов, ни паролей,
+ни IP. Удобный способ задать их — файл `.env` рядом с корнем проекта (см.
+`.env.example`); он в `.gitignore` и в репозиторий не попадает. `.env`
+подхватывается шеллом при запуске (см. local/airflow-local.sh), а если установлен
+python-dotenv — ещё и автоматически этим модулем.
 
-Перечень переменных:
-    ETL_FULL_PATH, ETL_MODE
-    ETL_ORACLE_HOST, ETL_ORACLE_PORT, ETL_ORACLE_SID,
-    ETL_ORACLE_USER, ETL_ORACLE_PWD, ETL_ORACLE_CONFIG_DIR
-    ETL_POST_HOST, ETL_POST_PORT, ETL_POST_DB,
-    ETL_POST_USER, ETL_POST_PWD
+Именованные наборы реквизитов (по одному на пользователя/БД в рамках сегмента):
+    Oracle:    ETL_ORACLE_<NAME>_HOST, _PORT, _SID, _USER, _PWD
+    Postgres:  ETL_POST_<NAME>_HOST, _PORT, _DB, _USER, _PWD
+где <NAME> — MAIN, A56 и т.д. Сегмент (local/test/prod) определяется тем, какой
+.env загружен: одни и те же имена, разные значения.
+
+Клиент Oracle:
+    ETL_ORACLE_CONFIG_DIR  — каталог с tnsnames.ora/sqlnet.ora (по умолчанию
+                             /opt/oracle/config — как на сервере);
+    ETL_ORACLE_LIB_DIR     — каталог Instant Client (опционально; если не задан,
+                             библиотеки ищутся через LD_LIBRARY_PATH).
 """
 import os
 from pathlib import Path
 
 import psycopg2
 import cx_Oracle
-#from dotenv import load_dotenv
 
+# Если установлен python-dotenv — подгрузим .env автоматически. Не обязателен:
+# при запуске через local/airflow-local.sh .env уже экспортирован в окружение.
+try:
+    from dotenv import load_dotenv
 
-# .env лежит в корне репозитория (на один уровень выше этого файла).
-# Если файла нет — load_dotenv тихо ничего не сделает, и значения
-# подтянутся из системных переменных окружения.
-_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
-#load_dotenv(_ENV_PATH)
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+except Exception:
+    pass
 
 
 _oracleClientInitialized = False
 
 
-def DbConnectOrcl():
-    username = "логин"
-    userpwd = "пароль"
+def _env(name):
+    """Обязательная переменная окружения; понятная ошибка, если не задана."""
+    try:
+        return os.environ[name]
+    except KeyError:
+        raise RuntimeError(
+            f"Не задана переменная окружения {name}. "
+            f"Заполни .env (шаблон — .env.example); он подхватывается при запуске."
+        )
+
+
+def _initOracleClient():
     global _oracleClientInitialized
-    if not _oracleClientInitialized:
-        #cx_Oracle.init_oracle_client(
-        #    config_dir=os.environ.get("ETL_ORACLE_CONFIG_DIR", "/opt/oracle/config"),
-        #)
-        cx_Oracle.init_oracle_client(config_dir="/opt/oracle/config")
-        _oracleClientInitialized = True
-    #dsn = cx_Oracle.makedsn(
-    #    os.environ["ETL_ORACLE_HOST"],
-    #    int(os.environ.get("ETL_ORACLE_PORT", 1521)),
-    #    sid=os.environ["ETL_ORACLE_SID"],
-    #)
-    dsn = cx_Oracle.makedsn("айпи", 1521, sid="сид")
-    #return cx_Oracle.connect(
-    #    user=os.environ["ETL_ORACLE_USER"],
-    #    password=os.environ["ETL_ORACLE_PWD"],
-    #    dsn=dsn,
-    #    encoding="UTF-8",
-    #)
-    return cx_Oracle.connect(user=username, password=userpwd, dsn=dsn, encoding="UTF-8")
+    if _oracleClientInitialized:
+        return
+    kwargs = {"config_dir": os.environ.get("ETL_ORACLE_CONFIG_DIR", "/opt/oracle/config")}
+    libDir = os.environ.get("ETL_ORACLE_LIB_DIR")
+    if libDir:
+        kwargs["lib_dir"] = libDir
+    cx_Oracle.init_oracle_client(**kwargs)
+    _oracleClientInitialized = True
+
+
+def connectOracle(name="MAIN"):
+    """Подключение к Oracle по имени набора реквизитов (MAIN, A56, ...)."""
+    _initOracleClient()
+    p = name.upper()
+    dsn = cx_Oracle.makedsn(
+        _env(f"ETL_ORACLE_{p}_HOST"),
+        int(os.environ.get(f"ETL_ORACLE_{p}_PORT", 1521)),
+        sid=_env(f"ETL_ORACLE_{p}_SID"),
+    )
+    return cx_Oracle.connect(
+        user=_env(f"ETL_ORACLE_{p}_USER"),
+        password=_env(f"ETL_ORACLE_{p}_PWD"),
+        dsn=dsn,
+        encoding="UTF-8",
+    )
+
+
+def connectPostgres(name="MAIN"):
+    """Подключение к PostgreSQL по имени набора реквизитов (MAIN, A56, ...)."""
+    p = name.upper()
+    return psycopg2.connect(
+        host=_env(f"ETL_POST_{p}_HOST"),
+        port=os.environ.get(f"ETL_POST_{p}_PORT", "5432"),
+        database=_env(f"ETL_POST_{p}_DB"),
+        user=_env(f"ETL_POST_{p}_USER"),
+        password=_env(f"ETL_POST_{p}_PWD"),
+    )
+
+
+# ─── Обратная совместимость: прежние имена функций ───
+# MAIN — основной пользователь сегмента, A56 — второй пользователь (другой логин).
+def DbConnectOrcl():
+    return connectOracle("MAIN")
 
 
 def DbConnectPost():
-    #return psycopg2.connect(
-    #    host=os.environ["ETL_POST_HOST"],
-    #    port=os.environ.get("ETL_POST_PORT", "5432"),
-    #    database=os.environ["ETL_POST_DB"],
-    #    user=os.environ["ETL_POST_USER"],
-    #    password=os.environ["ETL_POST_PWD"],
-    #)
-    return psycopg2.connect(database="бд", host="айпи", user="юзер", password="пароль", port="5432")
+    return connectPostgres("MAIN")
 
-def DbConnectA56Orcl(): #есть задачи, которые требуют подключения через другого пользователя
-    username = "логин2"
-    userpwd = "пароль2"
-    global _oracleClientInitialized
-    if not _oracleClientInitialized:
-        cx_Oracle.init_oracle_client(config_dir="/opt/oracle/config")
-        _oracleClientInitialized = True
-    dsn = cx_Oracle.makedsn("айпи", 1521, sid="сид")
-    connection = cx_Oracle.connect(user=username, password=userpwd,
-                                   dsn=dsn,
-                                   encoding="UTF-8")
-    print("Соединение тестового оракла подключено")
-    return connection
 
-def DbConnectA56Post():
-    try:
-        con2 = psycopg2.connect(database="бд",
-                                host="хост",
-                                user="юзер",
-                                password="пароль",
-                                port="5432")
-        print ("соединение тестового постгреса подключено")
-        return con2
-    except (Exception, Error) as error:
-        print("Error while connecting to PostgreSQL", error)
+def DbConnectA56Orcl():  # задачи, которым нужен другой пользователь Oracle
+    return connectOracle("A56")
+
+
+def DbConnectA56Post():  # задачи, которым нужен другой пользователь Postgres
+    return connectPostgres("A56")
