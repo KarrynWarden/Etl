@@ -9,7 +9,7 @@
             ▲   │
    dev-PC ──┘   │  push server test / bridge
             │   ▼
-   СЕРВЕР: /opt/airflow-test/etl.git (bare) ──post-receive──► test-src ──► airflow-test (:8081)
+   СЕРВЕР: /opt/airflow-test/etl.git (bare) ──post-receive──► test-src ──► airflow-test (:8082)
                     ▲
          jupyter (коллеги): commit+push в этот же bare-репо
 ```
@@ -64,7 +64,7 @@ sudo -u airflow env $(grep -v '^#' /opt/airflow-test/airflow-test.env | xargs) \
   /opt/airflow/venv/bin/airflow users create --username admin --password admin \
   --firstname a --lastname a --role Admin --email a@a.a
 ```
-UI: `http://<IP-сервера>:8081`.
+UI: `http://<IP-сервера>:8082`.
 
 ## Повседневный поток (кнопки добавим следующим шагом)
 - **Коллеги (Jupyter):** правят код в своём клоне → `deploy-test.sh` = commit + push в bare-репо → авто-деплой в тестовый airflow.
