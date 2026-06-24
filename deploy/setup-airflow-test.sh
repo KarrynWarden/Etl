@@ -29,6 +29,7 @@ ENVFILE=$ROOT/airflow-test.env         # systemd EnvironmentFile (структу
 
 [[ $EUID -eq 0 ]] || { echo "Запускай от root (sudo -s)"; exit 1; }
 [[ -x $VENV/bin/airflow ]] || { echo "Нет $VENV/bin/airflow"; exit 1; }
+cd /    # чтобы sudo -u postgres не ругался на чужой cwd
 
 echo "== 1. Группа $GROUP и участники =="
 groupadd -f "$GROUP"
@@ -71,6 +72,28 @@ if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='$TEST_
     echo "  создана"
 else
     echo "  уже существует"
+fi
+
+echo "== 5b. pg_hba: доступ $RUNAS -> $TEST_DB =="
+HBA=$(sudo -u postgres psql -tAc "SHOW hba_file;" | tr -d '[:space:]')
+if [[ -n "$HBA" && -f "$HBA" ]]; then
+    if grep -qE "^[[:space:]]*host[[:space:]]+$TEST_DB[[:space:]]+$RUNAS[[:space:]]" "$HBA"; then
+        echo "  запись уже есть"
+    else
+        # берём метод из существующей строки для базы airflow и дублируем на $TEST_DB
+        base_line=$(grep -E "^[[:space:]]*host[[:space:]]+airflow[[:space:]]+$RUNAS[[:space:]]" "$HBA" | head -1 || true)
+        if [[ -n "$base_line" ]]; then
+            new_line=$(echo "$base_line" | sed -E "s/(^[[:space:]]*host[[:space:]]+)airflow([[:space:]]+)/\1$TEST_DB\2/")
+        else
+            new_line="host    $TEST_DB    $RUNAS    127.0.0.1/32    md5"
+        fi
+        cp -a "$HBA" "$HBA.bak.$$"
+        printf '%s\n' "$new_line" >> "$HBA"
+        sudo -u postgres psql -c "SELECT pg_reload_conf();" >/dev/null
+        echo "  добавлено: $new_line  (бэкап: $HBA.bak.$$)"
+    fi
+else
+    echo "  !! не нашёл pg_hba.conf — добавь правило для $TEST_DB вручную"
 fi
 
 # conn для metadata: берём прод-строку и меняем только имя БД на $TEST_DB
