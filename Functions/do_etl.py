@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import os
 from collections import defaultdict
 from decimal import Decimal
 
@@ -110,6 +111,7 @@ from Src.generalQueries import (
     periodsIsokAudit4PostSql,
     periodsIsokAudit4OrclSql,
 )
+from Src.fullPath import FULL_PATH, MODE
 
 logger = logging.getLogger(__name__)
 
@@ -180,7 +182,21 @@ def _connect(dbType):
     return DbConnectPost() if dbType == "Post" else DbConnectOrcl()
 
 
+def _resolveEtlPath(path):
+    """Путь к structure/sql из конфига.
+
+    Абсолютный путь возвращается как есть (совместимость с прод-конфигом, где
+    пути прибиты к /opt/.../etlFolderProd). Относительный — резолвится от
+    {FULL_PATH}etlFolder{MODE}/, поэтому один и тот же конфиг работает в любой
+    среде (local/test/prod), а на dev-PC файлы лежат в etlFolder репозитория.
+    """
+    if not path or os.path.isabs(path):
+        return path
+    return f"{FULL_PATH}etlFolder{MODE}/{path}"
+
+
 def _loadStructure(path, dbType):
+    path = _resolveEtlPath(path)
     return JsonLoadPost(path) if dbType == "Post" else JsonLoadOrcl(path)
 
 
@@ -1568,7 +1584,7 @@ def _run(cfg):
 
         # 2. Источник ведущей — таблица или sql
         if cfg.get("selectSql"):
-            selectSql = TakeOneQuery(cfg["selectSql"])
+            selectSql = TakeOneQuery(_resolveEtlPath(cfg["selectSql"]))
         else:
             selectSql = structureEmptyQuerySql.format(tableNameMaster)
         # Дополнительный фильтр (например, doctype = 7) применяем к источнику.

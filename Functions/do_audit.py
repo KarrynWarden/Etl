@@ -52,6 +52,7 @@ from Functions.updateLog import UpdateLog
 # одинаково подключались, фильтровали поля и строили списки колонок.
 from Functions.do_etl import (
     _connect, _isPost, _pickSql, _loadStructure, _normalizePeriod,
+    _resolveEtlPath,
     _appendFilter, _filterEtlFields, _bindName, _buildFieldsStr,
     _executeQuery, _configKey, classifyError, _asAndClause,
 )
@@ -411,7 +412,7 @@ def _run(cfg):
 
         # 2. Источник ведущей — sql или таблица; doctype-фильтр на источник.
         if cfg.get("selectSql"):
-            selectSql = TakeOneQuery(cfg["selectSql"])
+            selectSql = TakeOneQuery(_resolveEtlPath(cfg["selectSql"]))
         else:
             selectSql = structureEmptyQuerySql.format(tableNameMaster)
         selectSql = _appendFilter(selectSql, cfg.get("filterClause"))
