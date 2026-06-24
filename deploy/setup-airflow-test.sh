@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+#
+# Поднимает ОТДЕЛЬНЫЙ тестовый airflow рядом с продом, с деплоем по git.
+# Запускать НА СЕРВЕРЕ от root: ssh devel@airflow → sudo -s → bash setup-airflow-test.sh
+#
+# Прод НЕ трогается: создаются только новые сущности —
+#   /opt/airflow-test/, база airflow_test, юниты airflow-test-scheduler/webserver.
+#
+# Идемпотентно: повторный запуск не ломает уже созданное.
+#
+set -euo pipefail
+
+### ─────────── КОНФИГ (правь при необходимости) ───────────
+ROOT=/opt/airflow-test
+GROUP=etldev
+MEMBERS=(devel jupyter airflow)        # кто может пушить/деплоить + сам airflow (читает код)
+VENV=/opt/airflow/venv                 # общий с продом venv
+RUNAS=airflow                          # под кем крутится тестовый airflow (как прод)
+PORT=8081                              # UI теста (прод — 8080)
+DEPLOY_BRANCH=test                     # какая ветка разворачивается в test-src
+PROD_CFG=/opt/airflow/airflow/airflow.cfg   # откуда взять реквизиты metadata-PG
+TEST_DB=airflow_test                   # отдельная metadata-база в том же PG
+
+BARE=$ROOT/etl.git
+SRC=$ROOT/test-src
+AHOME=$ROOT/home
+ENVFILE=$ROOT/airflow-test.env         # systemd EnvironmentFile (структурные airflow-переменные)
+### ────────────────────────────────────────────────────────
+
+[[ $EUID -eq 0 ]] || { echo "Запускай от root (sudo -s)"; exit 1; }
+[[ -x $VENV/bin/airflow ]] || { echo "Нет $VENV/bin/airflow"; exit 1; }
+
+echo "== 1. Группа $GROUP и участники =="
+groupadd -f "$GROUP"
+for u in "${MEMBERS[@]}"; do
+    if id "$u" &>/dev/null; then usermod -aG "$GROUP" "$u"; echo "  + $u"; else echo "  (нет пользователя $u, пропускаю)"; fi
+done
+
+echo "== 2. Каталоги и права =="
+mkdir -p "$BARE" "$SRC" "$AHOME"
+chgrp -R "$GROUP" "$BARE" "$SRC"
+chmod -R 2775 "$BARE" "$SRC"           # setgid (2): новые файлы наследуют группу $GROUP
+chown -R "$RUNAS":"$RUNAS" "$AHOME"
+
+echo "== 3. bare-репозиторий =="
+if [[ ! -e "$BARE/HEAD" ]]; then
+    git init --bare "$BARE" >/dev/null
+fi
+chgrp -R "$GROUP" "$BARE"; chmod -R 2775 "$BARE"
+
+echo "== 4. post-receive hook (деплой + рестарт) =="
+cat > "$BARE/hooks/post-receive" <<HOOK
+#!/bin/bash
+set -e
+while read oldrev newrev ref; do
+    branch=\${ref#refs/heads/}
+    if [ "\$branch" = "$DEPLOY_BRANCH" ]; then
+        git --git-dir=$BARE --work-tree=$SRC checkout -f "$DEPLOY_BRANCH"
+        sudo systemctl restart airflow-test-scheduler airflow-test-webserver
+        echo "deploy: ветка $DEPLOY_BRANCH -> $SRC, airflow-test перезапущен"
+    else
+        echo "ветка \$branch получена (без деплоя)"
+    fi
+done
+HOOK
+chmod 2775 "$BARE/hooks/post-receive"; chgrp "$GROUP" "$BARE/hooks/post-receive"
+
+echo "== 5. metadata-база $TEST_DB =="
+if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='$TEST_DB'" | grep -q 1; then
+    sudo -u postgres psql -c "CREATE DATABASE $TEST_DB OWNER $RUNAS;"
+    echo "  создана"
+else
+    echo "  уже существует"
+fi
+
+# conn для metadata: берём прод-строку и меняем только имя БД на $TEST_DB
+PROD_CONN=$(awk -F'=' '/^[[:space:]]*sql_alchemy_conn/{sub(/^[^=]*=[[:space:]]*/,"");print;exit}' "$PROD_CFG" 2>/dev/null || true)
+if [[ -z "${PROD_CONN:-}" ]]; then
+    echo "!! Не нашёл sql_alchemy_conn в $PROD_CFG."
+    echo "!! Впиши строку подключения вручную в $ENVFILE (AIRFLOW__DATABASE__SQL_ALCHEMY_CONN) после запуска."
+    TEST_CONN="postgresql+psycopg2://$RUNAS:ВПИШИ_ПАРОЛЬ@127.0.0.1:5432/$TEST_DB"
+else
+    TEST_CONN=$(echo "$PROD_CONN" | sed -E "s#/[A-Za-z0-9_]+([?]|$)#/$TEST_DB\1#")
+fi
+
+echo "== 6. EnvironmentFile $ENVFILE =="
+cat > "$ENVFILE" <<ENV
+AIRFLOW_HOME=$AHOME
+PYTHONPATH=$SRC
+ETL_FULL_PATH=$SRC/
+ETL_MODE=
+AIRFLOW__CORE__EXECUTOR=LocalExecutor
+AIRFLOW__CORE__LOAD_EXAMPLES=False
+AIRFLOW__CORE__DAGS_FOLDER=$SRC/dags
+AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=$TEST_CONN
+AIRFLOW__WEBSERVER__WEB_SERVER_PORT=$PORT
+AIRFLOW__WEBSERVER__WEB_SERVER_HOST=0.0.0.0
+ENV
+chown "$RUNAS":"$GROUP" "$ENVFILE"; chmod 640 "$ENVFILE"
+
+echo "== 7. Миграция metadata $TEST_DB =="
+sudo -u "$RUNAS" env $(grep -v '^#' "$ENVFILE" | xargs) "$VENV/bin/airflow" db migrate
+
+echo "== 8. systemd-юниты airflow-test-* =="
+cat > /etc/systemd/system/airflow-test-scheduler.service <<UNIT
+[Unit]
+Description=Airflow TEST scheduler
+After=network.target postgresql.service
+[Service]
+User=$RUNAS
+Group=$GROUP
+EnvironmentFile=$ENVFILE
+ExecStart=$VENV/bin/airflow scheduler
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=multi-user.target
+UNIT
+cat > /etc/systemd/system/airflow-test-webserver.service <<UNIT
+[Unit]
+Description=Airflow TEST webserver
+After=network.target postgresql.service
+[Service]
+User=$RUNAS
+Group=$GROUP
+EnvironmentFile=$ENVFILE
+ExecStart=$VENV/bin/airflow webserver
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+echo "== 9. sudoers: hook может рестартить airflow-test без пароля =="
+SUDO=/etc/sudoers.d/airflow-test
+SCTL=$(command -v systemctl)
+echo "%$GROUP ALL=(root) NOPASSWD: $SCTL restart airflow-test-scheduler airflow-test-webserver" > "$SUDO.tmp"
+if visudo -cf "$SUDO.tmp"; then mv "$SUDO.tmp" "$SUDO"; chmod 440 "$SUDO"; echo "  ok"; else echo "  !! sudoers невалиден, не ставлю"; rm -f "$SUDO.tmp"; fi
+
+echo "== 10. Запуск =="
+systemctl daemon-reload
+systemctl enable --now airflow-test-scheduler airflow-test-webserver
+
+echo
+echo "Готово. Прод не тронут."
+echo "  bare-репо : $BARE"
+echo "  код       : $SRC   (заполнится после первого push ветки '$DEPLOY_BRANCH')"
+echo "  UI теста  : http://<IP-сервера>:$PORT"
+echo
+echo "Дальше — см. deploy/README.md (раздел «После установки»)."
