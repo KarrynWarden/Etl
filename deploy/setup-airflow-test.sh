@@ -20,6 +20,7 @@ PORT=8082                              # UI теста (прод — 8080, 8081 
 DEPLOY_BRANCH=test                     # какая ветка разворачивается в test-src
 PROD_CFG=/opt/airflow/airflow/airflow.cfg   # откуда взять реквизиты metadata-PG
 TEST_DB=airflow_test                   # отдельная metadata-база в том же PG
+TEST_DOMAIN=airflow-test.oms66.ru      # домен за Apache-прокси (для base_url)
 
 BARE=$ROOT/etl.git
 SRC=$ROOT/test-src
@@ -118,6 +119,8 @@ AIRFLOW__CORE__DAGS_FOLDER=$SRC/dags
 AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=$TEST_CONN
 AIRFLOW__WEBSERVER__WEB_SERVER_PORT=$PORT
 AIRFLOW__WEBSERVER__WEB_SERVER_HOST=0.0.0.0
+AIRFLOW__WEBSERVER__BASE_URL=https://$TEST_DOMAIN
+AIRFLOW__WEBSERVER__ENABLE_PROXY_FIX=True
 ENV
 chown "$RUNAS":"$GROUP" "$ENVFILE"; chmod 640 "$ENVFILE"
 

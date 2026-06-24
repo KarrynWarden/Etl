@@ -70,6 +70,36 @@ UI: `http://<IP-сервера>:8082`.
 - **Коллеги (Jupyter):** правят код в своём клоне → `deploy-test.sh` = commit + push в bare-репо → авто-деплой в тестовый airflow.
 - **Ты (dev-PC):** `push-to-server.sh` = выкатить ветку `test` в тестовый airflow; `bridge.sh` = синхронизировать серверный bare-репо ↔ gitea.
 
+## Доступ тестировщиков через Apache (как у прода)
+
+Прод проксируется Apache2 на этом же сервере (`airflow.oms66.ru` → `localhost:8083`).
+Для теста добавляем такой же vhost (`airflow-test.oms66.ru` → `localhost:8082`).
+
+1. **vhost:** скопировать `deploy/airflow-test-apache.conf` →
+   `/etc/apache2/sites-available/airflow-test.conf`, затем:
+   ```bash
+   a2ensite airflow-test
+   apache2ctl configtest        # должно быть Syntax OK
+   systemctl reload apache2     # reload, не restart — прод-сессии не рвутся
+   ```
+2. **airflow за прокси:** в `/opt/airflow-test/airflow-test.env` должны быть
+   (скрипт их уже пишет):
+   ```
+   AIRFLOW__WEBSERVER__BASE_URL=https://airflow-test.oms66.ru
+   AIRFLOW__WEBSERVER__ENABLE_PROXY_FIX=True
+   ```
+   после правки — `systemctl restart airflow-test-webserver`.
+3. **DNS:** `airflow-test.oms66.ru` должен резолвиться (wildcard `*.oms66.ru` или
+   отдельная запись — к администраторам DNS).
+4. **Сертификат:** vhost переиспользует `oms66.crt`. Проверь, что он покрывает
+   поддомен:
+   ```bash
+   openssl x509 -in /etc/ssl/certs/oms66.crt -noout -text | grep -A1 'Subject Alternative Name'
+   ```
+   Если в списке есть `*.oms66.ru` — ок; иначе нужен сертификат на новый поддомен.
+
+После этого тестировщики заходят на `https://airflow-test.oms66.ru` — без ssh и туннелей.
+
 ## Прод (позже)
 Тот же механизм для ветки `prod` и существующего `/opt/airflow/airflow` добавим
 на финальном шаге, когда новая версия будет проверена.
