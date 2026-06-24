@@ -30,11 +30,11 @@ if [[ ! -e "$VENV/bin/airflow" ]]; then
     exit 1
 fi
 
-# Реквизиты БД из .env (он в .gitignore) — сначала, чтобы локальные структурные
-# значения ниже (ETL_MODE/ETL_FULL_PATH) гарантированно их перекрыли.
-if [[ -f "$REPO_ROOT/.env" ]]; then
-    set -a; . "$REPO_ROOT/.env"; set +a
-fi
+# Реквизиты БД (.env) читает сам код (Src/loadEnv.py) в каждом процессе — здесь
+# .env НЕ сорсим (под set -e строка со спецсимволом обрывала бы скрипт).
+# Для metadata-подключения airflow к Postgres GSSAPI отключаем явно (dev-PC,
+# доменный Kerberos): эта переменная нужна в окружении ДО старта airflow.
+export PGGSSENCMODE="${PGGSSENCMODE:-disable}"
 
 # ─── Окружение проекта (всегда побеждает значения из .env) ───
 export ETL_FULL_PATH="$REPO_ROOT/"    # ВАЖНО: со слешем на конце
