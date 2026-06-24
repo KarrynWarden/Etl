@@ -63,6 +63,13 @@ export AIRFLOW__CORE__EXECUTOR="${ETL_LOCAL_EXECUTOR:-SequentialExecutor}"
 export AIRFLOW__CORE__LOAD_EXAMPLES=False
 export AIRFLOW__DATABASE__SQL_ALCHEMY_CONN="${ETL_LOCAL_DB_CONN:-sqlite:///$AIRFLOW_HOME/airflow.db}"
 export AIRFLOW__WEBSERVER__WEB_SERVER_PORT="$WEB_PORT"
+# Слушать на всех интерфейсах — тогда UI доступен с других ПК в локальной сети
+# (http://<IP-этого-ПК>:$WEB_PORT). Для корректных ссылок в UI можно задать
+# ETL_LOCAL_BASE_URL=http://10.0.14.61:8080 (свой IP).
+export AIRFLOW__WEBSERVER__WEB_SERVER_HOST="${ETL_LOCAL_HOST:-0.0.0.0}"
+if [[ -n "${ETL_LOCAL_BASE_URL:-}" ]]; then
+    export AIRFLOW__WEBSERVER__BASE_URL="$ETL_LOCAL_BASE_URL"
+fi
 # Скромный параллелизм для dev-PC (актуально при LocalExecutor).
 export AIRFLOW__CORE__PARALLELISM="${ETL_LOCAL_PARALLELISM:-4}"
 
