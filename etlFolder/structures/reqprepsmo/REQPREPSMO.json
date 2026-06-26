@@ -1,0 +1,69 @@
+{
+"data": [
+	{
+		"column_name" : "createdate",
+		"data_type" : "date",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "dirdt",
+		"data_type" : "date",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "idrw",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : "Primary Key"
+	},
+	{
+		"column_name" : "iduser",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "lastupdate",
+		"data_type" : "timestamp without time zone",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "month",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "smo",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "smodt",
+		"data_type" : "date",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "sumsmopod",
+		"data_type" : "numeric",
+		"data_scale" : 2,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "typereq",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "year",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	}
+]}

@@ -1,0 +1,148 @@
+{
+	"data": [
+		{
+			"column_name" : "mo",
+			"data_type" : "numeric",
+			"data_scale" : 0,
+			"is_primary_key" : null
+		},
+		{
+			"column_name" : "modoc",
+			"data_type" : "numeric",
+			"data_scale" : 0,
+			"is_primary_key" : null
+		},    
+		{
+			"column_name" : "doctype",
+			"data_type" : "numeric",
+			"data_scale" : 0,
+			"is_primary_key" : null
+		},
+		{
+			"column_name" : "accno",
+			"data_type" : "character varying",
+			"data_scale" : null,
+			"is_primary_key" : null
+		},
+		{
+			"column_name" : "accdt",
+			"data_type" : "date",
+			"data_scale" : null,
+			"is_primary_key" : null
+		},
+		{
+			"column_name" : "stepexp",
+			"data_type" : "numeric",
+			"data_scale" : 0,
+			"is_primary_key" : null
+		},
+		{
+			"column_name" : "schetnrec",
+			"data_type" : "numeric",
+			"data_scale" : 0,
+			"is_primary_key" : null
+		},
+		{
+			"column_name" : "typecont",
+			"data_type" : "numeric",
+			"data_scale" : 0,
+			"is_primary_key" : null
+		},
+		{
+			"column_name" : "cont",
+			"data_type" : "numeric",
+			"data_scale" : 0,
+			"is_primary_key" : null
+		},
+		{
+			"column_name" : "sumcheck",
+			"data_type" : "numeric",
+			"data_scale" : 2,
+			"is_primary_key" : null
+		},
+		{
+			"column_name" : "sumkss",
+			"data_type" : "numeric",
+			"data_scale" : 2,
+			"is_primary_key" : null
+		},
+		{
+			"column_name" : "sumszp",
+			"data_type" : "numeric",
+			"data_scale" : 2,
+			"is_primary_key" : null
+		},
+		{
+			"column_name" : "sumapp",
+			"data_type" : "numeric",
+			"data_scale" : 2,
+			"is_primary_key" : null
+		},
+		{
+			"column_name" : "sumsmp",
+			"data_type" : "numeric",
+			"data_scale" : 2,
+			"is_primary_key" : null
+		},
+		{
+			"column_name" : "countcheck",
+			"data_type" : "numeric",
+			"data_scale" : 0,
+			"is_primary_key" : null
+		},
+		{
+			"column_name" : "year",
+			"data_type" : "numeric",
+			"data_scale" : 0,
+			"is_primary_key" : null
+		},
+		{
+			"column_name" : "month",
+			"data_type" : "numeric",
+			"data_scale" : 0,
+			"is_primary_key" : null
+		},
+		{
+			"column_name" : "idrw",
+			"data_type" : "numeric",
+			"data_scale" : 0,
+			"is_primary_key" : "Primary Key"
+		},
+		{
+			"column_name" : "lastupdate",
+			"data_type" : "timestamp without time zone",
+			"data_scale" : null,
+			"is_primary_key" : null
+		},
+		{
+			"column_name" : "createdate",
+			"data_type" : "date",
+			"data_scale" : null,
+			"is_primary_key" : null
+		},
+		{
+			"column_name" : "svoddt",
+			"data_type" : "date",
+			"data_scale" : null,
+			"is_primary_key" : null
+		},
+		{
+			"column_name" : "medcheck_idrw",
+			"data_type" : "numeric",
+			"data_scale" : 0,
+			"is_primary_key" : null
+		},
+		{
+			"column_name" : "buhdt",
+			"data_type" : "date",
+			"data_scale" : null,
+			"is_primary_key" : null
+		},
+		{
+			"column_name" : "schettype",
+			"data_type" : "numeric",
+			"data_scale" : 0,
+			"is_primary_key" : null
+		}
+	]
+}

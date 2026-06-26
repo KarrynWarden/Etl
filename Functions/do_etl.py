@@ -66,8 +66,8 @@ from Src.generalQueries import (
     structureCheckPostSql,
     structureEmptyQuerySql,
     # выбор групп / id
-    dateSelectStatusOrclSql,
-    dateSelectStatusPostSql,
+    #dateSelectStatusOrclSql,
+    #dateSelectStatusPostSql,
     selectEtlIudOrclSql,
     selectEtlIudPostSql,
     selectDistinctOrclSql,
@@ -97,6 +97,8 @@ from Src.generalQueries import (
     etlUpdatePostSql,
     etlErrorOrclSql,
     etlErrorPostSql,
+    #newDatesOrclSql,
+    #newDatesPostSql,
     registerPeriodOrclSql,
     registerPeriodPostSql,
     # section_compare (mocheck / medree)
@@ -111,7 +113,8 @@ from Src.generalQueries import (
     periodsIsokAudit4PostSql,
     periodsIsokAudit4OrclSql,
 )
-from Src.fullPath import FULL_PATH, MODE
+
+from Src.fullPath import FULL_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -181,19 +184,17 @@ def classifyError(err):
 def _connect(dbType):
     return DbConnectPost() if dbType == "Post" else DbConnectOrcl()
 
-
 def _resolveEtlPath(path):
     """Путь к structure/sql из конфига.
 
     Абсолютный путь возвращается как есть (совместимость с прод-конфигом, где
     пути прибиты к /opt/.../etlFolderProd). Относительный — резолвится от
-    {FULL_PATH}etlFolder{MODE}/, поэтому один и тот же конфиг работает в любой
+    {FULL_PATH}etlFolder/, поэтому один и тот же конфиг работает в любой
     среде (local/test/prod), а на dev-PC файлы лежат в etlFolder репозитория.
     """
     if not path or os.path.isabs(path):
         return path
-    return f"{FULL_PATH}etlFolder{MODE}/{path}"
-
+    return f"{FULL_PATH}etlFolder/{path}"
 
 def _loadStructure(path, dbType):
     path = _resolveEtlPath(path)
@@ -524,16 +525,32 @@ def _buildRecordGroupSql(dbMaster, selectSql, structMaster, periodColumn,
 #                              Группа ↔ периоды
 # ----------------------------------------------------------------------------
 
+'''
+def _registerNewPeriods(cursor, dbMaster, sourceFromClause, tableNameEtlJobs,
+                        periodColumn):
+    """Добавить в etl_jobs группы (createdate), которых ещё нет.
+
+    sourceFromClause — то, что подставляется в FROM: имя таблицы либо
+    обёрнутый '(...) ' для произвольного SQL.
+    """
+    sqlTpl = _pickSql(dbMaster, newDatesPostSql, newDatesOrclSql)
+    print(sqlTpl.format(sourceFromClause, periodColumn), ' and ', tableNameEtlJobs, tableNameEtlJobs.lower())
+    cursor.execute(
+        sqlTpl.format(sourceFromClause, periodColumn),
+        {"tablename": tableNameEtlJobs},
+    )
+'''
+
 def _registerAffectedPeriods(cursor, dbMaster, periods, tableNameEtlJobs):
     """Добавить в etl_jobs затронутые переносом группы (period), которых ещё нет.
 
-    НЕ сканирует источник. Регистрируем только реально переносимые периоды:
-    для iud — периоды из лога, для delete_insert — из данных, для
-    section_compare — группы needUpdate. Смысл: непереносившуюся группу
-    аудитить незачем (slave по ней пуст, отличие очевидно), а как только
-    ETL её перенесёт — она тут и появится, и аудит её подхватит. Периодов
-    на прогон единицы, поэтому дешёвый INSERT ... WHERE NOT EXISTS на каждый
-    дешевле полного прохода тяжёлого UNION источника.
+    В отличие от _registerNewPeriods НЕ сканирует источник. Новый период
+    появляется только когда вставлена строка с новым createdate, а любая
+    такая вставка проходит через триггер и порождает событие в
+    etl_log_iud_row. Значит достаточно зарегистрировать периоды, реально
+    затронутые этим прогоном (для iud — периоды из лога, для delete_insert —
+    периоды из данных). Их на прогон единицы, поэтому дешёвый
+    INSERT ... WHERE NOT EXISTS на каждый дешевле полного прохода UNION.
     """
     if not periods:
         return
@@ -670,6 +687,68 @@ def _masterRowsInChunks(ctx, cfg, ids):
     return rows
 
 
+def _fetchMasterRowsById(ctx, cfg, ids):
+    """{ключ -> [строки ведущей]} для набора id. Ключ совместим с _recIdKey."""
+    pkCols = ctx["pkColsMaster"]
+    grouped = defaultdict(list)
+    if len(pkCols) == 1:
+        rows = _selectMasterRowsByIds(ctx, cfg, ids)
+        colsLower = [c.lower() for c in _columnNames(ctx["structMaster"])]
+        pkIdx = colsLower.index(pkCols[0].lower())
+        for r in rows:
+            grouped[_idKey(r[pkIdx])].append(r)
+    else:
+        for recId in ids:
+            grouped[recId] = _selectMasterRowsByIds(ctx, cfg, [recId])
+    return grouped
+
+
+def _fetchSlavePeriodsById(cursorSlave, cfg, ctx, ids):
+    """{ключ -> set(периодов)} — DISTINCT период ведомой по id, батч-запросами.
+
+    Нужно delete_insert: реальные затронутые группы etl_jobs со стороны
+    ведомой (до удаления). Раньше был SELECT на каждый id."""
+    ids = list(ids)
+    if not ids:
+        return {}
+    dbSlave = cfg["dbSlave"]
+    pkCols = ctx["pkColsSlave"]
+    tableNameSlave = cfg["tableNameSlave"]
+    fcs = _asAndClause(cfg.get("filterClauseSlave"))
+    if cfg.get("truncatePeriod"):
+        periodExpr = (f"DATE({cfg['slavePeriodColumn']})" if _isPost(dbSlave)
+                      else f"TRUNC({cfg['slavePeriodColumn']})")
+    else:
+        periodExpr = cfg["slavePeriodColumn"]
+    grouped = defaultdict(set)
+
+    def _run(idChunk):
+        inClause, params = _bindInList(dbSlave, idChunk, "v")
+        pk = pkCols[0]
+        cond = f"{pk} IN ({inClause})"
+        if fcs:
+            cond += f" AND ({fcs})"
+        sql = (f"SELECT DISTINCT {pk} AS idv, {periodExpr} AS createdate "
+               f"FROM {tableNameSlave} WHERE {cond}")
+        cursorSlave.execute(sql, params)
+        for idv, period in cursorSlave.fetchall():
+            p = _normalizePeriod(period)
+            if p is not None:
+                grouped[_idKey(idv)].add(p)
+
+    if len(pkCols) == 1:
+        for chunk in _chunks(ids):
+            _run(chunk)
+    else:
+        # составной PK — по одному через готовый per-id SQL
+        for recId in ids:
+            cursorSlave.execute(ctx["slavePeriodsByIdSql"],
+                                _splitPkValue(recId, len(pkCols)))
+            acc = {p for p in (_normalizePeriod(r[0])
+                               for r in cursorSlave.fetchall()) if p is not None}
+            grouped[recId] = acc
+    return grouped
+
 def _columnType(jsonStruct, name):
     nl = name.lower()
     for f in jsonStruct:
@@ -743,70 +822,6 @@ def _selectMasterRowsByIds(ctx, cfg, ids):
         cursor.execute(sql, {"ids": obj, **filterParams})
         rows.extend(cursor.fetchall())
     return rows
-
-
-def _fetchMasterRowsById(ctx, cfg, ids):
-    """{ключ -> [строки ведущей]} для набора id. Ключ совместим с _recIdKey."""
-    pkCols = ctx["pkColsMaster"]
-    grouped = defaultdict(list)
-    if len(pkCols) == 1:
-        rows = _selectMasterRowsByIds(ctx, cfg, ids)
-        colsLower = [c.lower() for c in _columnNames(ctx["structMaster"])]
-        pkIdx = colsLower.index(pkCols[0].lower())
-        for r in rows:
-            grouped[_idKey(r[pkIdx])].append(r)
-    else:
-        for recId in ids:
-            grouped[recId] = _selectMasterRowsByIds(ctx, cfg, [recId])
-    return grouped
-
-
-def _fetchSlavePeriodsById(cursorSlave, cfg, ctx, ids):
-    """{ключ -> set(периодов)} — DISTINCT период ведомой по id, батч-запросами.
-
-    Нужно delete_insert: реальные затронутые группы etl_jobs со стороны
-    ведомой (до удаления). Раньше был SELECT на каждый id."""
-    ids = list(ids)
-    if not ids:
-        return {}
-    dbSlave = cfg["dbSlave"]
-    pkCols = ctx["pkColsSlave"]
-    tableNameSlave = cfg["tableNameSlave"]
-    fcs = _asAndClause(cfg.get("filterClauseSlave"))
-    if cfg.get("truncatePeriod"):
-        periodExpr = (f"DATE({cfg['slavePeriodColumn']})" if _isPost(dbSlave)
-                      else f"TRUNC({cfg['slavePeriodColumn']})")
-    else:
-        periodExpr = cfg["slavePeriodColumn"]
-    grouped = defaultdict(set)
-
-    def _run(idChunk):
-        inClause, params = _bindInList(dbSlave, idChunk, "v")
-        pk = pkCols[0]
-        cond = f"{pk} IN ({inClause})"
-        if fcs:
-            cond += f" AND ({fcs})"
-        sql = (f"SELECT DISTINCT {pk} AS idv, {periodExpr} AS createdate "
-               f"FROM {tableNameSlave} WHERE {cond}")
-        cursorSlave.execute(sql, params)
-        for idv, period in cursorSlave.fetchall():
-            p = _normalizePeriod(period)
-            if p is not None:
-                grouped[_idKey(idv)].add(p)
-
-    if len(pkCols) == 1:
-        for chunk in _chunks(ids):
-            _run(chunk)
-    else:
-        # составной PK — по одному через готовый per-id SQL
-        for recId in ids:
-            cursorSlave.execute(ctx["slavePeriodsByIdSql"],
-                                _splitPkValue(recId, len(pkCols)))
-            acc = {p for p in (_normalizePeriod(r[0])
-                               for r in cursorSlave.fetchall()) if p is not None}
-            grouped[recId] = acc
-    return grouped
-
 
 def _markEtlIud(cursor, dbMaster, idrws, isetl):
     """Пометить пачку idrw в etl_log_iud_row значением isetl (1 / -1).
@@ -1129,7 +1144,9 @@ def _processDeleteInsert(cfg, ctx, distinctIds, iudRecords):
         idrwsByRecId[rid].append(idrw)
     # Префетч строк ведущей по ВСЕМ IU-id одним батчем (вместо SELECT на id).
     iuIds = [e[0] for e in distinctIds if e[3] == "IU"]
+    print('before fetch ids')
     masterById = _fetchMasterRowsById(ctx, cfg, iuIds)
+    print('after fetch ids')
     mKey = lambda recId: _recIdKey(recId, ctx["pkColsMaster"])
     sKey = lambda recId: _recIdKey(recId, ctx["pkColsSlave"])
 
@@ -1484,14 +1501,10 @@ def _runSectionCompare(cfg, ctx, selectSql):
 
     logger.info("section_compare %s: %d групп для обновления: %s",
                 tableNameEtlJobs, len(needUpdate), sorted(needUpdate))
-    # Регистрируем в etl_jobs только реально переносимые группы (как в iud):
-    # непереносившуюся группу аудитить незачем — она заведомо различается,
-    # а после переноса аудит подхватит её сам.
     _registerAffectedPeriods(
         ctx["cursorMaster"], dbMaster,
         [p for p in needUpdate if p is not None], tableNameEtlJobs,
     )
-    ctx["conMaster"].commit()
     for period in sorted(needUpdate, key=lambda x: (x is None, x)):
         _processSectionGroup(cfg, ctx, period, idrwBefore)
 
@@ -1606,8 +1619,8 @@ def _run(cfg):
         #    Холостые прогоны iud (а их большинство) больше не сканируют
         #    источник: новые группы дат не могут появиться без событий в
         #    etl_log_iud_row. section_compare регистрирует полным сканом ниже,
-        #    так как ищет группы сравнением master/slave.
-
+        #    так как ищет группы сравнением master/slave
+        
         # 5. Подготовить контекст с готовыми SQL-шаблонами
         ctx = {
             "currDt": currDt,
@@ -1661,9 +1674,12 @@ def _run(cfg):
         # 6. Диспатч по режиму
         mode = cfg["mode"]
         if mode == "section_compare":
-            # Универсальный режим срезов для mocheck / medree. Группы ищет
-            # сравнением master/slave; в etl_jobs регистрирует только реально
-            # переносимые периоды (внутри _runSectionCompare).
+            # Универсальный режим срезов для mocheck / medree. Ищет группы
+            # сравнением master/slave, поэтому ему нужны все периоды источника
+            # в etl_jobs — регистрируем полным сканом (как и раньше).
+            #_registerNewPeriods(cursorMaster, dbMaster, selectSql,
+            #                    tableNameEtlJobs, cfg["periodColumn"])
+            #conMaster.commit()
             _runSectionCompare(cfg, ctx, selectSql)
             return
 

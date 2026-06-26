@@ -105,8 +105,7 @@ def _asNameSet(value):
     if isinstance(value, str):
         value = value.split(",")
     return {f.strip().lower() for f in value if f.strip()}
-
-
+    
 def _auditFields(jsonStructFull, etlFields, auditExcludeFields):
     """Поля для сравнения = перенесённые поля минус auditExcludeFields.
 
@@ -118,6 +117,7 @@ def _auditFields(jsonStructFull, etlFields, auditExcludeFields):
     excluded = _asNameSet(auditExcludeFields)
     if not excluded:
         return fields
+    #excluded = {f.lower() for f in auditExcludeFields}
     return [f for f in fields
             if f[0].lower() not in excluded or f[3] == "Primary Key"]
 
@@ -151,7 +151,6 @@ def _buildSlaveSql(cfg, structSlave):
     fieldsStr = _buildFieldsStr(cfg["dbSlave"], structSlave, cfg["slavePeriodColumn"])
     cond = _periodCond(cfg["dbSlave"], cfg["slavePeriodColumn"], cfg["truncatePeriod"])
     # filterClauseSlave (тот же doctype-срез, что и при переносе) — на ведомую.
-    # В скобках на случай OR внутри (склеиваем с условием по периоду через AND).
     filterClauseSlave = _asAndClause(cfg.get("filterClauseSlave"))
     if filterClauseSlave:
         cond += f" AND ({filterClauseSlave})"
@@ -310,6 +309,7 @@ def _auditGroup(cfg, ctx, origPeriod, report):
         set1, set2 = _toComparable(dbMaster, cfg["dbSlave"], masterRows,
                                    slaveRows, ctx["structMaster"],
                                    ctx["structSlave"])
+        #print('here are sets ', set1, ' and ', set2)
         status = _evaluate(period, tableNameEtlJobs, tableNameSlave,
                            masterRows, slaveRows, set1, set2)
         if status != 1:

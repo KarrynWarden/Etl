@@ -1,0 +1,207 @@
+{
+"data": [
+	{
+		"column_name" : "code_usl",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "constype",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "cont",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "dcalc",
+		"data_type" : "timestamp without time zone",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "ds",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "facdurusl",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "kol_dializ",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "kol_ksg",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "kol_oper",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "kol_rao",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "kol_sluch",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "kol_usl",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "lastupdate",
+		"data_type" : "timestamp without time zone",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "max_idrw",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "mo",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "mpdate",
+		"data_type" : "date",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "otdel",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "profil",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "prvs",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "razdel_usl",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "rdt",
+		"data_type" : "date",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "sign_onk",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "signsave",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "sumbase",
+		"data_type" : "numeric",
+		"data_scale" : 2,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "sum_dializ",
+		"data_type" : "numeric",
+		"data_scale" : 2,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "sum_rao",
+		"data_type" : "numeric",
+		"data_scale" : 2,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "sumupkeep",
+		"data_type" : "numeric",
+		"data_scale" : 2,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "sum_usl",
+		"data_type" : "numeric",
+		"data_scale" : 2,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "sum_sluch",
+		"data_type" : "numeric",
+		"data_scale" : 2,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "sum_oper",
+		"data_type" : "numeric",
+		"data_scale" : 2,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "typecont",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "typehelp",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "type_onk",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "username",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	}
+]}

@@ -5,11 +5,11 @@
 """
 import json
 
-from Src.fullPath import FULL_PATH, MODE
+from Src.fullPath import FULL_PATH
 
 
 def LoadConfig(configKey):
-    with open(f"{FULL_PATH}etlFolder{MODE}/config.json", encoding="utf-8") as fp:
+    with open(f"{FULL_PATH}etlFolder/config.json", encoding="utf-8") as fp:
         config = json.load(fp)
     if configKey not in config["data"]:
         raise KeyError(f"Конфиг для ключа {configKey} не найден")

@@ -1,0 +1,1 @@
+SELECT (code_usl, constype, cont, dcalc, ds, facdurusl, kol_gemodializ, kol_ksg, kol_oper, kol_rao, kol_sluch, kol_usl, lastupdate, max_idrw, mo, mpdate, otdel, profil, prvs, razdel_usl, rdt, sign_onk, signsave, sumbase, sum_gemodializ, sum_rao, sumupkeep, sum_usl, typecont, typehelp, type_onk, username) FROM koknaev.medree_structure_stacionar

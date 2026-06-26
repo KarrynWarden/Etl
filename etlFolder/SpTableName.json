@@ -1,0 +1,227 @@
+{
+    "data": {
+      "SPFILOrclPost": {
+          "tableNameSlave": "spfil",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spfil/Add.sql", 
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spfil/Select.sql"
+      },
+      "SPTERROrclPost": {
+          "tableNameSlave": "spterr",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spterr/Add.sql",
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spterr/Select.sql"
+      },
+      "SPMUOrclPost": {
+          "tableNameSlave": "spmo",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spmu/Add.sql",
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spmu/Select.sql"
+      },
+      "SPSMOOrclPost": {
+          "tableNameSlave": "spsmo",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spsmo/Add.sql",
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spsmo/Select.sql"
+      },
+      "SPTFOrclPost": {
+          "tableNameSlave": "sptf",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/sptf/Add.sql",
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/sptf/Select.sql"
+      },
+      "CALENDAROrclPost": {
+          "tableNameSlave": "calendar",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/calendar/Add.sql"
+      },
+      "SPCOMDECISIONOrclPost": {
+          "tableNameSlave": "sptpcomdecision",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spcomdecision/Add.sql", 
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spcomdecision/Select.sql"
+      },
+      "SPTYPEHELPOrclPost": {
+          "tableNameSlave": "sptypehelp",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/sptypehelp/Add.sql", 
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/sptypehelp/Select.sql"
+      },
+      "SPMEDSERVICEOrclPost": {
+          "tableNameSlave": "spmedservice",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spmedservice/Add.sql", 
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spmedservice/Select.sql"
+      },
+      "SPVMPSERVOrclPost": {
+          "tableNameSlave": "Spvmpserv",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spvmpserv/Add.sql", 
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spvmpserv/Select.sql"
+      },
+      "SPLDIGROUPOrclPost": {
+          "tableNameSlave": "Spdligroup",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spldigroup/Add.sql", 
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spldigroup/Select.sql"
+      },
+      "SPHVIDOrclPost": {
+          "tableNameSlave": "SPVMPvid",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/sphvid/Add.sql", 
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/sphvid/Select.sql"
+      },
+      "SPOFFICEOrclPost": {
+          "tableNameSlave": "spoffice",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spoffice/Add.sql",
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spoffice/Select.sql"
+      },   
+      "SPKAUPostOrcl": {
+          "tableNameSlave": "spkau",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spkauPostOrcl/Add.sql",
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spkauPostOrcl/Select.sql"
+      },  
+      "SPKAURESPostOrcl": {
+          "tableNameSlave": "spkaures",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spkauresPostOrcl/Add.sql",
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spkauresPostOrcl/Select.sql"
+      },  
+      "SPKAUDOPPostOrcl": {
+          "tableNameSlave": "spkaudop",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spkaudopPostOrcl/Add.sql",
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spkaudopPostOrcl/Select.sql"
+      },  
+      "SPKDKAUPostOrcl": {
+          "tableNameSlave": "spkdkau",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spkdkauPostOrcl/Add.sql"
+      },  
+      "SPRESERVEPostOrcl": {
+          "tableNameSlave": "spreserve",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spreservePostOrcl/Add.sql"
+      },
+      "SPCOEFRESPostOrcl": {
+          "tableNameSlave": "spcoefres",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spcoefresPostOrcl/Add.sql",
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spcoefresPostOrcl/Select.sql"
+      },
+      "SPPLANPARAMOrclPost": {
+          "tableNameSlave": "spplanparam",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spplanparam/Add.sql"
+      },
+      "SPPROPERFORMOrclPost": {
+          "tableNameSlave": "spproperform",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spproperform/Add.sql"
+      },
+      "SPPAYCONTPostOrcl": {
+          "tableNameSlave": "KOKNAEV.sppdir",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/SpPayCont/Add.sql",
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/SpPayCont/Select.sql",
+          "dependence": "SPACC"
+      },
+      "SPACCPostOrcl": {
+          "tableNameSlave": "KOKNAEV.spacc",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spacc_new/Add.sql",
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spacc_new/Select.sql"
+      },
+      "SPDIRACCPostOrcl": {
+          "tableNameSlave": "KOKNAEV.spdiracc",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spdiracc_new/Add.sql",
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spdiracc_new/Select.sql",
+          "dependence": "SPACC"
+      },
+      "SPTYPEPAYPostOrcl": {
+          "tableNameSlave": "KOKNAEV.sppayacc",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/SpTypePay/Add.sql",
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/SpTypePay/Select.sql"
+      },
+      "SPDETOBJECTPostOrcl": {
+          "tableNameSlave": "KOKNAEV.spdetobject",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spdetobjectPostOrcl/Add.sql"
+      },
+      "SPSTAFFPostOrcl": {
+          "tableNameSlave": "KOKNAEV.spstaff",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spstaffPostOrcl/Add.sql"
+      },
+      "SPTAXPostOrcl": {
+          "tableNameSlave": "KOKNAEV.sptax",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/sptaxPostOrcl/Add.sql"
+      },
+      "SPINITUFKPostOrcl": {
+          "tableNameSlave": "KOKNAEV.spinitufk",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spinitufkPostOrcl/Add.sql"
+      },
+      "IPACTOrclPost": {
+          "tableNameSlave": "ipact",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/ipact/Add.sql",
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/ipact/Select.sql"
+      },
+      "IAS_CERTOrclPost": {
+          "tableNameSlave": "ias_cert",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/ias_cert/Add.sql",
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/ias_cert/Select.sql"
+      },
+      "SPIREASONPostOrcl": {
+          "tableNameSlave": "KOKNAEV.spireason",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spireasonPostOrcl/Add.sql",
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spireasonPostOrcl/Select.sql"
+      },
+      "SPOTDELOrclPost": {
+          "tableNameSlave": "spotdel",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spotdel/Add.sql",
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spotdel/Select.sql"
+      },
+      "SPDEPTOrclPost": {
+          "tableNameSlave": "spdept",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spdept/Add.sql",
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spdept/Select.sql"
+      },
+      "SPSUBDEPTOrclPost": {
+          "tableNameSlave": "spsubdept",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spsubdept/Add.sql",
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spsubdept/Select.sql"
+      },
+      "SPSTRUCTUREOrclPost": {
+          "tableNameSlave": "spstructure",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spstructure/Add.sql",
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spstructure/Select.sql"
+      },
+      "SPTYPESECTNOrclPost": {
+          "tableNameSlave": "sptypesectn",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/sptypesectn/Add.sql",
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/sptypesectn/Select.sql"
+      },
+      "SPNOMOrclPost": {
+          "tableNameSlave": "spnom",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spnom/Add.sql",
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spnom/Select.sql"
+      },
+      "SPOKATOSOOrclPost": {
+          "tableNameSlave": "spokatoso",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spokatoso/Add.sql",
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spokatoso/Select.sql"
+      },
+      "SPDISPTOrclPost": {
+          "tableNameSlave": "spdispt",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spdispt/Add.sql",
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spdispt/Select.sql"
+      },
+      "SPDIVSERVICEOrclPost": {
+          "tableNameSlave": "spdivservice",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spdivservice/Add.sql",
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spdivservice/Select.sql"
+      },
+      "SPFPROFOrclPost": {
+          "tableNameSlave": "spfprof",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spfprof/Add.sql",
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spfprof/Select.sql"
+      },
+      "SPFPROFKPGOrclPost": {
+          "tableNameSlave": "spfprofkpg",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spfprofkpg/Add.sql",
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spfprofkpg/Select.sql"
+      },
+      "SPMKBOrclPost": {
+          "tableNameSlave": "spmkb",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spmkb/Add.sql",
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spmkb/Select.sql"
+      },
+      "SPONKUSLOrclPost": {
+          "tableNameSlave": "sponkusl",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/sponkusl/Add.sql",
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/sponkusl/Select.sql"
+      },
+      "SPSPECFEDOrclPost": {
+          "tableNameSlave": "spspecfed",
+          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spspecfed/Add.sql",
+          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spspecfed/Select.sql"
+      }
+    }
+  }

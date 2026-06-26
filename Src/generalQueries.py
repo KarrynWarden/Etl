@@ -4,11 +4,11 @@
 чтобы их можно было открывать в DBeaver и т.п. без правок.
 """
 from Functions.functionsFile.takeOneQuery import TakeOneQuery
-from Src.fullPath import FULL_PATH, MODE
+from Src.fullPath import FULL_PATH
 
 
 def _q(relative):
-    return TakeOneQuery(f"{FULL_PATH}etlFolder{MODE}/queries/{relative}")
+    return TakeOneQuery(f"{FULL_PATH}etlFolder/queries/{relative}")
 
 
 # --- проверка структуры ---
@@ -61,8 +61,19 @@ etlUpdatePostSql = _q("general/newEtl/EtlUpdatePost.sql")
 etlUpdateOrclSql = _q("general/newEtl/EtlUpdateOrcl.sql")
 etlErrorPostSql = _q("general/newEtl/EtlErrorPost.sql")
 etlErrorOrclSql = _q("general/newEtl/EtlErrorOrcl.sql")
+#newDatesPostSql = _q("general/newEtl/NewDatesPost.sql")
+#newDatesOrclSql = _q("general/newEtl/NewDatesOrcl.sql")
 registerPeriodPostSql = _q("general/newEtl/RegisterPeriodPost.sql")
 registerPeriodOrclSql = _q("general/newEtl/RegisterPeriodOrcl.sql")
+
+# --- log ---
+selectIdEtlPostSql = _q("general/log/SelectIdEtlPost.sql")
+selectIdEtlOrclSql = _q("general/log/SelectIdEtlOrcl.sql")
+selectByIdEtlPostSql = _q("general/log/SelectByIdEtlPost.sql")
+selectByIdEtlOrclSql = _q("general/log/SelectByIdEtlOrcl.sql")
+addLogPostSql = _q("general/log/AddLogPost.sql")
+addLogOrclSql = _q("general/log/AddLogOrcl.sql")
+
 
 # --- audit: проверка корректности переноса (do_audit) ---
 getBadAuditPostSql = _q("general/audit/GetBadAuditPost.sql")
@@ -73,11 +84,3 @@ auditRecordsSlavePostSql = _q("general/audit/AuditRecordsSlavePost.sql")
 auditRecordsSlaveOrclSql = _q("general/audit/AuditRecordsSlaveOrcl.sql")
 auditUpdatePostSql = _q("general/audit/AuditUpdatePost.sql")
 auditUpdateOrclSql = _q("general/audit/AuditUpdateOrcl.sql")
-
-# --- log ---
-selectIdEtlPostSql = _q("general/log/SelectIdEtlPost.sql")
-selectIdEtlOrclSql = _q("general/log/SelectIdEtlOrcl.sql")
-selectByIdEtlPostSql = _q("general/log/SelectByIdEtlPost.sql")
-selectByIdEtlOrclSql = _q("general/log/SelectByIdEtlOrcl.sql")
-addLogPostSql = _q("general/log/AddLogPost.sql")
-addLogOrclSql = _q("general/log/AddLogOrcl.sql")

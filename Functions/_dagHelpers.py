@@ -35,7 +35,7 @@ from airflow.utils.timezone import utcnow
 
 from Functions.do_etl import Do_etl, RecordScopeError, classifyError
 from Functions.do_audit import Do_audit, AuditScopeError
-from Src.fullPath import FULL_PATH, MODE, WEB_BASE_URL
+from Src.fullPath import FULL_PATH, WEB_BASE_URL
 
 
 DEFAULT_ARGS = {
@@ -54,12 +54,6 @@ FREQUENT_BACKOFF_MIN = [1, 1]
 # Период перепроверки watcher'ом при удержании "бесконечного дага".
 WATCHER_RECHECK_SEC = 60
 
-# Watcher держит DAG-run сном; при перезапуске airflow он ловит SIGTERM и
-# падает. Чтобы удержание НЕ рвалось (иначе max_active_runs отпускает и
-# плодятся новые замороженные запуски), даём ему большой бюджет ретраев с
-# коротким фиксированным интервалом: каждый рестарт -> up_for_retry -> снова
-# держит. На исчерпание ушли бы тысячи рестартов. Сводный 🟥 (см. _freezeWatcher)
-# при этом бросает AirflowFailException и ретраи НЕ тратит.
 WATCHER_MAX_RETRIES = 10000
 WATCHER_RETRY_DELAY_SEC = 30
 
@@ -70,8 +64,8 @@ WATCHER_RETRY_DELAY_SEC = 30
 # freeze_watcher тоже в default_pool, поэтому замороженные ETL-даги слоты
 # ETL-пула не держат и взять замок не мешают.
 # ВАЖНО: ETL_POOL_SLOTS не должен превышать реальный размер пула, иначе замок
-# никогда не получит все слоты (дедлок). Пул "Test" = 100 слотов.
-ETL_POOL = "Test"
+# никогда не получит все слоты (дедлок). Пул "Etl" = 100 слотов.
+ETL_POOL = "Etl"
 ETL_POOL_SLOTS = 100
 
 # Задача-замок: id, XCom-сигнал «пул занят», таймаут ожидания сигнала аудитом.
@@ -443,7 +437,7 @@ def buildOperator(taskId, callable_, triggerRule=None):
     """Простой PythonOperator без ETL-обвязки."""
     kwargs = dict(
         task_id=taskId,
-        pool="Test",
+        pool="Etl",
         provide_context=True,
         priority_weight=1,
         python_callable=callable_,
@@ -455,7 +449,7 @@ def buildOperator(taskId, callable_, triggerRule=None):
 
 def makeEtlOperator(taskId, tableNameMaster, dbMaster, dbSlave,
                     tableNameEtlJobs=None, retryMode="frequent",
-                    triggerRule=None, pool="Test", **opts):
+                    triggerRule=None, pool="Etl", **opts):
     """Собрать PythonOperator ETL-линии целиком (callable + параметры ретраев).
 
     retryMode='frequent' — airflow не ретраит (retries=0), ретраи делает
@@ -512,6 +506,7 @@ def makeAuditOperator(taskId, tableNameMaster, dbMaster, dbSlave,
 #                Перечисление линий из config.json (для общего AuditDag)
 # ----------------------------------------------------------------------------
 
+
 def iterAuditLines():
     """Все линии переноса из config.json — по одной на каждый ключ.
 
@@ -521,16 +516,15 @@ def iterAuditLines():
     (или = префиксу ключа). Возвращает список словарей, готовых к передаче
     в makeAuditOperator.
     """
-    with open(f"{FULL_PATH}etlFolder{MODE}/config.json", encoding="utf-8") as fp:
+    with open(f"{FULL_PATH}etlFolder/config.json", encoding="utf-8") as fp:
         data = json.load(fp)["data"]
 
     lines = []
     for key, entry in data.items():
         if not isinstance(entry, dict):
             continue
-        # skipAudit: линия временно не проверяется (таблица «на ремонте» /
-        # даг ещё не готов). Задачу аудита вообще не создаём — не забыть снять
-        # пометку, когда линия будет готова.
+
+        # ⬇️ НОВОЕ: Пропускаем таблицы, для которых аудит временно отключен
         if entry.get("skipAudit"):
             logging.info("AuditDag: пропускаю ключ '%s' (skipAudit=true)", key)
             continue
@@ -549,7 +543,6 @@ def iterAuditLines():
             "tableNameEtlJobs": tableNameEtlJobs,
         })
     return lines
-
 
 # ----------------------------------------------------------------------------
 #                Watcher: авто-удержание дага при полной заморозке
@@ -759,7 +752,6 @@ def addFreezeWatcher(lineTasks, retryMode="frequent"):
         provide_context=True,
         python_callable=_freezeWatcher(retryMode),
         trigger_rule="all_done",
-        # Переживать перезапуски airflow: SIGTERM -> up_for_retry -> снова держит.
         retries=WATCHER_MAX_RETRIES,
         retry_delay=dt.timedelta(seconds=WATCHER_RETRY_DELAY_SEC),
         retry_exponential_backoff=False,
@@ -767,3 +759,10 @@ def addFreezeWatcher(lineTasks, retryMode="frequent"):
     for task in lineTasks:
         task >> watcher
     return watcher
+
+
+
+
+
+
+

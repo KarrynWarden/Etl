@@ -1,5 +1,5 @@
 {
-  "_comment": "Конфигурация ETL по парам tableNameEtlJobs+dbMaster+dbSlave. Все пути относительно FULL_PATH+etlFolder+MODE.",
+  "_comment": "Конфигурация ETL по парам tableNameEtlJobs+dbMaster+dbSlave. Все пути относительно FULL_PATH+etlFolder.",
 
   "_mocheckCommon": {
     "_doc": "Все 9 логических групп mocheck шарят один master-запрос MOCHECK.sql (UNION ALL по 9 doctype), один slave-table 'mocheck' и работают в режиме section_compare. Различаются filterClause/filterClauseSlave/conflictExtra по doctype.",
@@ -109,7 +109,8 @@
       "filterClauseSlave": "doctype = 7",
       "conflictExtra": "doctype",
       "conflictWhere": "doctype = 7",
-      "mode": "iud"
+      "mode": "iud",
+      "skipAudit": true
     },
     "TFOUTSCHETOrclPost": {
       "_doc": "oracle->postgres, mocheck doctype=8 (TFOUTSCHET).",
@@ -169,16 +170,6 @@
         "mode": "section_compare",
         "truncatePeriod": true
     },
-    "etljobsOrclOrcl": {
-      "_doc": "oracle->oracle (на случай миграции внутри одной СУБД). skipAudit: даг неактуален, аудит по нему пока не запускаем.",
-      "tableNameMaster": "etl_jobs_src",
-      "tableNameSlave": "etl_jobs_dst",
-      "structureMaster": "structures/etl_jobs_orcl.json",
-      "structureSlave": "structures/etl_jobs_orcl.json",
-      "periodColumn": "period",
-      "mode": "iud",
-      "skipAudit": true
-    },
     "LOG_EINDPROLONGOrclPost": {
       "tableNameSlave": "log_eindprolong",
       "structureMaster": "structures/log_eindprolong/LOG_EINDPROLONG.json",
@@ -191,4 +182,3 @@
     }
   }
 }
-
