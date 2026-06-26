@@ -516,8 +516,8 @@ def iterAuditLines():
     (или = префиксу ключа). Возвращает список словарей, готовых к передаче
     в makeAuditOperator.
     """
-    with open(f"{FULL_PATH}etlFolder/config.json", encoding="utf-8") as fp:
-        data = json.load(fp)["data"]
+    from Functions.functionsFile.loadConfig import loadFullConfig
+    data = loadFullConfig()["data"]
 
     lines = []
     for key, entry in data.items():

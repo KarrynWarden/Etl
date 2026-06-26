@@ -1,0 +1,15 @@
+{
+  "TFINSCHETOrclPost": {
+    "_doc": "oracle->postgres, mocheck doctype=9 (TFINSCHET).",
+    "tableNameMaster": "TFINSCHET",
+    "tableNameSlave": "mocheck",
+    "structureMaster": "structures/MOCHECK/MOCHECK.json",
+    "structureSlave": "structures/MOCHECK/mocheck.json",
+    "selectSql": "queries/customQueries/MOCHECK.sql",
+    "filterClause": "doctype = 9",
+    "filterClauseSlave": "doctype = 9",
+    "conflictExtra": "doctype",
+    "conflictWhere": "doctype = 9",
+    "mode": "iud"
+  }
+}

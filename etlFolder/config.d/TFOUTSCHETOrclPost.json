@@ -1,0 +1,15 @@
+{
+  "TFOUTSCHETOrclPost": {
+    "_doc": "oracle->postgres, mocheck doctype=8 (TFOUTSCHET).",
+    "tableNameMaster": "TFOUTSCHET",
+    "tableNameSlave": "mocheck",
+    "structureMaster": "structures/MOCHECK/MOCHECK.json",
+    "structureSlave": "structures/MOCHECK/mocheck.json",
+    "selectSql": "queries/customQueries/MOCHECK.sql",
+    "filterClause": "doctype = 8",
+    "filterClauseSlave": "doctype = 8",
+    "conflictExtra": "doctype",
+    "conflictWhere": "doctype = 8",
+    "mode": "iud"
+  }
+}

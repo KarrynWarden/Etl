@@ -1,0 +1,14 @@
+{
+  "reqprepmomocheckPostPost": {
+    "_doc": "postgres->postgres: reqprepmo -> mocheck (doctype=7), частичный уникальный индекс mocheck по (idrw, doctype) WHERE doctype=7.",
+    "tableNameMaster": "reqprepmo",
+    "tableNameSlave": "mocheck",
+    "structureMaster": "structures/reqprepmo/reqprepmomocheck.json",
+    "structureSlave": "structures/MOCHECK/mocheck.json",
+    "selectSql": "queries/customQueries/reqprepmomocheck.sql",
+    "filterClauseSlave": "doctype = 7",
+    "conflictExtra": "doctype",
+    "conflictWhere": "doctype = 7",
+    "mode": "iud"
+  }
+}

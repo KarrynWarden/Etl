@@ -1,0 +1,13 @@
+{
+  "medree_consOrclPost": {
+    "_doc": "oracle->postgres, medree_cons. Mode=section_compare: dcalc выступает как createdate, сравниваются (dcalc, max(lastupdate)) на двух сторонах + сигналы из etl_log_iud_row.",
+    "tableNameMaster": "MEDREE_CONS",
+    "tableNameSlave": "medree_cons",
+    "structureMaster": "structures/MEDREE_CONS/MEDREE_CONS.json",
+    "structureSlave": "structures/MEDREE_CONS/medree_cons.json",
+    "periodColumn": "dcalc",
+    "slavePeriodColumn": "dcalc",
+    "mode": "section_compare",
+    "truncatePeriod": true
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "koknaev.MEDREE_STRUCTURE_STACIONAROrclPost": {
+    "tableNameSlave": "medree_structure_stacionar",
+    "structureMaster": "structures/medree_structure_stacionar/MEDREE_STRUCTURE_STACIONAR.json",
+    "structureSlave": "structures/medree_structure_stacionar/medree_structure_stacionar.json",
+    "periodColumn": "dcalc",
+    "slavePeriodColumn": "dcalc",
+    "mode": "section_compare",
+    "truncatePeriod": true
+  }
+}

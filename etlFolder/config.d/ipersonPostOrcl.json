@@ -1,0 +1,12 @@
+{
+  "ipersonPostOrcl": {
+    "_doc": "postgres->oracle, простой PK, mode=iud (точечные апдейты по triggers).",
+    "tableNameMaster": "iperson",
+    "tableNameSlave": "IPERSON",
+    "structureMaster": "structures/iperson/iperson.json",
+    "structureSlave": "structures/iperson/IPERSON.json",
+    "selectSql": "queries/customQueries/iperson.sql",
+    "mode": "iud",
+    "auditExcludeFields": "doctype, docser, docnum, docdate, name_vp"
+  }
+}

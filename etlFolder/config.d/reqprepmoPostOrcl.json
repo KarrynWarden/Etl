@@ -1,0 +1,10 @@
+{
+  "reqprepmoPostOrcl": {
+    "_doc": "postgres->oracle, master-таблица напрямую, период reqdt.",
+    "tableNameMaster": "reqprepmo",
+    "tableNameSlave": "REQPREPMO",
+    "structureMaster": "structures/reqprepmo/reqprepmo.json",
+    "structureSlave": "structures/reqprepmo/REQPREPMO.json",
+    "mode": "iud"
+  }
+}

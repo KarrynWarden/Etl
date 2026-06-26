@@ -1,0 +1,7 @@
+{
+  "PLANOMSOrclPost": {
+    "tableNameSlave": "tpplanoms",
+    "structureMaster": "structures/PLANOMS/PLANOMS.json",
+    "structureSlave": "structures/PLANOMS/tpplanoms.json"
+  }
+}
