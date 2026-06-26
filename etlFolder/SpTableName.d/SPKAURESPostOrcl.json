@@ -1,0 +1,7 @@
+{
+  "SPKAURESPostOrcl": {
+    "tableNameSlave": "spkaures",
+    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spkauresPostOrcl/Add.sql",
+    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spkauresPostOrcl/Select.sql"
+  }
+}

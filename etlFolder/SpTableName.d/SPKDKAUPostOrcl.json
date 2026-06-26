@@ -1,0 +1,6 @@
+{
+  "SPKDKAUPostOrcl": {
+    "tableNameSlave": "spkdkau",
+    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spkdkauPostOrcl/Add.sql"
+  }
+}

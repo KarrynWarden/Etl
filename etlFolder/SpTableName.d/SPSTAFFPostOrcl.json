@@ -1,0 +1,6 @@
+{
+  "SPSTAFFPostOrcl": {
+    "tableNameSlave": "KOKNAEV.spstaff",
+    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spstaffPostOrcl/Add.sql"
+  }
+}

@@ -11,6 +11,7 @@ from airflow.operators.python_operator import PythonOperator
 from airflow.exceptions import AirflowSkipException, AirflowException
 from Functions.spEtlNew import SpEtl
 from Functions.functionsFile.takeOneQuery import TakeOneQuery
+from Functions.functionsFile.loadConfig import assemble
 from Src.fullPath import FULL_PATH
 from Src.spQueries import selectAllSpSql
 from Connect import DbConnectOrcl, DbConnectPost
@@ -26,9 +27,7 @@ args = {
 
 def do_etl_sp():
     action = "EtlSp"
-    with open(f'{FULL_PATH}etlFolder/SpTableName.json') as file:
-        data = json.load(file)
-    arrSp = data['data']
+    arrSp = assemble("SpTableName")["data"]
 
     # Создаем dependence_map с информацией о dbMaster для каждой зависимости
     dependence_map = {}

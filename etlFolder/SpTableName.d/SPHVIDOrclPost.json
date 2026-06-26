@@ -1,0 +1,7 @@
+{
+  "SPHVIDOrclPost": {
+    "tableNameSlave": "SPVMPvid",
+    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/sphvid/Add.sql",
+    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/sphvid/Select.sql"
+  }
+}

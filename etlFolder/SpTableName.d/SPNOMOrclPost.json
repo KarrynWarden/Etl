@@ -1,0 +1,7 @@
+{
+  "SPNOMOrclPost": {
+    "tableNameSlave": "spnom",
+    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spnom/Add.sql",
+    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spnom/Select.sql"
+  }
+}

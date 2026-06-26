@@ -1,0 +1,6 @@
+{
+  "CALENDAROrclPost": {
+    "tableNameSlave": "calendar",
+    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/calendar/Add.sql"
+  }
+}

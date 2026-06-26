@@ -1,0 +1,7 @@
+{
+  "SPTFOrclPost": {
+    "tableNameSlave": "sptf",
+    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/sptf/Add.sql",
+    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/sptf/Select.sql"
+  }
+}

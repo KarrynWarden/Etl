@@ -1,9 +1,0 @@
-{
-    "data": {
-      "ipersonactOrclPost": {
-          "tableNameSlave": "ipersonact",
-          "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/ipersonact/Add.sql", 
-          "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/ipersonact/Select.sql"
-      }
-    }
-  }

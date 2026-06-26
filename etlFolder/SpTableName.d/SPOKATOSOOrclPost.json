@@ -1,0 +1,7 @@
+{
+  "SPOKATOSOOrclPost": {
+    "tableNameSlave": "spokatoso",
+    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spokatoso/Add.sql",
+    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spokatoso/Select.sql"
+  }
+}

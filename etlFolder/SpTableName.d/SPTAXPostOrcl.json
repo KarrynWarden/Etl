@@ -1,0 +1,6 @@
+{
+  "SPTAXPostOrcl": {
+    "tableNameSlave": "KOKNAEV.sptax",
+    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/sptaxPostOrcl/Add.sql"
+  }
+}

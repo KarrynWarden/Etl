@@ -1,0 +1,7 @@
+{
+  "SPMKBOrclPost": {
+    "tableNameSlave": "spmkb",
+    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spmkb/Add.sql",
+    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spmkb/Select.sql"
+  }
+}

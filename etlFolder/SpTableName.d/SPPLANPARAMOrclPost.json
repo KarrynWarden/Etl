@@ -1,0 +1,6 @@
+{
+  "SPPLANPARAMOrclPost": {
+    "tableNameSlave": "spplanparam",
+    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spplanparam/Add.sql"
+  }
+}

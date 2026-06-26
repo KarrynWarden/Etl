@@ -1,0 +1,6 @@
+{
+  "SPDETOBJECTPostOrcl": {
+    "tableNameSlave": "KOKNAEV.spdetobject",
+    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spdetobjectPostOrcl/Add.sql"
+  }
+}

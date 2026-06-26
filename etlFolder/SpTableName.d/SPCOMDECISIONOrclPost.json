@@ -1,0 +1,7 @@
+{
+  "SPCOMDECISIONOrclPost": {
+    "tableNameSlave": "sptpcomdecision",
+    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spcomdecision/Add.sql",
+    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spcomdecision/Select.sql"
+  }
+}

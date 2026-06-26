@@ -1,0 +1,7 @@
+{
+  "SPOFFICEOrclPost": {
+    "tableNameSlave": "spoffice",
+    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spoffice/Add.sql",
+    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spoffice/Select.sql"
+  }
+}

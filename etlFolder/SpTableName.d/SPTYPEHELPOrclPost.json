@@ -1,0 +1,7 @@
+{
+  "SPTYPEHELPOrclPost": {
+    "tableNameSlave": "sptypehelp",
+    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/sptypehelp/Add.sql",
+    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/sptypehelp/Select.sql"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "SPTERROrclPost": {
+    "tableNameSlave": "spterr",
+    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spterr/Add.sql",
+    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spterr/Select.sql"
+  }
+}

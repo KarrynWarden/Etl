@@ -1,0 +1,7 @@
+{
+  "SPTYPESECTNOrclPost": {
+    "tableNameSlave": "sptypesectn",
+    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/sptypesectn/Add.sql",
+    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/sptypesectn/Select.sql"
+  }
+}

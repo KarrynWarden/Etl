@@ -1,0 +1,7 @@
+{
+  "SPFPROFKPGOrclPost": {
+    "tableNameSlave": "spfprofkpg",
+    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spfprofkpg/Add.sql",
+    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spfprofkpg/Select.sql"
+  }
+}

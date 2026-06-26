@@ -1,0 +1,7 @@
+{
+  "SPSPECFEDOrclPost": {
+    "tableNameSlave": "spspecfed",
+    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spspecfed/Add.sql",
+    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spspecfed/Select.sql"
+  }
+}

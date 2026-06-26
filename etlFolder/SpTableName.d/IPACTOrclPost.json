@@ -1,0 +1,7 @@
+{
+  "IPACTOrclPost": {
+    "tableNameSlave": "ipact",
+    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/ipact/Add.sql",
+    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/ipact/Select.sql"
+  }
+}

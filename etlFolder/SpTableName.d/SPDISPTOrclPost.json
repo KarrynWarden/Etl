@@ -1,0 +1,7 @@
+{
+  "SPDISPTOrclPost": {
+    "tableNameSlave": "spdispt",
+    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spdispt/Add.sql",
+    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spdispt/Select.sql"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "SPFILOrclPost": {
+    "tableNameSlave": "spfil",
+    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spfil/Add.sql",
+    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spfil/Select.sql"
+  }
+}

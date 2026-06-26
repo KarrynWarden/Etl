@@ -1,0 +1,8 @@
+{
+  "SPPAYCONTPostOrcl": {
+    "tableNameSlave": "KOKNAEV.sppdir",
+    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/SpPayCont/Add.sql",
+    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/SpPayCont/Select.sql",
+    "dependence": "SPACC"
+  }
+}

@@ -13,6 +13,7 @@ from Functions.spEtlOnce import SpEtl
 from Functions.functionsFile.takeOneQuery import TakeOneQuery
 from Src.fullPath import FULL_PATH
 from Src.spQueries import selectAllSpSql
+from Functions.functionsFile.loadConfig import assemble
 
 args = {
     'owner': 'airflow',
@@ -25,9 +26,7 @@ args = {
 
 def do_etl_sp():
     action = "EtlSpOnce"
-    with open(f'{FULL_PATH}etlFolder/SpOnce.json') as file:
-        data = json.load(file)
-    arrSp = data['data']
+    arrSp = assemble("SpOnce")["data"]
     for spNameDb in list(arrSp.keys()):
         tableNameMaster = spNameDb[:-8]
         dbMaster = spNameDb[-8:-4]

@@ -58,7 +58,7 @@ while read oldrev newrev ref; do
     branch=\${ref#refs/heads/}
     if [ "\$branch" = "$DEPLOY_BRANCH" ]; then
         git --git-dir=$BARE --work-tree=$SRC checkout -f "$DEPLOY_BRANCH"
-        python3 "$SRC/tools/regen_config.py" config >/dev/null 2>&1 || true
+        python3 "$SRC/tools/regen_config.py" config SpTableName SpOnce >/dev/null 2>&1 || true
         sudo systemctl restart airflow-test-scheduler airflow-test-webserver
         echo "deploy: ветка $DEPLOY_BRANCH -> $SRC, airflow-test перезапущен"
     else

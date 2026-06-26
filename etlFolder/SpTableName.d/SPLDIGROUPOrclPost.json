@@ -1,0 +1,7 @@
+{
+  "SPLDIGROUPOrclPost": {
+    "tableNameSlave": "Spdligroup",
+    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spldigroup/Add.sql",
+    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spldigroup/Select.sql"
+  }
+}
