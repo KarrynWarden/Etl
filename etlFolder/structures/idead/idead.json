@@ -1,19 +1,49 @@
 {
 "data": [
 	{
-		"column_name" : "birth_oksm",
+		"column_name" : "addressr",
 		"data_type" : "character varying",
 		"data_scale" : null,
 		"is_primary_key" : null
 	},
 	{
-		"column_name" : "bomg",
-		"data_type" : "numeric",
-		"data_scale" : 0,
+		"column_name" : "aoidl",
+		"data_type" : "character varying",
+		"data_scale" : null,
 		"is_primary_key" : null
 	},
 	{
-		"column_name" : "c_oksm",
+		"column_name" : "code_confirm",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "code_vp",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "codesubgosl",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "codezags",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "commchange",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "commentary",
 		"data_type" : "character varying",
 		"data_scale" : null,
 		"is_primary_key" : null
@@ -25,19 +55,25 @@
 		"is_primary_key" : null
 	},
 	{
-		"column_name" : "dbeg",
+		"column_name" : "date_confirm",
 		"data_type" : "date",
 		"data_scale" : null,
 		"is_primary_key" : null
 	},
 	{
-		"column_name" : "dbegarmy",
+		"column_name" : "dateazsm",
 		"data_type" : "date",
 		"data_scale" : null,
 		"is_primary_key" : null
 	},
 	{
-		"column_name" : "dbegerz",
+		"column_name" : "datechange",
+		"data_type" : "date",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "datesend",
 		"data_type" : "date",
 		"data_scale" : null,
 		"is_primary_key" : null
@@ -49,235 +85,19 @@
 		"is_primary_key" : null
 	},
 	{
-		"column_name" : "dend",
+		"column_name" : "ddeathzags",
 		"data_type" : "date",
 		"data_scale" : null,
 		"is_primary_key" : null
 	},
 	{
-		"column_name" : "denddoc",
+		"column_name" : "docdate",
 		"data_type" : "date",
 		"data_scale" : null,
 		"is_primary_key" : null
 	},
 	{
-		"column_name" : "denderz",
-		"data_type" : "date",
-		"data_scale" : null,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "dget",
-		"data_type" : "date",
-		"data_scale" : null,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "dostdrcal",
-		"data_type" : "numeric",
-		"data_scale" : 0,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "dr",
-		"data_type" : "date",
-		"data_scale" : null,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "dvizit",
-		"data_type" : "date",
-		"data_scale" : null,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "email",
-		"data_type" : "character varying",
-		"data_scale" : null,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "enp",
-		"data_type" : "numeric",
-		"data_scale" : null,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "ext",
-		"data_type" : "numeric",
-		"data_scale" : 0,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "fam",
-		"data_type" : "character varying",
-		"data_scale" : null,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "fpolis",
-		"data_type" : "numeric",
-		"data_scale" : 0,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "id",
-		"data_type" : "numeric",
-		"data_scale" : 0,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "idmain",
-		"data_type" : "numeric",
-		"data_scale" : 0,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "idrow",
-		"data_type" : "numeric",
-		"data_scale" : 0,
-		"is_primary_key" : "Primary Key"
-	},
-	{
-		"column_name" : "im",
-		"data_type" : "character varying",
-		"data_scale" : null,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "kateg",
-		"data_type" : "numeric",
-		"data_scale" : 0,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "lastupdate",
-		"data_type" : "timestamp without time zone",
-		"data_scale" : null,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "meta_fam",
-		"data_type" : "character varying",
-		"data_scale" : null,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "meta_im",
-		"data_type" : "character varying",
-		"data_scale" : null,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "meta_ot",
-		"data_type" : "character varying",
-		"data_scale" : null,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "method",
-		"data_type" : "character varying",
-		"data_scale" : null,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "mr",
-		"data_type" : "character varying",
-		"data_scale" : null,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "npolis",
-		"data_type" : "numeric",
-		"data_scale" : null,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "numblank",
-		"data_type" : "character varying",
-		"data_scale" : null,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "ot",
-		"data_type" : "character varying",
-		"data_scale" : null,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "phone",
-		"data_type" : "character varying",
-		"data_scale" : null,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "przcod",
-		"data_type" : "numeric",
-		"data_scale" : 0,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "reason",
-		"data_type" : "numeric",
-		"data_scale" : 0,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "rpolis",
-		"data_type" : "numeric",
-		"data_scale" : 0,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "rsmo",
-		"data_type" : "numeric",
-		"data_scale" : 0,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "smo",
-		"data_type" : "numeric",
-		"data_scale" : 0,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "ss",
-		"data_type" : "character varying",
-		"data_scale" : null,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "terr",
-		"data_type" : "numeric",
-		"data_scale" : 0,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "true_dr",
-		"data_type" : "numeric",
-		"data_scale" : 0,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "vpolis",
-		"data_type" : "numeric",
-		"data_scale" : 0,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "w",
-		"data_type" : "numeric",
-		"data_scale" : 0,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "doctype",
-		"data_type" : "numeric",
-		"data_scale" : 0,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "docser",
+		"column_name" : "docname",
 		"data_type" : "character varying",
 		"data_scale" : null,
 		"is_primary_key" : null
@@ -289,8 +109,128 @@
 		"is_primary_key" : null
 	},
 	{
-		"column_name" : "docdate",
+		"column_name" : "docser",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "doctype",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "dostrdr",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "dostrds",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "dr",
 		"data_type" : "date",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "erp",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "fam",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "flatl",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "gorodl",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "gorodr",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "gosl",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "gosr",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "housel",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "id",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "ididead",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : "Primary Key"
+	},
+	{
+		"column_name" : "idlogload",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "idlogsend",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "im",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "indexl",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "korpl",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "name_confirm",
+		"data_type" : "character varying",
 		"data_scale" : null,
 		"is_primary_key" : null
 	},
@@ -301,15 +241,117 @@
 		"is_primary_key" : null
 	},
 	{
-		"column_name" : "fiopr",
+		"column_name" : "namenpl",
 		"data_type" : "character varying",
 		"data_scale" : null,
 		"is_primary_key" : null
 	},
 	{
-		"column_name" : "contact",
+		"column_name" : "namenpr",
 		"data_type" : "character varying",
 		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "num_confirm",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "numazsm",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "numsv",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "oksm",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "organ_confirm",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "ot",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "rayonl",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "rayonr",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "reason",
+		"data_type" : "text",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "sersv",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "source",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "statuscode",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "statusdbeg",
+		"data_type" : "date",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "streetl",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "subgosl",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "subgosr",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "w",
+		"data_type" : "numeric",
+		"data_scale" : 0,
 		"is_primary_key" : null
 	}
 ]}

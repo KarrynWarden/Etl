@@ -1,12 +1,6 @@
 {
 "data": [
 	{
-		"column_name" : "acc",
-		"data_type" : "numeric",
-		"data_scale" : 0,
-		"is_primary_key" : null
-	},
-	{
 		"column_name" : "accdt",
 		"data_type" : "date",
 		"data_scale" : null,
@@ -19,19 +13,25 @@
 		"is_primary_key" : null
 	},
 	{
+		"column_name" : "accnrec",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
 		"column_name" : "addcont",
 		"data_type" : "numeric",
 		"data_scale" : 0,
 		"is_primary_key" : null
 	},
 	{
-		"column_name" : "addsmo",
+		"column_name" : "addmo",
 		"data_type" : "numeric",
 		"data_scale" : 0,
 		"is_primary_key" : null
 	},
 	{
-		"column_name" : "addtypecont",
+		"column_name" : "acc",
 		"data_type" : "numeric",
 		"data_scale" : 0,
 		"is_primary_key" : null
@@ -44,12 +44,6 @@
 	},
 	{
 		"column_name" : "createdate",
-		"data_type" : "timestamp without time zone",
-		"data_scale" : null,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "datedoc",
 		"data_type" : "date",
 		"data_scale" : null,
 		"is_primary_key" : null
@@ -61,21 +55,15 @@
 		"is_primary_key" : null
 	},
 	{
+		"column_name" : "detobject",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
 		"column_name" : "dop",
 		"data_type" : "date",
 		"data_scale" : null,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "fil",
-		"data_type" : "numeric",
-		"data_scale" : 0,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "idlog",
-		"data_type" : "numeric",
-		"data_scale" : 0,
 		"is_primary_key" : null
 	},
 	{
@@ -97,39 +85,27 @@
 		"is_primary_key" : null
 	},
 	{
+		"column_name" : "kbk",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "lastupdate",
+		"data_type" : "timestamp without time zone",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
 		"column_name" : "month",
 		"data_type" : "numeric",
 		"data_scale" : 0,
 		"is_primary_key" : null
 	},
 	{
-		"column_name" : "ndoc",
+		"column_name" : "pddir_idrw",
 		"data_type" : "numeric",
-		"data_scale" : 0,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "purpose",
-		"data_type" : "character varying",
 		"data_scale" : null,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "reserve",
-		"data_type" : "numeric",
-		"data_scale" : 0,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "smo",
-		"data_type" : "numeric",
-		"data_scale" : 0,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "sumdoc",
-		"data_type" : "numeric",
-		"data_scale" : 2,
 		"is_primary_key" : null
 	},
 	{
@@ -139,7 +115,31 @@
 		"is_primary_key" : null
 	},
 	{
+		"column_name" : "text",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "typeaddcont",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
 		"column_name" : "typecont",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "typepay",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "valdetobject",
 		"data_type" : "numeric",
 		"data_scale" : 0,
 		"is_primary_key" : null

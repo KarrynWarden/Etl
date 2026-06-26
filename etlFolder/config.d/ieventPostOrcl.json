@@ -1,0 +1,9 @@
+{
+  "ieventPostOrcl": {
+    "_doc": "Post→Orcl, ведомая KOKNAEV.IEVENT",
+    "tableNameSlave": "KOKNAEV.IEVENT",
+    "structureMaster": "structures/ievent/ievent.json",
+    "structureSlave": "structures/ievent/IEVENT.json",
+    "selectSql": "queries/customQueries/ievent.sql"
+  }
+}

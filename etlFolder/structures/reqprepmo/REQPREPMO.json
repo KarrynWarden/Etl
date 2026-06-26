@@ -13,63 +13,27 @@
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "ACCNREC",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "ADDCONT",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
 		"COLUMN_NAME" : "CREATEDATE",
 		"DATA_TYPE" : "DATE",
 		"DATA_SCALE" : null,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "DATEDOC",
-		"DATA_TYPE" : "DATE",
-		"DATA_SCALE" : null,
+		"COLUMN_NAME" : "ID",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
 		"IS_PRIMARY_KEY" : "Primary Key"
 	},
 	{
-		"COLUMN_NAME" : "DBEGIN",
-		"DATA_TYPE" : "DATE",
+		"COLUMN_NAME" : "ID_REQPREPSMO",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "IDUSER",
+		"DATA_TYPE" : "VARCHAR2",
 		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "DEND",
-		"DATA_TYPE" : "DATE",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "DETOBJECT",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "IDRW",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "KAU",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "KAUDOP",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
@@ -79,56 +43,73 @@
 		"IS_PRIMARY_KEY" : null
 	},
 	{
+		"COLUMN_NAME" : "MO",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
 		"COLUMN_NAME" : "MONTH",
 		"DATA_TYPE" : "NUMBER",
 		"DATA_SCALE" : 0,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "NDET",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : "Primary Key"
+		"COLUMN_NAME" : "REQDT",
+		"DATA_TYPE" : "DATE",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "NUMBDOC",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : "Primary Key"
-	},
-    
-	{
-		"COLUMN_NAME" : "ORDERPAY_IDRW",
+		"COLUMN_NAME" : "SMO",
 		"DATA_TYPE" : "NUMBER",
 		"DATA_SCALE" : 0,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "SUMDET",
+		"COLUMN_NAME" : "SUMAVERAGE",
 		"DATA_TYPE" : "NUMBER",
 		"DATA_SCALE" : 2,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "TYPEADDCONT",
+		"COLUMN_NAME" : "SUMCOM",
 		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
+		"DATA_SCALE" : 2,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "TYPEPAY",
+		"COLUMN_NAME" : "SUMPREPMAIN",
 		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : "Primary Key"
-	},
-	{
-		"COLUMN_NAME" : "TYPEPERIOD",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
+		"DATA_SCALE" : 2,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "VALDETOBJECT",
+		"COLUMN_NAME" : "SUMPREPDOP",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 2,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "SUMCOMSMO",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 2,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "SUMPREP",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 2,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "SUMUNSECPREP",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 2,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "TYPEREQ",
 		"DATA_TYPE" : "NUMBER",
 		"DATA_SCALE" : 0,
 		"IS_PRIMARY_KEY" : null

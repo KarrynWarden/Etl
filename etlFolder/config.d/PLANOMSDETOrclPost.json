@@ -1,0 +1,8 @@
+{
+  "PLANOMSDETOrclPost": {
+    "_doc": "Orcl→Post, ведомая tpplanomsdet",
+    "tableNameSlave": "tpplanomsdet",
+    "structureMaster": "structures/PLANOMSDET/PLANOMSDET.json",
+    "structureSlave": "structures/PLANOMSDET/tpplanomsdet.json"
+  }
+}

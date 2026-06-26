@@ -1,87 +1,87 @@
 {
 "data": [
 	{
-		"COLUMN_NAME" : "CONT",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "cont",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "DBEGIN",
-		"DATA_TYPE" : "DATE",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "dbegin",
+		"data_type" : "date",
+		"data_scale" : null,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "DEND",
-		"DATA_TYPE" : "DATE",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "dend",
+		"data_type" : "date",
+		"data_scale" : null,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "ISSUER",
-		"DATA_TYPE" : "CLOB",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "issuer",
+		"data_type" : "text",
+		"data_scale" : null,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "ISSUER_NAME",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "issuer_name",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "SERIALNUMBER",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "serialnumber",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "STATUS",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "status",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "SUBJ",
-		"DATA_TYPE" : "CLOB",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "subj",
+		"data_type" : "text",
+		"data_scale" : null,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "SUBJ_FIO",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "subj_fio",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "SUBJ_OGRN",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "subj_ogrn",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "SUBJ_POST",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "subj_post",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "THUMBPRINT",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : "Primary Key"
+		"column_name" : "thumbprint",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "TIMEOPER",
-		"DATA_TYPE" : "DATE",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "timeoper",
+		"data_type" : "timestamp without time zone",
+		"data_scale" : null,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "TYPECONT",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "typecont",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
 	}
 ]}

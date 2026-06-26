@@ -1,37 +1,49 @@
 {
 "data": [
 	{
-		"column_name" : "buhdt",
-		"data_type" : "date",
-		"data_scale" : null,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "cont",
+		"column_name" : "bomg",
 		"data_type" : "numeric",
 		"data_scale" : 0,
 		"is_primary_key" : null
 	},
 	{
+		"column_name" : "c_oksm",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
 		"column_name" : "createdate",
-		"data_type" : "timestamp without time zone",
-		"data_scale" : null,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "datedoc",
 		"data_type" : "date",
 		"data_scale" : null,
 		"is_primary_key" : null
 	},
 	{
-		"column_name" : "dateprb",
+		"column_name" : "dostdrcal",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "dr",
 		"data_type" : "date",
 		"data_scale" : null,
 		"is_primary_key" : null
 	},
 	{
-		"column_name" : "elpay",
+		"column_name" : "email",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "fam",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "idrow",
 		"data_type" : "numeric",
 		"data_scale" : 0,
 		"is_primary_key" : null
@@ -43,55 +55,43 @@
 		"is_primary_key" : "Primary Key"
 	},
 	{
-		"column_name" : "lastupdate",
-		"data_type" : "timestamp without time zone",
-		"data_scale" : null,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "note",
+		"column_name" : "im",
 		"data_type" : "character varying",
 		"data_scale" : null,
 		"is_primary_key" : null
 	},
 	{
-		"column_name" : "numbdoc",
-		"data_type" : "numeric",
-		"data_scale" : 0,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "ordlistdt",
-		"data_type" : "date",
+		"column_name" : "ot",
+		"data_type" : "character varying",
 		"data_scale" : null,
 		"is_primary_key" : null
 	},
 	{
-		"column_name" : "ordlistno",
+		"column_name" : "phone",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "ss",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "status",
 		"data_type" : "numeric",
 		"data_scale" : 0,
 		"is_primary_key" : null
 	},
 	{
-		"column_name" : "signature",
+		"column_name" : "true_dr",
 		"data_type" : "numeric",
 		"data_scale" : 0,
 		"is_primary_key" : null
 	},
 	{
-		"column_name" : "sumpay",
-		"data_type" : "numeric",
-		"data_scale" : 2,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "typecont",
-		"data_type" : "numeric",
-		"data_scale" : 0,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "typepay",
+		"column_name" : "w",
 		"data_type" : "numeric",
 		"data_scale" : 0,
 		"is_primary_key" : null

@@ -1,207 +1,219 @@
 {
 "data": [
 	{
-		"COLUMN_NAME" : "CODE_USL",
+		"COLUMN_NAME" : "ACCADDRES",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "ACCPAYER",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "ADDRES",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "CREATEDATE",
+		"DATA_TYPE" : "DATE",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "DATEDOC",
+		"DATA_TYPE" : "DATE",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "DDTAXPAY",
+		"DATA_TYPE" : "DATE",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "DLETTER",
+		"DATA_TYPE" : "DATE",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "DOP",
+		"DATA_TYPE" : "DATE",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "EDDATE",
+		"DATA_TYPE" : "DATE",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "EDNO",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "KBK",
 		"DATA_TYPE" : "VARCHAR2",
 		"DATA_SCALE" : null,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "CONSTYPE",
+		"COLUMN_NAME" : "NDOC",
 		"DATA_TYPE" : "NUMBER",
 		"DATA_SCALE" : 0,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "CONT",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "DCALC",
-		"DATA_TYPE" : "DATE",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "DS",
+		"COLUMN_NAME" : "NDTAXPAY",
 		"DATA_TYPE" : "VARCHAR2",
 		"DATA_SCALE" : null,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "FACDURUSL",
+		"COLUMN_NAME" : "NLETTER",
 		"DATA_TYPE" : "NUMBER",
 		"DATA_SCALE" : 0,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "KOL_DIALIZ",
+		"COLUMN_NAME" : "NUMBORDER",
 		"DATA_TYPE" : "NUMBER",
 		"DATA_SCALE" : 0,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "KOL_KSG",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "KOL_OPER",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "KOL_RAO",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "KOL_SLUCH",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "KOL_USL",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "LASTUPDATE",
-		"DATA_TYPE" : "DATE",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "MAX_IDRW",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "MO",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "MPDATE",
-		"DATA_TYPE" : "DATE",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "OTDEL",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "PROFIL",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "PRVS",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "RAZDEL_USL",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "RDT",
-		"DATA_TYPE" : "DATE",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "SIGN_ONK",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "SIGNSAVE",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "SUMBASE",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 2,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "SUM_DIALIZ",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 2,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "SUM_RAO",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 2,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "SUMUPKEEP",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 2,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "SUM_USL",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 2,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "SUM_SLUCH",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 2,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "SUM_OPER",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 2,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "TYPECONT",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "TYPEHELP",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "TYPE_ONK",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "USERNAME",
+		"COLUMN_NAME" : "OKATO",
 		"DATA_TYPE" : "VARCHAR2",
 		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "PAYER",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "PAYERSTAT",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "PDDIRID",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : "Primary Key"
+	},
+	{
+		"COLUMN_NAME" : "PPUFKDT",
+		"DATA_TYPE" : "DATE",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "PPUFKNO",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "PURPOSE",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "REASONPAY",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "SEQPAY",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "SUMDOC",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 2,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "TAXDAY",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "TAXMONTH",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "TAXYEAR",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "TYPECONTA",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "TYPECONTP",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "TYPEDOC",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "TYPEORDER",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "TYPEPAY",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "TYPESEND",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "TYPETAX",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "YEARORDER",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
 		"IS_PRIMARY_KEY" : null
 	}
 ]}

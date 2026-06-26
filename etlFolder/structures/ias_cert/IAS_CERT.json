@@ -1,79 +1,37 @@
 {
 "data": [
 	{
-		"COLUMN_NAME" : "BOMG",
+		"COLUMN_NAME" : "CONT",
 		"DATA_TYPE" : "NUMBER",
 		"DATA_SCALE" : 0,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "C_OKSM",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "CREATEDATE",
+		"COLUMN_NAME" : "DBEGIN",
 		"DATA_TYPE" : "DATE",
 		"DATA_SCALE" : null,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "DOSTDRCAL",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "DR",
+		"COLUMN_NAME" : "DEND",
 		"DATA_TYPE" : "DATE",
 		"DATA_SCALE" : null,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "EMAIL",
+		"COLUMN_NAME" : "ISSUER",
+		"DATA_TYPE" : "CLOB",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "ISSUER_NAME",
 		"DATA_TYPE" : "VARCHAR2",
 		"DATA_SCALE" : null,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "FAM",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "IDROW",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "IDRW",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : "Primary Key"
-	},
-	{
-		"COLUMN_NAME" : "IM",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "OT",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "PHONE",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "SS",
+		"COLUMN_NAME" : "SERIALNUMBER",
 		"DATA_TYPE" : "VARCHAR2",
 		"DATA_SCALE" : null,
 		"IS_PRIMARY_KEY" : null
@@ -85,13 +43,43 @@
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "TRUE_DR",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
+		"COLUMN_NAME" : "SUBJ",
+		"DATA_TYPE" : "CLOB",
+		"DATA_SCALE" : null,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "W",
+		"COLUMN_NAME" : "SUBJ_FIO",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "SUBJ_OGRN",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "SUBJ_POST",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "THUMBPRINT",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : "Primary Key"
+	},
+	{
+		"COLUMN_NAME" : "TIMEOPER",
+		"DATA_TYPE" : "DATE",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "TYPECONT",
 		"DATA_TYPE" : "NUMBER",
 		"DATA_SCALE" : 0,
 		"IS_PRIMARY_KEY" : null

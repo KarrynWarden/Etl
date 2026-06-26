@@ -1,0 +1,9 @@
+{
+  "idocPostOrcl": {
+    "_doc": "Post→Orcl, ведомая KOKNAEV.IDOC",
+    "tableNameSlave": "KOKNAEV.IDOC",
+    "structureMaster": "structures/idoc/idoc.json",
+    "structureSlave": "structures/idoc/IDOC.json",
+    "selectSql": "queries/customQueries/idoc.sql"
+  }
+}

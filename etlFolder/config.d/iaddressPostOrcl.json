@@ -1,0 +1,9 @@
+{
+  "iaddressPostOrcl": {
+    "_doc": "Post→Orcl, ведомая KOKNAEV.IADDRESS",
+    "tableNameSlave": "KOKNAEV.IADDRESS",
+    "structureMaster": "structures/iaddress/iaddress.json",
+    "structureSlave": "structures/iaddress/IADDRESS.json",
+    "selectSql": "queries/customQueries/iaddress.sql"
+  }
+}

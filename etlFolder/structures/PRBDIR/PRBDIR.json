@@ -1,148 +1,153 @@
 {
-    "data": [
-    	{
-    		"column_name" : "accdt",
-    		"data_type" : "date",
-    		"data_scale" : null,
-    		"is_primary_key" : null
-    	},
-    	{
-    		"column_name" : "accno",
-    		"data_type" : "character varying",
-    		"data_scale" : null,
-    		"is_primary_key" : null
-    	},
-    	{
-    		"column_name" : "accnrec",
-    		"data_type" : "numeric",
-    		"data_scale" : 0,
-    		"is_primary_key" : null
-    	},
-    	{
-    		"column_name" : "addcont",
-    		"data_type" : "numeric",
-    		"data_scale" : 0,
-    		"is_primary_key" : null
-    	},
-    	{
-    		"column_name" : "addmo",
-    		"data_type" : "numeric",
-    		"data_scale" : 0,
-    		"is_primary_key" : null
-    	},
-        {
-    		"column_name" : "acc",
-    		"data_type" : "numeric",
-    		"data_scale" : 0,
-    		"is_primary_key" : null
-    	},
-    	{
-    		"column_name" : "cont",
-    		"data_type" : "numeric",
-    		"data_scale" : 0,
-    		"is_primary_key" : null
-    	},
-    	{
-    		"column_name" : "createdate",
-    		"data_type" : "date",
-    		"data_scale" : null,
-    		"is_primary_key" : null
-    	},
-    	{
-    		"column_name" : "deb",
-    		"data_type" : "numeric",
-    		"data_scale" : 0,
-    		"is_primary_key" : null
-    	},
-    	{
-    		"column_name" : "detobject",
-    		"data_type" : "numeric",
-    		"data_scale" : 0,
-    		"is_primary_key" : null
-    	},
-    	{
-    		"column_name" : "dop",
-    		"data_type" : "date",
-    		"data_scale" : null,
-    		"is_primary_key" : null
-    	},
-    	{
-    		"column_name" : "kau",
-    		"data_type" : "numeric",
-    		"data_scale" : 0,
-    		"is_primary_key" : null
-    	},
-    	{
-    		"column_name" : "kaudop",
-    		"data_type" : "numeric",
-    		"data_scale" : 0,
-    		"is_primary_key" : null
-    	},
-    	{
-    		"column_name" : "kbk",
-    		"data_type" : "character varying",
-    		"data_scale" : null,
-    		"is_primary_key" : null
-    	},
-    	{
-    		"column_name" : "month",
-    		"data_type" : "numeric",
-    		"data_scale" : 0,
-    		"is_primary_key" : null
-    	},
-    	{
-    		"column_name" : "pddir_idrw",
-    		"data_type" : "numeric",
-    		"data_scale" : null,
-    		"is_primary_key" : null
-    	},
-    	{
-    		"column_name" : "idrw",
-    		"data_type" : "numeric",
-    		"data_scale" : 0,
-    		"is_primary_key" : "Primary Key"
-    	},
-    	{
-    		"column_name" : "sumpost",
-    		"data_type" : "numeric",
-    		"data_scale" : 2,
-    		"is_primary_key" : null
-    	},
-    	{
-    		"column_name" : "text",
-    		"data_type" : "character varying",
-    		"data_scale" : null,
-    		"is_primary_key" : null
-    	},
-    	{
-    		"column_name" : "typeaddcont",
-    		"data_type" : "numeric",
-    		"data_scale" : 0,
-    		"is_primary_key" : null
-    	},
-    	{
-    		"column_name" : "typecont",
-    		"data_type" : "numeric",
-    		"data_scale" : 0,
-    		"is_primary_key" : null
-    	},
-    	{
-    		"column_name" : "typepay",
-    		"data_type" : "numeric",
-    		"data_scale" : 0,
-    		"is_primary_key" : null
-    	},
-    	{
-    		"column_name" : "valdetobject",
-    		"data_type" : "numeric",
-    		"data_scale" : 0,
-    		"is_primary_key" : null
-    	},
-    	{
-    		"column_name" : "year",
-    		"data_type" : "numeric",
-    		"data_scale" : 0,
-    		"is_primary_key" : null
-    	}
-    ]
-}
+"data": [
+	{
+		"COLUMN_NAME" : "ACCDT",
+		"DATA_TYPE" : "DATE",
+		"DATA_SCALE" : null,
+        "IS_PRIMARY_KEY" : null     
+	},
+	{
+		"COLUMN_NAME" : "ACCNO",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+        "IS_PRIMARY_KEY" : null     
+	},
+	{
+		"COLUMN_NAME" : "ACCNREC",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+        "IS_PRIMARY_KEY" : null     
+	},
+	{
+		"COLUMN_NAME" : "ADDCONT",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+        "IS_PRIMARY_KEY" : null     
+	},
+	{
+		"COLUMN_NAME" : "ADDMO",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+        "IS_PRIMARY_KEY" : null     
+	},
+	{
+		"COLUMN_NAME" : "BANKCODE",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+        "IS_PRIMARY_KEY" : null     
+	},
+	{
+		"COLUMN_NAME" : "CONT",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+        "IS_PRIMARY_KEY" : null     
+	},
+	{
+		"COLUMN_NAME" : "CREATEDATE",
+		"DATA_TYPE" : "DATE",
+		"DATA_SCALE" : null,
+        "IS_PRIMARY_KEY" : null     
+	},
+	{
+		"COLUMN_NAME" : "DEB",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+        "IS_PRIMARY_KEY" : null     
+	},
+	{
+		"COLUMN_NAME" : "DETOBJECT",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+        "IS_PRIMARY_KEY" : null     
+	},
+	{
+		"COLUMN_NAME" : "DOP",
+		"DATA_TYPE" : "DATE",
+		"DATA_SCALE" : null,
+        "IS_PRIMARY_KEY" : null     
+	},
+	{
+		"COLUMN_NAME" : "PRBDIRID",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+        "IS_PRIMARY_KEY" : "Primary Key"
+	},
+	{
+		"COLUMN_NAME" : "KAU",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+        "IS_PRIMARY_KEY" : null     
+	},
+	{
+		"COLUMN_NAME" : "KAUDOP",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+        "IS_PRIMARY_KEY" : null     
+	},
+	{
+		"COLUMN_NAME" : "KBK",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+        "IS_PRIMARY_KEY" : null     
+	},
+	{
+		"COLUMN_NAME" : "LASTUPDATE",
+		"DATA_TYPE" : "DATE",
+		"DATA_SCALE" : null,
+        "IS_PRIMARY_KEY" : null     
+	},
+	{
+		"COLUMN_NAME" : "MONTH",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+        "IS_PRIMARY_KEY" : null     
+	},
+	{
+		"COLUMN_NAME" : "PDDIRID",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+        "IS_PRIMARY_KEY" : null     
+	},
+	{
+		"COLUMN_NAME" : "SUMPOST",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 2,
+        "IS_PRIMARY_KEY" : null     
+	},
+	{
+		"COLUMN_NAME" : "TEXT",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+        "IS_PRIMARY_KEY" : null     
+	},
+	{
+		"COLUMN_NAME" : "TYPEADDCONT",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+        "IS_PRIMARY_KEY" : null     
+	},
+	{
+		"COLUMN_NAME" : "TYPECONT",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+        "IS_PRIMARY_KEY" : null     
+	},
+	{
+		"COLUMN_NAME" : "TYPEPAY",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+        "IS_PRIMARY_KEY" : null     
+	},
+	{
+		"COLUMN_NAME" : "VALDETOBJECT",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+        "IS_PRIMARY_KEY" : null     
+	},
+	{
+		"COLUMN_NAME" : "YEAR",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+        "IS_PRIMARY_KEY" : null     
+	}
+]}

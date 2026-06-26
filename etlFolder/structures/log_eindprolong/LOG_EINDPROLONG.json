@@ -1,27 +1,39 @@
 {
 "data": [
 	{
-		"COLUMN_NAME" : "CONSTYPE",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "CONT",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "DCALC",
+		"COLUMN_NAME" : "CREATEDATE",
 		"DATA_TYPE" : "DATE",
 		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "DEPT",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "DESTRDATE",
+		"DATA_TYPE" : "DATE",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "DWORK",
+		"DATA_TYPE" : "DATE",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "IDLOG",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
 		"COLUMN_NAME" : "LASTUPDATE",
 		"DATA_TYPE" : "DATE",
-		"DATA_SCALE" : null,
+		"DATA_SCALE" : 6,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
@@ -31,51 +43,27 @@
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "MONTH",
+		"COLUMN_NAME" : "OTDEL",
 		"DATA_TYPE" : "NUMBER",
 		"DATA_SCALE" : 0,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "PARAM",
+		"COLUMN_NAME" : "STATUS",
 		"DATA_TYPE" : "VARCHAR2",
 		"DATA_SCALE" : null,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "RDT",
+		"COLUMN_NAME" : "SUBDEPT",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "TIMEOPER",
 		"DATA_TYPE" : "DATE",
 		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "SIGNSAVE",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "IDUSER",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "VAL",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 2,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "YEAR",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "TYPECONT",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
 		"IS_PRIMARY_KEY" : null
 	}
 ]}

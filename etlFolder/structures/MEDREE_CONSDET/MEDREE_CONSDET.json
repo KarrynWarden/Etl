@@ -55,6 +55,24 @@
 		"IS_PRIMARY_KEY" : null
 	},
 	{
+		"COLUMN_NAME" : "TYPECONT",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "TYPEHELP",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "TYPEOBJECT",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
 		"COLUMN_NAME" : "IDUSER",
 		"DATA_TYPE" : "VARCHAR2",
 		"DATA_SCALE" : null,
@@ -67,13 +85,19 @@
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "YEAR",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
+		"COLUMN_NAME" : "OBJECT1",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "TYPECONT",
+		"COLUMN_NAME" : "OBJECT2",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "YEAR",
 		"DATA_TYPE" : "NUMBER",
 		"DATA_SCALE" : 0,
 		"IS_PRIMARY_KEY" : null

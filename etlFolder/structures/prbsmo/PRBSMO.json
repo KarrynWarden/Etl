@@ -1,0 +1,153 @@
+{
+"data": [
+	{
+		"COLUMN_NAME" : "BANKACC",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+        "IS_PRIMARY_KEY" : null        
+	},
+    {
+		"COLUMN_NAME" : "ACCDT",
+		"DATA_TYPE" : "DATE",
+		"DATA_SCALE" : null,
+        "IS_PRIMARY_KEY" : null  
+	},
+	{
+		"COLUMN_NAME" : "ACCNO",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+        "IS_PRIMARY_KEY" : null  
+	},
+	{
+		"COLUMN_NAME" : "ADDCONT",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+        "IS_PRIMARY_KEY" : null  
+	},
+    {
+		"COLUMN_NAME" : "ADDSMO",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+        "IS_PRIMARY_KEY" : null  
+	},
+	{
+		"COLUMN_NAME" : "ADDTYPECONT",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+        "IS_PRIMARY_KEY" : null  
+	},
+	{
+		"COLUMN_NAME" : "CONT",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+        "IS_PRIMARY_KEY" : null  
+	},
+    {
+		"COLUMN_NAME" : "CREATEDATE",
+		"DATA_TYPE" : "DATE",
+		"DATA_SCALE" : null,
+        "IS_PRIMARY_KEY" : null  
+	},
+	{
+		"COLUMN_NAME" : "DATEDOC",
+		"DATA_TYPE" : "DATE",
+		"DATA_SCALE" : null,
+        "IS_PRIMARY_KEY" : null  
+	},
+	{
+		"COLUMN_NAME" : "DEB",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+        "IS_PRIMARY_KEY" : null  
+	},
+	{
+		"COLUMN_NAME" : "DOP",
+		"DATA_TYPE" : "DATE",
+		"DATA_SCALE" : null,
+        "IS_PRIMARY_KEY" : null  
+	},
+	{
+		"COLUMN_NAME" : "FIL",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+        "IS_PRIMARY_KEY" : null  
+	},
+	{
+		"COLUMN_NAME" : "IDLOG",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+        "IS_PRIMARY_KEY" : null  
+	},
+	{
+		"COLUMN_NAME" : "PRBSMOID",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+        "IS_PRIMARY_KEY" : "Primary Key"  
+	},
+	{
+		"COLUMN_NAME" : "KAU",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+        "IS_PRIMARY_KEY" : null  
+	},
+	{
+		"COLUMN_NAME" : "KAUDOP",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+        "IS_PRIMARY_KEY" : null  
+	},
+	{
+		"COLUMN_NAME" : "MONTH",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+        "IS_PRIMARY_KEY" : null  
+	},
+	{
+		"COLUMN_NAME" : "NDOC",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+        "IS_PRIMARY_KEY" : null  
+	},
+	{
+		"COLUMN_NAME" : "PURPOSE",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+        "IS_PRIMARY_KEY" : null  
+	},
+	{
+		"COLUMN_NAME" : "RESERVE",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+        "IS_PRIMARY_KEY" : null  
+	},
+	{
+		"COLUMN_NAME" : "SMO",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+        "IS_PRIMARY_KEY" : null  
+	},
+	{
+		"COLUMN_NAME" : "SUMDOC",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 2,
+        "IS_PRIMARY_KEY" : null  
+	},
+	{
+		"COLUMN_NAME" : "SUMPOST",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 2,
+        "IS_PRIMARY_KEY" : null  
+	},
+	{
+		"COLUMN_NAME" : "TYPECONT",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+        "IS_PRIMARY_KEY" : null  
+	},
+	{
+		"COLUMN_NAME" : "YEAR",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+        "IS_PRIMARY_KEY" : null  
+	}
+]}

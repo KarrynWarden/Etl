@@ -1,123 +1,123 @@
 {
 "data": [
-	{
-		"column_name" : "createdate",
-		"data_type" : "date",
-		"data_scale" : null,
-		"is_primary_key" : null
+    {
+		"COLUMN_NAME" : "CREATEDATE",
+		"DATA_TYPE" : "DATE",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"column_name" : "dom",
-		"data_type" : "character varying",
-		"data_scale" : null,
-		"is_primary_key" : null
+		"COLUMN_NAME" : "DOM",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"column_name" : "dreg",
-		"data_type" : "date",
-		"data_scale" : null,
-		"is_primary_key" : null
+		"COLUMN_NAME" : "DREG",
+		"DATA_TYPE" : "DATE",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"column_name" : "fias_aoid",
-		"data_type" : "character varying",
-		"data_scale" : null,
-		"is_primary_key" : null
+		"COLUMN_NAME" : "FIAS_AOID",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"column_name" : "fias_houseid",
-		"data_type" : "character varying",
-		"data_scale" : null,
-		"is_primary_key" : null
+		"COLUMN_NAME" : "FIAS_HOUSEID",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"column_name" : "gar_aoguid",
-		"data_type" : "character varying",
-		"data_scale" : null,
-		"is_primary_key" : null
+		"COLUMN_NAME" : "GAR_AOGUID",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"column_name" : "gar_hsguid",
-		"data_type" : "character varying",
-		"data_scale" : null,
-		"is_primary_key" : null
+		"COLUMN_NAME" : "GAR_HSGUID",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"column_name" : "idrow",
-		"data_type" : "numeric",
-		"data_scale" : 0,
-		"is_primary_key" : null
+		"COLUMN_NAME" : "IDROW",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"column_name" : "idrw",
-		"data_type" : "numeric",
-		"data_scale" : 0,
-		"is_primary_key" : "Primary Key"
+		"COLUMN_NAME" : "IDRW",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : "Primary Key"
 	},
 	{
-		"column_name" : "indx",
-		"data_type" : "character varying",
-		"data_scale" : null,
-		"is_primary_key" : null
+		"COLUMN_NAME" : "INDX",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"column_name" : "ipresenter_idrw",
-		"data_type" : "numeric",
-		"data_scale" : 0,
-		"is_primary_key" : null
+		"COLUMN_NAME" : "IPRESENTER_IDRW",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"column_name" : "korp",
-		"data_type" : "character varying",
-		"data_scale" : null,
-		"is_primary_key" : null
+		"COLUMN_NAME" : "KORP",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"column_name" : "kv",
-		"data_type" : "character varying",
-		"data_scale" : null,
-		"is_primary_key" : null
+		"COLUMN_NAME" : "KV",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"column_name" : "npname",
-		"data_type" : "character varying",
-		"data_scale" : null,
-		"is_primary_key" : null
+		"COLUMN_NAME" : "NPNAME",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"column_name" : "okato",
-		"data_type" : "character varying",
-		"data_scale" : null,
-		"is_primary_key" : null
+		"COLUMN_NAME" : "OKATO",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"column_name" : "rnname",
-		"data_type" : "character varying",
-		"data_scale" : null,
-		"is_primary_key" : null
+		"COLUMN_NAME" : "RNNAME",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"column_name" : "subj",
-		"data_type" : "character varying",
-		"data_scale" : null,
-		"is_primary_key" : null
+		"COLUMN_NAME" : "SUBJ",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"column_name" : "typeaddress",
-		"data_type" : "numeric",
-		"data_scale" : 0,
-		"is_primary_key" : null
+		"COLUMN_NAME" : "TYPEADDRESS",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"column_name" : "ul",
-		"data_type" : "character varying",
-		"data_scale" : null,
-		"is_primary_key" : null
+		"COLUMN_NAME" : "UL",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"column_name" : "text",
-		"data_type" : "character varying",
-		"data_scale" : null,
-		"is_primary_key" : null
+		"COLUMN_NAME" : "TEXT",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
 	}
 ]}

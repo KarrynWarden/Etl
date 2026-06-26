@@ -1,0 +1,9 @@
+{
+  "ideadPostOrcl": {
+    "_doc": "Post→Orcl, ведомая KOKNAEV.IDEAD",
+    "tableNameSlave": "KOKNAEV.IDEAD",
+    "structureMaster": "structures/idead/idead.json",
+    "structureSlave": "structures/idead/IDEAD.json",
+    "selectSql": "queries/customQueries/idead.sql"
+  }
+}

@@ -1,49 +1,19 @@
 {
 "data": [
 	{
-		"COLUMN_NAME" : "ADDRESSR",
+		"COLUMN_NAME" : "BIRTH_OKSM",
 		"DATA_TYPE" : "VARCHAR2",
 		"DATA_SCALE" : null,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "AOIDL",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
+		"COLUMN_NAME" : "BOMG",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "CODE_CONFIRM",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "CODE_VP",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "CODESUBGOSL",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "CODEZAGS",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "COMMCHANGE",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "COMMENTARY",
+		"COLUMN_NAME" : "C_OKSM",
 		"DATA_TYPE" : "VARCHAR2",
 		"DATA_SCALE" : null,
 		"IS_PRIMARY_KEY" : null
@@ -55,25 +25,19 @@
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "DATE_CONFIRM",
+		"COLUMN_NAME" : "DBEG",
 		"DATA_TYPE" : "DATE",
 		"DATA_SCALE" : null,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "DATEAZSM",
+		"COLUMN_NAME" : "DBEGARMY",
 		"DATA_TYPE" : "DATE",
 		"DATA_SCALE" : null,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "DATECHANGE",
-		"DATA_TYPE" : "DATE",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "DATESEND",
+		"COLUMN_NAME" : "DBEGERZ",
 		"DATA_TYPE" : "DATE",
 		"DATA_SCALE" : null,
 		"IS_PRIMARY_KEY" : null
@@ -85,49 +49,31 @@
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "DDEATHZAGS",
+		"COLUMN_NAME" : "DEND",
 		"DATA_TYPE" : "DATE",
 		"DATA_SCALE" : null,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "DOCDATE",
+		"COLUMN_NAME" : "DENDDOC",
 		"DATA_TYPE" : "DATE",
 		"DATA_SCALE" : null,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "DOCNAME",
-		"DATA_TYPE" : "VARCHAR2",
+		"COLUMN_NAME" : "DENDERZ",
+		"DATA_TYPE" : "DATE",
 		"DATA_SCALE" : null,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "DOCNUM",
-		"DATA_TYPE" : "VARCHAR2",
+		"COLUMN_NAME" : "DGET",
+		"DATA_TYPE" : "DATE",
 		"DATA_SCALE" : null,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "DOCSER",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "DOCTYPE",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "DOSTRDR",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "DOSTRDS",
+		"COLUMN_NAME" : "DOSTDRCAL",
 		"DATA_TYPE" : "NUMBER",
 		"DATA_SCALE" : 0,
 		"IS_PRIMARY_KEY" : null
@@ -139,7 +85,25 @@
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "ERP",
+		"COLUMN_NAME" : "DVIZIT",
+		"DATA_TYPE" : "DATE",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "EMAIL",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "ENP",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "EXT",
 		"DATA_TYPE" : "NUMBER",
 		"DATA_SCALE" : 0,
 		"IS_PRIMARY_KEY" : null
@@ -151,39 +115,9 @@
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "FLATL",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "GORODL",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "GORODR",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "GOSL",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "GOSR",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "HOUSEL",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
+		"COLUMN_NAME" : "FPOLIS",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
@@ -193,22 +127,16 @@
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "IDIDEAD",
+		"COLUMN_NAME" : "IDMAIN",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "IDROW",
 		"DATA_TYPE" : "NUMBER",
 		"DATA_SCALE" : 0,
 		"IS_PRIMARY_KEY" : "Primary Key"
-	},
-	{
-		"COLUMN_NAME" : "IDLOGLOAD",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "IDLOGSEND",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
 	},
 	{
 		"COLUMN_NAME" : "IM",
@@ -217,67 +145,55 @@
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "INDEXL",
+		"COLUMN_NAME" : "KATEG",
 		"DATA_TYPE" : "NUMBER",
 		"DATA_SCALE" : 0,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "KORPL",
+		"COLUMN_NAME" : "LASTUPDATE",
+		"DATA_TYPE" : "DATE",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "META_FAM",
 		"DATA_TYPE" : "VARCHAR2",
 		"DATA_SCALE" : null,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "NAME_CONFIRM",
+		"COLUMN_NAME" : "META_IM",
 		"DATA_TYPE" : "VARCHAR2",
 		"DATA_SCALE" : null,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "NAME_VP",
+		"COLUMN_NAME" : "META_OT",
 		"DATA_TYPE" : "VARCHAR2",
 		"DATA_SCALE" : null,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "NAMENPL",
+		"COLUMN_NAME" : "METHOD",
 		"DATA_TYPE" : "VARCHAR2",
 		"DATA_SCALE" : null,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "NAMENPR",
+		"COLUMN_NAME" : "MR",
 		"DATA_TYPE" : "VARCHAR2",
 		"DATA_SCALE" : null,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "NUM_CONFIRM",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
+		"COLUMN_NAME" : "NPOLIS",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "NUMAZSM",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "NUMSV",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "OKSM",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "ORGAN_CONFIRM",
+		"COLUMN_NAME" : "NUMBLANK",
 		"DATA_TYPE" : "VARCHAR2",
 		"DATA_SCALE" : null,
 		"IS_PRIMARY_KEY" : null
@@ -289,69 +205,111 @@
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "RAYONL",
+		"COLUMN_NAME" : "PHONE",
 		"DATA_TYPE" : "VARCHAR2",
 		"DATA_SCALE" : null,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "RAYONR",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "REASON",
-		"DATA_TYPE" : "CLOB",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "SERSV",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "SOURCE",
+		"COLUMN_NAME" : "PRZCOD",
 		"DATA_TYPE" : "NUMBER",
 		"DATA_SCALE" : 0,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "STATUSCODE",
+		"COLUMN_NAME" : "REASON",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "RPOLIS",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "RSMO",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "SMO",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "SS",
 		"DATA_TYPE" : "VARCHAR2",
 		"DATA_SCALE" : null,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "STATUSDBEG",
-		"DATA_TYPE" : "DATE",
-		"DATA_SCALE" : null,
+		"COLUMN_NAME" : "TERR",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "STREETL",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
+		"COLUMN_NAME" : "TRUE_DR",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "SUBGOSL",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "SUBGOSR",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
+		"COLUMN_NAME" : "VPOLIS",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
 		"COLUMN_NAME" : "W",
 		"DATA_TYPE" : "NUMBER",
 		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "DOCTYPE",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "DOCSER",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "DOCNUM",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "DOCDATE",
+		"DATA_TYPE" : "DATE",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "NAME_VP",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "FIOPR",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "CONTACT",
+		"DATA_TYPE" : "VARCHAR2",
+		"DATA_SCALE" : null,
 		"IS_PRIMARY_KEY" : null
 	}
 ]}

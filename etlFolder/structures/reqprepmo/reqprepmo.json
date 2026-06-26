@@ -1,123 +1,123 @@
 {
 "data": [
 	{
-		"COLUMN_NAME" : "ACCDT",
-		"DATA_TYPE" : "DATE",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "accdt",
+		"data_type" : "date",
+		"data_scale" : null,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "ACCNO",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "accno",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "CREATEDATE",
-		"DATA_TYPE" : "DATE",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "createdate",
+		"data_type" : "date",
+		"data_scale" : null,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "ID",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : "Primary Key"
+		"column_name" : "idrw",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : "Primary Key"
 	},
 	{
-		"COLUMN_NAME" : "ID_REQPREPSMO",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "reqprepsmo_idrw",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "IDUSER",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "iduser",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "LASTUPDATE",
-		"DATA_TYPE" : "DATE",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "lastupdate",
+		"data_type" : "timestamp without time zone",
+		"data_scale" : null,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "MO",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "mo",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "MONTH",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "month",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "REQDT",
-		"DATA_TYPE" : "DATE",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "reqdt",
+		"data_type" : "date",
+		"data_scale" : null,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "SMO",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "smo",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "SUMAVERAGE",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 2,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "sumaverage",
+		"data_type" : "numeric",
+		"data_scale" : 2,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "SUMCOM",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 2,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "sumcom",
+		"data_type" : "numeric",
+		"data_scale" : 2,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "SUMPREPMAIN",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 2,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "sumprepmain",
+		"data_type" : "numeric",
+		"data_scale" : 2,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "SUMPREPDOP",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 2,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "sumprepdop",
+		"data_type" : "numeric",
+		"data_scale" : 2,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "SUMCOMSMO",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 2,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "sumcomsmo",
+		"data_type" : "numeric",
+		"data_scale" : 2,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "SUMPREP",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 2,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "sumprep",
+		"data_type" : "numeric",
+		"data_scale" : 2,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "SUMUNSECPREP",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 2,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "sumunsecprep",
+		"data_type" : "numeric",
+		"data_scale" : 2,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "TYPEREQ",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "typereq",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "YEAR",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "year",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
 	}
 ]}

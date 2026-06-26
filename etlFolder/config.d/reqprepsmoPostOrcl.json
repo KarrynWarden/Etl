@@ -1,0 +1,8 @@
+{
+  "reqprepsmoPostOrcl": {
+    "_doc": "Post→Orcl, ведомая KOKNAEV.REQPREPSMO",
+    "tableNameSlave": "KOKNAEV.REQPREPSMO",
+    "structureMaster": "structures/reqprepsmo/reqprepsmo.json",
+    "structureSlave": "structures/reqprepsmo/REQPREPSMO.json"
+  }
+}

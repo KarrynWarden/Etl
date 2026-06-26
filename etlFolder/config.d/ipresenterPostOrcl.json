@@ -1,0 +1,9 @@
+{
+  "ipresenterPostOrcl": {
+    "_doc": "Post→Orcl, ведомая KOKNAEV.IPRESENTER",
+    "tableNameSlave": "KOKNAEV.IPRESENTER",
+    "structureMaster": "structures/ipresenter/ipresenter.json",
+    "structureSlave": "structures/ipresenter/IPRESENTER.json",
+    "selectSql": "queries/customQueries/ipresenter.sql"
+  }
+}

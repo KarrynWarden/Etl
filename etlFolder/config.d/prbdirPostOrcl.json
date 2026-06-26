@@ -1,0 +1,8 @@
+{
+  "prbdirPostOrcl": {
+    "_doc": "Post→Orcl, ведомая KOKNAEV.PRBDIR",
+    "tableNameSlave": "KOKNAEV.PRBDIR",
+    "structureMaster": "structures/prbdir/prbdir.json",
+    "structureSlave": "structures/prbdir/PRBDIR.json"
+  }
+}

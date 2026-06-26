@@ -1,0 +1,123 @@
+{
+"data": [
+	{
+		"column_name" : "createdate",
+		"data_type" : "date",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "dom",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "dreg",
+		"data_type" : "date",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "fias_aoid",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "fias_houseid",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "gar_aoguid",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "gar_hsguid",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "idrow",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "idrw",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : "Primary Key"
+	},
+	{
+		"column_name" : "indx",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "ipresenter_idrw",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "korp",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "kv",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "npname",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "okato",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "rnname",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "subj",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "typeaddress",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "ul",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "text",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	}
+]}

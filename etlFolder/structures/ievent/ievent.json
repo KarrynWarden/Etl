@@ -1,81 +1,81 @@
 {
 "data": [
 	{
-		"COLUMN_NAME" : "CREATEDATE",
-		"DATA_TYPE" : "DATE",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "createdate",
+		"data_type" : "date",
+		"data_scale" : null,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "DCONF",
-		"DATA_TYPE" : "DATE",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "dconf",
+		"data_type" : "text",
+		"data_scale" : null,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "DSTART",
-		"DATA_TYPE" : "DATE",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "dstart",
+		"data_type" : "timestamp without time zone",
+		"data_scale" : null,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "DWORK",
-		"DATA_TYPE" : "DATE",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "dwork",
+		"data_type" : "timestamp without time zone",
+		"data_scale" : null,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "FLOW",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "flow",
+		"data_type" : "text",
+		"data_scale" : 0,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "IDEVENT",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "idevent",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "IDIEVENT",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : "Primary Key"
+		"column_name" : "idievent",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : "Primary Key"
 	},
 	{
-		"COLUMN_NAME" : "IDLOGSTART",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "idlogstart",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "IDLOGWORK",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "idlogwork",
+		"data_type" : "text",
+		"data_scale" : 0,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "IDMESS",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "idmess",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "IDROW",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "idrow",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "INITEVENT",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "initevent",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
 	},
 	{
-		"COLUMN_NAME" : "REVENT",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
-		"IS_PRIMARY_KEY" : null
+		"column_name" : "revent",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
 	}
 ]}

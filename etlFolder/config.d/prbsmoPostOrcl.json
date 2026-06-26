@@ -1,0 +1,8 @@
+{
+  "prbsmoPostOrcl": {
+    "_doc": "Post→Orcl, ведомая KOKNAEV.PRBSMO",
+    "tableNameSlave": "KOKNAEV.PRBSMO",
+    "structureMaster": "structures/prbsmo/prbsmo.json",
+    "structureSlave": "structures/prbsmo/PRBSMO.json"
+  }
+}

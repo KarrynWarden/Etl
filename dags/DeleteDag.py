@@ -9,7 +9,7 @@ import colorlog
 from airflow.models import DAG, TaskInstance
 from airflow.operators.python_operator import PythonOperator
 from airflow.exceptions import AirflowSkipException, AirflowException
-from ConnectProd import DbConnectPost, DbConnectOrcl
+from Connect import DbConnectPost, DbConnectOrcl
 
 args = {
     'owner': 'airflow',

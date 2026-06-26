@@ -1,9 +1,9 @@
 {
 "data": [
 	{
-		"COLUMN_NAME" : "CONSTYPE",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
+		"COLUMN_NAME" : "BUHDT",
+		"DATA_TYPE" : "DATE",
+		"DATA_SCALE" : null,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
@@ -13,9 +13,33 @@
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "DCALC",
+		"COLUMN_NAME" : "CREATEDATE",
 		"DATA_TYPE" : "DATE",
 		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "DATEDOC",
+		"DATA_TYPE" : "DATE",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : "Primary Key"
+	},
+	{
+		"COLUMN_NAME" : "DATEPRB",
+		"DATA_TYPE" : "DATE",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "ELPAY",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "IDRW",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
@@ -25,51 +49,39 @@
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "MO",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "MONTH",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "PARAM",
+		"COLUMN_NAME" : "NOTE",
 		"DATA_TYPE" : "VARCHAR2",
 		"DATA_SCALE" : null,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "RDT",
+		"COLUMN_NAME" : "NUMBDOC",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : "Primary Key"
+	},
+	{
+		"COLUMN_NAME" : "ORDLISTDT",
 		"DATA_TYPE" : "DATE",
 		"DATA_SCALE" : null,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "SIGNSAVE",
+		"COLUMN_NAME" : "ORDLISTNO",
 		"DATA_TYPE" : "NUMBER",
 		"DATA_SCALE" : 0,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "IDUSER",
-		"DATA_TYPE" : "VARCHAR2",
-		"DATA_SCALE" : null,
+		"COLUMN_NAME" : "SIGNATURE",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
-		"COLUMN_NAME" : "VAL",
+		"COLUMN_NAME" : "SUMPAY",
 		"DATA_TYPE" : "NUMBER",
 		"DATA_SCALE" : 2,
-		"IS_PRIMARY_KEY" : null
-	},
-	{
-		"COLUMN_NAME" : "YEAR",
-		"DATA_TYPE" : "NUMBER",
-		"DATA_SCALE" : 0,
 		"IS_PRIMARY_KEY" : null
 	},
 	{
@@ -77,5 +89,11 @@
 		"DATA_TYPE" : "NUMBER",
 		"DATA_SCALE" : 0,
 		"IS_PRIMARY_KEY" : null
+	},
+	{
+		"COLUMN_NAME" : "TYPEPAY",
+		"DATA_TYPE" : "NUMBER",
+		"DATA_SCALE" : 0,
+		"IS_PRIMARY_KEY" : "Primary Key"
 	}
 ]}

@@ -1,0 +1,8 @@
+{
+  "pddirPostOrcl": {
+    "_doc": "Post→Orcl, ведомая KOKNAEV.PDDIR",
+    "tableNameSlave": "KOKNAEV.PDDIR",
+    "structureMaster": "structures/pddir/pddir.json",
+    "structureSlave": "structures/pddir/PDDIR.json"
+  }
+}

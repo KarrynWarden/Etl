@@ -1,9 +1,39 @@
 {
 "data": [
 	{
-		"column_name" : "buhdt",
+		"column_name" : "acc",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "accdt",
 		"data_type" : "date",
 		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "accno",
+		"data_type" : "character varying",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "addcont",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "addsmo",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "addtypecont",
+		"data_type" : "numeric",
+		"data_scale" : 0,
 		"is_primary_key" : null
 	},
 	{
@@ -25,13 +55,25 @@
 		"is_primary_key" : null
 	},
 	{
-		"column_name" : "dateprb",
+		"column_name" : "deb",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "dop",
 		"data_type" : "date",
 		"data_scale" : null,
 		"is_primary_key" : null
 	},
 	{
-		"column_name" : "elpay",
+		"column_name" : "fil",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "idlog",
 		"data_type" : "numeric",
 		"data_scale" : 0,
 		"is_primary_key" : null
@@ -43,43 +85,61 @@
 		"is_primary_key" : "Primary Key"
 	},
 	{
+		"column_name" : "kau",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "kaudop",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
 		"column_name" : "lastupdate",
 		"data_type" : "timestamp without time zone",
 		"data_scale" : null,
 		"is_primary_key" : null
 	},
 	{
-		"column_name" : "note",
+		"column_name" : "month",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "ndoc",
+		"data_type" : "numeric",
+		"data_scale" : 0,
+		"is_primary_key" : null
+	},
+	{
+		"column_name" : "purpose",
 		"data_type" : "character varying",
 		"data_scale" : null,
 		"is_primary_key" : null
 	},
 	{
-		"column_name" : "numbdoc",
+		"column_name" : "reserve",
 		"data_type" : "numeric",
 		"data_scale" : 0,
 		"is_primary_key" : null
 	},
 	{
-		"column_name" : "ordlistdt",
-		"data_type" : "date",
-		"data_scale" : null,
-		"is_primary_key" : null
-	},
-	{
-		"column_name" : "ordlistno",
+		"column_name" : "smo",
 		"data_type" : "numeric",
 		"data_scale" : 0,
 		"is_primary_key" : null
 	},
 	{
-		"column_name" : "signature",
+		"column_name" : "sumdoc",
 		"data_type" : "numeric",
-		"data_scale" : 0,
+		"data_scale" : 2,
 		"is_primary_key" : null
 	},
 	{
-		"column_name" : "sumpay",
+		"column_name" : "sumpost",
 		"data_type" : "numeric",
 		"data_scale" : 2,
 		"is_primary_key" : null
@@ -91,7 +151,7 @@
 		"is_primary_key" : null
 	},
 	{
-		"column_name" : "typepay",
+		"column_name" : "year",
 		"data_type" : "numeric",
 		"data_scale" : 0,
 		"is_primary_key" : null
