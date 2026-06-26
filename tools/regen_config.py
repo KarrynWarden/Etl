@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """Сгенерировать дословный общий вид конфига из фрагментов — для просмотра.
+
+ВАЖНО: запускать через python3 (не python — в Astra это py2.7, не понимает f-строки).
 
 Пишет etlFolder/<name>.json как ТОЧНУЮ сборку <name>.base.json + <name>.d/*.json
 тем же сборщиком, что использует рантайм (Functions.functionsFile.loadConfig.assemble),

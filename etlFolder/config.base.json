@@ -1,12 +1,1 @@
-{
-  "_comment": "Конфигурация ETL по парам tableNameEtlJobs+dbMaster+dbSlave. Все пути относительно FULL_PATH+etlFolder.",
-  "_mocheckCommon": {
-    "_doc": "Все 9 логических групп mocheck шарят один master-запрос MOCHECK.sql (UNION ALL по 9 doctype), один slave-table 'mocheck' и работают в режиме section_compare. Различаются filterClause/filterClauseSlave/conflictExtra по doctype.",
-    "tableNameSlave": "mocheck",
-    "structureMaster": "structures/mocheck_orcl.json",
-    "structureSlave": "structures/mocheck_post.json",
-    "selectSql": "queries/customQueries/MOCHECK.sql",
-    "conflictExtra": "doctype",
-    "mode": "section_compare"
-  }
-}
+{}

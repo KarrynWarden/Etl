@@ -161,7 +161,7 @@ def do_etl_sp():
 with DAG(dag_id='SpEtlNew',
          default_args=args,
          max_active_runs=1,
-         tags=["OrclPost", "PostOrcl", "spetl", "", "DbSync"],
+         tags=["OrclPost", "PostOrcl", "spetl", "DbSync"],
          schedule_interval=dt.timedelta(minutes=5),
          catchup=False) as dag:
 

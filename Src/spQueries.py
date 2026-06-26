@@ -1,5 +1,5 @@
-from FunctionsProd.functionsFile.takeOneQuery import TakeOneQuery
-from SrcProd.fullPath import FULL_PATH
+from Functions.functionsFile.takeOneQuery import TakeOneQuery
+from Src.fullPath import FULL_PATH
 
 selectAllSpSql = TakeOneQuery(f'{FULL_PATH}etlFolder/queries/general/sp/SelectAllSp.sql')
 deleteAllSpSql = TakeOneQuery(f'{FULL_PATH}etlFolder/queries/general/sp/DeleteAllSp.sql')
