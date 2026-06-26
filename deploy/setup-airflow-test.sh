@@ -174,6 +174,13 @@ SCTL=$(command -v systemctl)
 echo "%$GROUP ALL=(root) NOPASSWD: $SCTL restart airflow-test-scheduler airflow-test-webserver" > "$SUDO.tmp"
 if visudo -cf "$SUDO.tmp"; then mv "$SUDO.tmp" "$SUDO"; chmod 440 "$SUDO"; echo "  ok"; else echo "  !! sudoers невалиден, не ставлю"; rm -f "$SUDO.tmp"; fi
 
+echo "== 9b. git safe.directory (репо разных владельцев: hook/devel/root) =="
+for d in "$BARE" "$SRC" "$JUPYTER_CLONE"; do
+    git config --system --get-all safe.directory 2>/dev/null | grep -qxF "$d" \
+        || git config --system --add safe.directory "$d"
+done
+echo "  ok"
+
 echo "== 10. Запуск =="
 systemctl daemon-reload
 systemctl enable --now airflow-test-scheduler airflow-test-webserver
