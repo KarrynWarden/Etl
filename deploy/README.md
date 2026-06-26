@@ -100,6 +100,27 @@ UI: `http://<IP-сервера>:8082`.
 
 После этого тестировщики заходят на `https://airflow-test.oms66.ru` — без ssh и туннелей.
 
+## Авто-синхронизация Jupyter-клона
+
+Общий Jupyter-workdir делаем клоном bare-репо, и `post-receive` после каждого
+`git push server test` сам подтягивает в него последнюю версию (`git pull --ff-only`:
+если кто-то редактирует с несохранёнными правками — не затрёт, просто пропустит).
+
+Разовая настройка (на сервере, root; bare-репо уже должен иметь ветку `test`):
+```bash
+git clone /opt/airflow-test/etl.git /opt/jupyter/workdir/konkin/etl
+git -C /opt/jupyter/workdir/konkin/etl checkout test
+chown -R jupyter:etldev /opt/jupyter/workdir/konkin/etl
+chmod -R g+rwX /opt/jupyter/workdir/konkin/etl
+find /opt/jupyter/workdir/konkin/etl -type d -exec chmod g+s {} +   # новые файлы наследуют группу
+```
+Затем обнови hook (он уже умеет авто-pull): перенеси свежий `setup-airflow-test.sh`
+на сервер и `bash setup-airflow-test.sh` (идемпотентно — перезапишет hook), либо
+вручную допиши блок авто-pull в `/opt/airflow-test/etl.git/hooks/post-receive`.
+
+Путь Jupyter-клона задаётся переменной `JUPYTER_CLONE` в `setup-airflow-test.sh`.
+Если клона нет — hook просто пропускает этот шаг.
+
 ## Обслуживание metadata-БД
 
 Чистка БД airflow остаётся airflow-дагами (`DbCleanup1/2`) — удобно смотреть логи и

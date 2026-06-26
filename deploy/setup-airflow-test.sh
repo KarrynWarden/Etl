@@ -21,6 +21,7 @@ DEPLOY_BRANCH=test                     # какая ветка разворач�
 PROD_CFG=/opt/airflow/airflow/airflow.cfg   # откуда взять реквизиты metadata-PG
 TEST_DB=airflow_test                   # отдельная metadata-база в том же PG
 TEST_DOMAIN=airflow-test.oms66.ru      # домен за Apache-прокси (для base_url)
+JUPYTER_CLONE=/opt/jupyter/workdir/konkin/etl   # общий Jupyter-клон (авто-pull при деплое; если нет — пропускается)
 
 BARE=$ROOT/etl.git
 SRC=$ROOT/test-src
@@ -60,6 +61,15 @@ while read oldrev newrev ref; do
         git --git-dir=$BARE --work-tree=$SRC checkout -f "$DEPLOY_BRANCH"
         python3 "$SRC/tools/regen_config.py" config SpTableName SpOnce >/dev/null 2>&1 || true
         sudo systemctl restart airflow-test-scheduler airflow-test-webserver
+        # Авто-подтягивание последней версии в общий Jupyter-клон (ff-only: не затрёт
+        # несохранённые правки — если рабочая копия «грязная», просто пропустит).
+        if [ -d "$JUPYTER_CLONE/.git" ]; then
+            ( unset GIT_DIR GIT_WORK_TREE
+              git -C "$JUPYTER_CLONE" fetch -q origin "$DEPLOY_BRANCH" \
+              && git -C "$JUPYTER_CLONE" merge -q --ff-only "origin/$DEPLOY_BRANCH" ) \
+              && echo "Jupyter-клон обновлён до $DEPLOY_BRANCH" \
+              || echo "Jupyter-клон не обновлён (несохранённые правки/дивергенция) — пропуск"
+        fi
         echo "deploy: ветка $DEPLOY_BRANCH -> $SRC, airflow-test перезапущен"
     else
         echo "ветка \$branch получена (без деплоя)"
