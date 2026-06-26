@@ -1,7 +1,7 @@
 {
   "SPKAUDOPPostOrcl": {
     "tableNameSlave": "spkaudop",
-    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spkaudopPostOrcl/Add.sql",
-    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spkaudopPostOrcl/Select.sql"
+    "addSql": "queries/sp/spkaudopPostOrcl/Add.sql",
+    "selectSql": "queries/sp/spkaudopPostOrcl/Select.sql"
   }
 }

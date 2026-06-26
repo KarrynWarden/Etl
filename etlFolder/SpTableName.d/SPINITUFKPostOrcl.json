@@ -1,6 +1,6 @@
 {
   "SPINITUFKPostOrcl": {
     "tableNameSlave": "KOKNAEV.spinitufk",
-    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spinitufkPostOrcl/Add.sql"
+    "addSql": "queries/sp/spinitufkPostOrcl/Add.sql"
   }
 }

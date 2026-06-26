@@ -50,6 +50,18 @@ def assemble(name):
     return result
 
 
+def resolvePath(path):
+    """Относительный путь -> {FULL_PATH}etlFolder/<path>; абсолютный -> как есть.
+
+    Та же логика, что do_etl._resolveEtlPath, но без тяжёлого импорта do_etl —
+    для Sp-дагов (addSql/selectSql из SpTableName/SpOnce). Один etlFolder на все
+    среды: относительный путь работает и локально, и на сервере.
+    """
+    if not path or os.path.isabs(path):
+        return path
+    return f"{FULL_PATH}etlFolder/{path}"
+
+
 def loadFullConfig():
     """Полный конфиг переноса (бывший config.json) — собранный из фрагментов."""
     return assemble("config")

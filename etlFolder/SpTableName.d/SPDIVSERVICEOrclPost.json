@@ -1,7 +1,7 @@
 {
   "SPDIVSERVICEOrclPost": {
     "tableNameSlave": "spdivservice",
-    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spdivservice/Add.sql",
-    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spdivservice/Select.sql"
+    "addSql": "queries/sp/spdivservice/Add.sql",
+    "selectSql": "queries/sp/spdivservice/Select.sql"
   }
 }

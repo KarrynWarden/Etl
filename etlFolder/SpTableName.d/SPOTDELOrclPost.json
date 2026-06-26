@@ -1,7 +1,7 @@
 {
   "SPOTDELOrclPost": {
     "tableNameSlave": "spotdel",
-    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spotdel/Add.sql",
-    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spotdel/Select.sql"
+    "addSql": "queries/sp/spotdel/Add.sql",
+    "selectSql": "queries/sp/spotdel/Select.sql"
   }
 }

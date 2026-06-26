@@ -1,6 +1,6 @@
 {
   "SPRESERVEPostOrcl": {
     "tableNameSlave": "spreserve",
-    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spreservePostOrcl/Add.sql"
+    "addSql": "queries/sp/spreservePostOrcl/Add.sql"
   }
 }

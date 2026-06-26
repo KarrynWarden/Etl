@@ -1,7 +1,7 @@
 {
   "SPMEDSERVICEOrclPost": {
     "tableNameSlave": "spmedservice",
-    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spmedservice/Add.sql",
-    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spmedservice/Select.sql"
+    "addSql": "queries/sp/spmedservice/Add.sql",
+    "selectSql": "queries/sp/spmedservice/Select.sql"
   }
 }

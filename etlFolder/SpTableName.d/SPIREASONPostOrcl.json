@@ -1,7 +1,7 @@
 {
   "SPIREASONPostOrcl": {
     "tableNameSlave": "KOKNAEV.spireason",
-    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spireasonPostOrcl/Add.sql",
-    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spireasonPostOrcl/Select.sql"
+    "addSql": "queries/sp/spireasonPostOrcl/Add.sql",
+    "selectSql": "queries/sp/spireasonPostOrcl/Select.sql"
   }
 }

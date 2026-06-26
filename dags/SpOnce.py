@@ -13,7 +13,7 @@ from Functions.spEtlOnce import SpEtl
 from Functions.functionsFile.takeOneQuery import TakeOneQuery
 from Src.fullPath import FULL_PATH
 from Src.spQueries import selectAllSpSql
-from Functions.functionsFile.loadConfig import assemble
+from Functions.functionsFile.loadConfig import assemble, resolvePath
 
 args = {
     'owner': 'airflow',
@@ -35,11 +35,11 @@ def do_etl_sp():
         selectSql = arrSp[spNameDb].get('selectSql', '')
         tableNameSlave = arrSp[spNameDb].get('tableNameSlave', '')
         if selectSql:
-            selectSql = TakeOneQuery(selectSql)
+            selectSql = TakeOneQuery(resolvePath(selectSql))
         else:
             selectSql = selectAllSpSql.format(tableNameMaster)
         mode = 'once'
-        SpEtl(tableNameMaster, tableNameSlave, TakeOneQuery(addSql), action, selectSql, dbMaster, dbSlave, mode)
+        SpEtl(tableNameMaster, tableNameSlave, TakeOneQuery(resolvePath(addSql)), action, selectSql, dbMaster, dbSlave, mode)
 
 with DAG(dag_id='SpEtlOnce',
          default_args=args,

@@ -1,8 +1,8 @@
 {
   "SPDIRACCPostOrcl": {
     "tableNameSlave": "KOKNAEV.spdiracc",
-    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spdiracc_new/Add.sql",
-    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spdiracc_new/Select.sql",
+    "addSql": "queries/sp/spdiracc_new/Add.sql",
+    "selectSql": "queries/sp/spdiracc_new/Select.sql",
     "dependence": "SPACC"
   }
 }

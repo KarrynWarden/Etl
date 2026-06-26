@@ -1,6 +1,6 @@
 {
   "SPPROPERFORMOrclPost": {
     "tableNameSlave": "spproperform",
-    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spproperform/Add.sql"
+    "addSql": "queries/sp/spproperform/Add.sql"
   }
 }

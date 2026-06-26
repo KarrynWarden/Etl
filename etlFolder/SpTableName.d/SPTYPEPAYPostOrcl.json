@@ -1,7 +1,7 @@
 {
   "SPTYPEPAYPostOrcl": {
     "tableNameSlave": "KOKNAEV.sppayacc",
-    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/SpTypePay/Add.sql",
-    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/SpTypePay/Select.sql"
+    "addSql": "queries/sp/SpTypePay/Add.sql",
+    "selectSql": "queries/sp/SpTypePay/Select.sql"
   }
 }

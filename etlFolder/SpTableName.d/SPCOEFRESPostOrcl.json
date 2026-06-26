@@ -1,7 +1,7 @@
 {
   "SPCOEFRESPostOrcl": {
     "tableNameSlave": "spcoefres",
-    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spcoefresPostOrcl/Add.sql",
-    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spcoefresPostOrcl/Select.sql"
+    "addSql": "queries/sp/spcoefresPostOrcl/Add.sql",
+    "selectSql": "queries/sp/spcoefresPostOrcl/Select.sql"
   }
 }

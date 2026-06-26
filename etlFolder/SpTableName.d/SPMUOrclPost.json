@@ -1,7 +1,7 @@
 {
   "SPMUOrclPost": {
     "tableNameSlave": "spmo",
-    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spmu/Add.sql",
-    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spmu/Select.sql"
+    "addSql": "queries/sp/spmu/Add.sql",
+    "selectSql": "queries/sp/spmu/Select.sql"
   }
 }

@@ -1,7 +1,7 @@
 {
   "IAS_CERTOrclPost": {
     "tableNameSlave": "ias_cert",
-    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/ias_cert/Add.sql",
-    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/ias_cert/Select.sql"
+    "addSql": "queries/sp/ias_cert/Add.sql",
+    "selectSql": "queries/sp/ias_cert/Select.sql"
   }
 }

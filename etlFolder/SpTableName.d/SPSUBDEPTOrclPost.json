@@ -1,7 +1,7 @@
 {
   "SPSUBDEPTOrclPost": {
     "tableNameSlave": "spsubdept",
-    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spsubdept/Add.sql",
-    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spsubdept/Select.sql"
+    "addSql": "queries/sp/spsubdept/Add.sql",
+    "selectSql": "queries/sp/spsubdept/Select.sql"
   }
 }

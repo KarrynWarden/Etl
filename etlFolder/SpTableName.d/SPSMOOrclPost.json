@@ -1,7 +1,7 @@
 {
   "SPSMOOrclPost": {
     "tableNameSlave": "spsmo",
-    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spsmo/Add.sql",
-    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spsmo/Select.sql"
+    "addSql": "queries/sp/spsmo/Add.sql",
+    "selectSql": "queries/sp/spsmo/Select.sql"
   }
 }

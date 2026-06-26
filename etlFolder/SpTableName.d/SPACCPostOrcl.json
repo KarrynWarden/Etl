@@ -1,7 +1,7 @@
 {
   "SPACCPostOrcl": {
     "tableNameSlave": "KOKNAEV.spacc",
-    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spacc_new/Add.sql",
-    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spacc_new/Select.sql"
+    "addSql": "queries/sp/spacc_new/Add.sql",
+    "selectSql": "queries/sp/spacc_new/Select.sql"
   }
 }

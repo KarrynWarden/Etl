@@ -1,7 +1,7 @@
 {
   "SPKAUPostOrcl": {
     "tableNameSlave": "spkau",
-    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spkauPostOrcl/Add.sql",
-    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spkauPostOrcl/Select.sql"
+    "addSql": "queries/sp/spkauPostOrcl/Add.sql",
+    "selectSql": "queries/sp/spkauPostOrcl/Select.sql"
   }
 }

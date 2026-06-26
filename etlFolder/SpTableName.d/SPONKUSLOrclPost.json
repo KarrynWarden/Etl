@@ -1,7 +1,7 @@
 {
   "SPONKUSLOrclPost": {
     "tableNameSlave": "sponkusl",
-    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/sponkusl/Add.sql",
-    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/sponkusl/Select.sql"
+    "addSql": "queries/sp/sponkusl/Add.sql",
+    "selectSql": "queries/sp/sponkusl/Select.sql"
   }
 }

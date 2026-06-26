@@ -11,7 +11,7 @@ from airflow.operators.python_operator import PythonOperator
 from airflow.exceptions import AirflowSkipException, AirflowException
 from Functions.spEtlNew import SpEtl
 from Functions.functionsFile.takeOneQuery import TakeOneQuery
-from Functions.functionsFile.loadConfig import assemble
+from Functions.functionsFile.loadConfig import assemble, resolvePath
 from Src.fullPath import FULL_PATH
 from Src.spQueries import selectAllSpSql
 from Connect import DbConnectOrcl, DbConnectPost
@@ -104,7 +104,7 @@ def do_etl_sp():
                 tableNameSlave = arrSp[spNameDb].get('tableNameSlave', '')
 
                 if selectSql:
-                    selectSql = TakeOneQuery(selectSql)
+                    selectSql = TakeOneQuery(resolvePath(selectSql))
                 else:
                     selectSql = selectAllSpSql.format(tableNameMaster)
 
@@ -112,7 +112,7 @@ def do_etl_sp():
                 success = SpEtl(
                     tableNameMaster,
                     tableNameSlave,
-                    TakeOneQuery(addSql),
+                    TakeOneQuery(resolvePath(addSql)),
                     action,
                     selectSql,
                     dbMaster,

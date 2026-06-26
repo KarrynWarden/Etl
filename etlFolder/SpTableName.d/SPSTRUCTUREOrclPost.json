@@ -1,7 +1,7 @@
 {
   "SPSTRUCTUREOrclPost": {
     "tableNameSlave": "spstructure",
-    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spstructure/Add.sql",
-    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spstructure/Select.sql"
+    "addSql": "queries/sp/spstructure/Add.sql",
+    "selectSql": "queries/sp/spstructure/Select.sql"
   }
 }

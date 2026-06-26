@@ -1,7 +1,7 @@
 {
   "SPVMPSERVOrclPost": {
     "tableNameSlave": "Spvmpserv",
-    "addSql": "/opt/airflow/airflow/etlFolder/queries/sp/spvmpserv/Add.sql",
-    "selectSql": "/opt/airflow/airflow/etlFolder/queries/sp/spvmpserv/Select.sql"
+    "addSql": "queries/sp/spvmpserv/Add.sql",
+    "selectSql": "queries/sp/spvmpserv/Select.sql"
   }
 }
