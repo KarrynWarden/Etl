@@ -18,19 +18,40 @@
       --src .../queries/sp --dst ./sp_clean
 """
 import argparse
+import glob
 import json
 import os
 import shutil
 
 
-def referenced(json_files):
-    """Относительные пути <имя>/<файл>.sql, упомянутые в json (после '/sp/')."""
+def _json_paths(inputs):
+    """Развернуть аргументы --json: файл -> он сам; папка фрагментов -> все *.json."""
+    paths = []
+    for p in inputs:
+        if os.path.isdir(p):
+            paths += sorted(glob.glob(os.path.join(p, "*.json")))
+        else:
+            paths.append(p)
+    return paths
+
+
+def _entries(obj):
+    """Записи из целого конфига {"data": {...}} ИЛИ из фрагмента {"<ключ>": {...}}."""
+    data = obj.get("data") if isinstance(obj, dict) else None
+    src = data if isinstance(data, dict) else obj
+    return [v for v in src.values() if isinstance(v, dict)]
+
+
+def referenced(inputs):
+    """Относительные пути <имя>/<файл>.sql, упомянутые в json (после '/sp/').
+
+    Принимает и целые SpTableName.json/SpOnce.json, и папки фрагментов
+    SpTableName.d/ (источник истины после дробления).
+    """
     rel = set()
-    for jf in json_files:
-        data = json.load(open(jf, encoding="utf-8")).get("data", {})
-        for entry in data.values():
-            if not isinstance(entry, dict):
-                continue
+    for jf in _json_paths(inputs):
+        obj = json.load(open(jf, encoding="utf-8"))
+        for entry in _entries(obj):
             for val in entry.values():
                 if isinstance(val, str) and val.strip().endswith(".sql"):
                     v = val.strip().replace("\\", "/")
