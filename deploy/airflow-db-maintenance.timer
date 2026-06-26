@@ -1,0 +1,13 @@
+# Таймер обслуживания metadata-БД airflow: раз в неделю, в тихое время.
+# Установка: cp в /etc/systemd/system/, systemctl daemon-reload,
+#            systemctl enable --now airflow-db-maintenance.timer
+[Unit]
+Description=Weekly Airflow metadata DB maintenance
+
+[Timer]
+# Воскресенье 04:00. Persistent — если сервер был выключен, запустит при старте.
+OnCalendar=Sun *-*-* 04:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

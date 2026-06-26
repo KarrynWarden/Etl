@@ -100,6 +100,39 @@ UI: `http://<IP-сервера>:8082`.
 
 После этого тестировщики заходят на `https://airflow-test.oms66.ru` — без ssh и туннелей.
 
+## Обслуживание metadata-БД (вместо дагов DbCleanup)
+
+`VACUUM FULL` из airflow-дага падал (эксклюзивный лок vs heartbeat). Заменили на
+systemd-таймер, который делает `airflow db clean` + `VACUUM FULL` **при остановленном
+airflow** — место реально освобождается, падать нечему. Несколько минут «простоя»
+раз в неделю в тихое время (Вс 04:00).
+
+Установка (на сервере, root):
+```bash
+cp deploy/airflow-db-maintenance.service /etc/systemd/system/
+cp deploy/airflow-db-maintenance.timer   /etc/systemd/system/
+# в .service поправь ExecStart на реальный путь к deploy/airflow-db-maintenance.sh
+systemctl daemon-reload
+systemctl enable --now airflow-db-maintenance.timer
+systemctl start airflow-db-maintenance.service   # разовый прогон для проверки
+journalctl -u airflow-db-maintenance.service --no-pager   # лог
+```
+
+Для ТЕСТОВОГО инстанса — те же юниты с другими параметрами (drop-in
+`/etc/systemd/system/airflow-db-maintenance.service.d/test.conf`):
+```ini
+[Service]
+Environment=SERVICES=airflow-test-scheduler airflow-test-webserver
+Environment=PG_DB=airflow_test
+Environment=ENVFILE=/opt/airflow-test/airflow-test.env
+Environment=AIRFLOW_HOME=
+```
+Параметры: `RETENTION_DAYS` (по умолчанию 90), `SERVICES`, `PG_DB`. Зону «тихого
+времени» поменяй в `.timer` (`OnCalendar`).
+
+> Без простоя вовсе — альтернатива `pg_repack` (онлайн-перепаковка без долгого
+> лока), но требует установки расширения; на закрытой Astra проще таймер с окном.
+
 ## Прод (позже)
 Тот же механизм для ветки `prod` и существующего `/opt/airflow/airflow` добавим
 на финальном шаге, когда новая версия будет проверена.
