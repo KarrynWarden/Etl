@@ -23,11 +23,8 @@ REMOTE=${REMOTE:-origin}          # в клоне на Jupyter origin = серв
 
 cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 
-msg=${1:-}
-if [[ -z "$msg" ]]; then
-    echo "Использование: bash deploy/deploy-test.sh \"сообщение коммита\""
-    exit 1
-fi
+# сообщение опционально: для быстрых правок подставляется дата
+msg=${1:-"deploy $(date '+%Y-%m-%d %H:%M')"}
 
 cur=$(git rev-parse --abbrev-ref HEAD)
 if [[ "$cur" != "$BRANCH" ]]; then

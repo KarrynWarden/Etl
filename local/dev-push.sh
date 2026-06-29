@@ -36,15 +36,19 @@ push_retry() {
     done
 }
 
+# сообщение опционально: для быстрых правок подставляется дата
+msg=${1:-"update $(date '+%Y-%m-%d %H:%M')"}
+
 cur=$(git rev-parse --abbrev-ref HEAD)
 if [[ "$cur" != "$BRANCH" ]]; then
     echo "Ты на ветке '$cur', а нужна '$BRANCH'. Переключись: git checkout $BRANCH"
     exit 1
 fi
 
+# есть несохранённые правки — закоммитить их сами (add -A + commit)
 if [[ -n "$(git status --porcelain)" ]]; then
-    echo "!! Есть несохранённые правки — закоммить их сначала."
-    exit 1
+    git add -A
+    git commit -m "$msg"
 fi
 
 echo "== синхронизация с $SERVER/$BRANCH перед пушем =="
