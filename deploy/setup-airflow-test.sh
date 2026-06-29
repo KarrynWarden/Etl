@@ -60,6 +60,10 @@ echo "== 4. post-receive hook (деплой + рестарт) =="
 cat > "$BARE/hooks/post-receive" <<HOOK
 #!/bin/bash
 set -e
+# Jupyter-клон правят И jupyter (редактор), И этот хук (от devel при merge).
+# umask 002 => новые/переписанные файлы получают права 664 и остаются
+# редактируемыми группой etldev (иначе devel создаёт их 644 и jupyter теряет запись).
+umask 002
 while read oldrev newrev ref; do
     branch=\${ref#refs/heads/}
     if [ "\$branch" = "$DEPLOY_BRANCH" ]; then
