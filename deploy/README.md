@@ -119,7 +119,20 @@ find /opt/jupyter/workdir/konkin/etl -type d -exec chmod g+s {} +   # новые
 вручную допиши блок авто-pull в `/opt/airflow-test/etl.git/hooks/post-receive`.
 
 Путь Jupyter-клона задаётся переменной `JUPYTER_CLONE` в `setup-airflow-test.sh`.
-Если клона нет — hook просто пропускает этот шаг.
+Если клона нет — hook просто пропускает этот шаг (теперь с явным сообщением в выводе push).
+
+**Важно — права прохода до клона.** Hook выполняется под пользователем, под которым
+приходит push (`devel`), а не под root. Чтобы он мог дойти до клона, у `devel` должен
+быть бит прохода (`x`) на ВСЕХ родительских каталогах. Частая засада: `/opt/jupyter`
+создан с правами `700` (`drwx------ jupyter jupyter`) — тогда `devel` не проходит внутрь,
+`[ -d "$JUPYTER_CLONE/.git" ]` молча даёт false и авто-pull пропускается без обновления.
+Проверка и починка (на сервере, root):
+```bash
+namei -l /opt/jupyter/workdir/konkin/etl/.git          # найди каталог без группового/world x
+sudo -u devel test -d /opt/jupyter/workdir/konkin/etl/.git && echo OK || echo NOACCESS
+# открыть только проход (x) для группы etldev, без чтения/записи:
+chgrp etldev /opt/jupyter && chmod g+x /opt/jupyter     # подставь реальный «закрытый» каталог
+```
 
 ## Обслуживание metadata-БД
 

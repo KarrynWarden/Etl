@@ -68,7 +68,11 @@ while read oldrev newrev ref; do
               git -C "$JUPYTER_CLONE" fetch -q origin "$DEPLOY_BRANCH" \
               && git -C "$JUPYTER_CLONE" merge -q --ff-only "origin/$DEPLOY_BRANCH" ) \
               && echo "Jupyter-клон обновлён до $DEPLOY_BRANCH" \
-              || echo "Jupyter-клон не обновлён (несохранённые правки/дивергенция) — пропуск"
+              || echo "Jupyter-клон не обновлён (несохранённые правки/дивергенция/права) — пропуск"
+        else
+            # .git может быть не виден из-за отсутствия прав прохода (x) на родительских
+            # каталогах ($JUPYTER_CLONE открыт для etldev, но напр. /opt/jupyter мог быть 700).
+            echo "Jupyter-клон: $JUPYTER_CLONE/.git не найден или недоступен под \$(id -un) — пропуск"
         fi
         echo "deploy: ветка $DEPLOY_BRANCH -> $SRC, airflow-test перезапущен"
     else
