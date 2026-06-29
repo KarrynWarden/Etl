@@ -49,6 +49,11 @@ echo "== 3. bare-репозиторий =="
 if [[ ! -e "$BARE/HEAD" ]]; then
     git init --bare "$BARE" >/dev/null
 fi
+# Общий репо: в него пушат и devel (ssh с dev-PC), и jupyter (локально из клона),
+# checkout делает hook. core.sharedRepository=group заставляет git создавать
+# объекты/ссылки груп-записываемыми, иначе push второго пользователя падает с
+# "unable to create temporary object directory".
+git --git-dir="$BARE" config core.sharedRepository group
 chgrp -R "$GROUP" "$BARE"; chmod -R 2775 "$BARE"
 
 echo "== 4. post-receive hook (деплой + рестарт) =="
