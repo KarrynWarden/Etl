@@ -149,6 +149,9 @@ chmod 600 .env
 ```bash
 git clone /opt/airflow-test/etl.git /opt/jupyter/workdir/konkin/etl
 git -C /opt/jupyter/workdir/konkin/etl checkout test
+# общий репо: в .git пишут И jupyter (коммиты коллег), И devel (fetch в хуке),
+# поэтому включаем групповой режим — git создаёт служебные файлы груп-записываемыми
+git -C /opt/jupyter/workdir/konkin/etl config core.sharedRepository group
 chown -R jupyter:etldev /opt/jupyter/workdir/konkin/etl
 chmod -R g+rwX /opt/jupyter/workdir/konkin/etl
 find /opt/jupyter/workdir/konkin/etl -type d -exec chmod g+s {} +   # новые файлы наследуют группу
