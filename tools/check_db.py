@@ -48,7 +48,9 @@ def main(names):
         have_connect = True
     except Exception as e:
         have_connect = False
-        print("Импорт Connect не удался (вероятно, нет драйвера):", _short(e))
+        print("Импорт Connect не удался:", _short(e))
+        if isinstance(e, ImportError):
+            print("  -> похоже, в этом python нет драйвера (psycopg2/cx_Oracle).")
         print("Postgres проверю напрямую через psycopg2, Oracle пропущу.")
 
     for name in names:

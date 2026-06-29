@@ -22,6 +22,11 @@ def loadEnv(path=_ENV_PATH):
             lines = fp.readlines()
     except FileNotFoundError:
         return
+    except PermissionError:
+        raise RuntimeError(
+            f"Файл {path} недоступен на чтение текущему пользователю. "
+            f"Дай права, например: chgrp etldev {path} && chmod 640 {path}"
+        )
     for raw in lines:
         line = raw.strip().lstrip("﻿")  # снять BOM, пробелы, CR
         if not line or line.startswith("#"):
