@@ -139,8 +139,59 @@ def _ordered_pair(master_cols, slave_cols, pairs):
     return m_out, s_out
 
 
+def times_to_cron(times):
+    """['11:50','13:50','20:50'] -> '50 11,13,20 * * *'. Требует одинаковой минуты
+    у всех времён (как во всех текущих дагах); иначе — подсказка про cron."""
+    pairs = []
+    for t in times:
+        t = str(t).strip()
+        if not t:
+            continue
+        hh, _, mm = t.partition(":")
+        try:
+            h, m = int(hh), int(mm)
+        except ValueError:
+            raise ValueError(f"Неверное время '{t}'. Формат — ЧЧ:ММ, например 11:50.")
+        if not (0 <= h <= 23 and 0 <= m <= 59):
+            raise ValueError(f"Время вне диапазона: '{t}'.")
+        pairs.append((h, m))
+    if not pairs:
+        raise ValueError("Не заданы времена запуска.")
+    minutes = sorted({m for _, m in pairs})
+    hours = sorted({h for h, _ in pairs})
+    if len(minutes) != 1:
+        raise ValueError(
+            "У времён разные минуты — одним простым расписанием не выразить. "
+            "Используй режим «Cron-выражение» (например '20 11 * * *,50 13 * * *' "
+            "нельзя — нужно одно выражение)."
+        )
+    return f"{minutes[0]} {','.join(str(h) for h in hours)} * * *"
+
+
+def build_schedule_expr(spec):
+    """Литерал Python для schedule_interval из spec.
+
+    schedule_kind: 'interval' (по умолч.) | 'times' | 'cron'.
+      interval -> dt.timedelta(minutes=schedule_minutes)
+      times    -> cron из списка schedule_times (['11:50', ...])
+      cron     -> строка schedule_cron как есть.
+    """
+    kind = spec.get("schedule_kind", "interval")
+    if kind == "cron":
+        cron = (spec.get("schedule_cron") or "").strip()
+        if not cron:
+            raise ValueError("Пустое cron-выражение.")
+        return repr(cron)
+    if kind == "times":
+        return repr(times_to_cron(spec.get("schedule_times") or []))
+    minutes = int(spec.get("schedule_minutes", 1) or 1)
+    if minutes < 1:
+        raise ValueError("Период в минутах должен быть ≥ 1.")
+    return f"dt.timedelta(minutes={minutes})"
+
+
 def build_dag_py(dag_id, line_name, table_master, db_master, db_slave,
-                 tags, schedule_minutes=1, retry_mode="frequent"):
+                 tags, schedule_expr="dt.timedelta(minutes=1)", retry_mode="frequent"):
     tags_repr = ", ".join(repr(t) for t in tags)
     return f'''"""DAG: {db_master}->{db_slave} для {line_name}."""
 import datetime as dt
@@ -154,7 +205,7 @@ with DAG(
     default_args=DEFAULT_ARGS,
     max_active_runs=1,
     tags=[{tags_repr}],
-    schedule_interval=dt.timedelta(minutes={schedule_minutes}),
+    schedule_interval={schedule_expr},
     catchup=False,
 ) as dag:
     configureLogger()
@@ -188,8 +239,7 @@ def build_all(spec):
     dbm, dbs = spec["db_master"], spec["db_slave"]
     m_bare, s_bare = bare(tm), bare(ts)
     line = spec.get("line_name") or m_bare.lower()
-    dag_id = spec.get("dag_id") or (re.sub(r"[^a-z0-9]", "", line.lower()).capitalize()
-                                    + dbm + dbs)
+    dag_id = spec.get("dag_id") or default_dag_id(line, dbm, dbs)
     key = f"{line}{dbm}{dbs}"
 
     m_out, s_out = _ordered_pair(spec["master_cols"], spec["slave_cols"], spec["pairs"])
@@ -198,9 +248,20 @@ def build_all(spec):
     if len(m_out) != len(s_out):
         raise ValueError("Внутренняя ошибка: длины master/slave не равны.")
 
+    # Первичный ключ: master — источник истины, ведомая колонка той же позиции
+    # помечается так же (составной PK = несколько помеченных колонок).
+    for mc, sc in zip(m_out, s_out):
+        is_pk = "Primary Key" if mc.get("is_primary_key") else None
+        mc["is_primary_key"] = is_pk
+        sc["is_primary_key"] = is_pk
+
+    # В режиме правки сохраняем ИСХОДНЫЕ пути структур (для таблиц с несколькими
+    # линиями имена кастомные — иначе файлы уехали бы не туда). В новом — по схеме.
     struct_dir = f"structures/{m_bare}"
-    master_struct_rel = f"{struct_dir}/{m_bare}.json"
-    slave_struct_rel = f"{struct_dir}/{s_bare}.json"
+    master_struct_rel = spec.get("struct_master_rel") or f"{struct_dir}/{m_bare}.json"
+    slave_struct_rel = spec.get("struct_slave_rel") or f"{struct_dir}/{s_bare}.json"
+
+    out_files = []
 
     fragment = {key: {}}
     body = fragment[key]
@@ -217,18 +278,227 @@ def build_all(spec):
         if v not in (None, "", (), [], {}):
             body[k] = v
 
+    # SQL-запрос ведущей: пользователь вставляет ТЕКСТ — мы сами создаём .sql
+    # и прописываем путь к нему в selectSql (а не просим указать готовый файл).
+    sql_text = (spec.get("select_sql_text") or "").strip()
+    if sql_text:
+        sql_name = re.sub(r"[^A-Za-z0-9_]", "", spec.get("select_sql_name") or line) or line
+        sql_rel = f"queries/customQueries/{sql_name}.sql"
+        out_files.append((f"etlFolder/{sql_rel}",
+                          sql_text + ("" if sql_text.endswith("\n") else "\n")))
+        body["selectSql"] = sql_rel
+
     tags = spec.get("tags") or [f"{dbm}{dbs}", line, "DbSync"]
     dag_py = build_dag_py(dag_id, line, tm, dbm, dbs, tags,
-                          spec.get("schedule_minutes", 1),
+                          build_schedule_expr(spec),
                           spec.get("retry_mode", "frequent"))
 
-    return [
+    out_files += [
         (f"etlFolder/{master_struct_rel}", _struct_json(m_out, dbm)),
         (f"etlFolder/{slave_struct_rel}", _struct_json(s_out, dbs)),
         (f"etlFolder/config.d/{key}.json",
          json.dumps(fragment, ensure_ascii=False, indent=2) + "\n"),
         (f"dags/{dag_id}.py", dag_py),
     ]
+    return out_files
+
+
+def default_dag_id(line, dbm, dbs):
+    """Имя DAG по умолчанию: имя линии без не-буквенно-цифровых символов,
+    первая буква заглавная, плюс направление. Напр. prbdir+Post+Orcl -> PrbdirPostOrcl."""
+    return re.sub(r"[^a-z0-9]", "", line.lower()).capitalize() + dbm + dbs
+
+
+# ─────────────────────── существующие линии / теги (для UI) ───────────────────────
+
+_DB_NAMES = ("Post", "Orcl")
+
+
+def split_key(key):
+    """'prbdirPostOrcl' -> ('prbdir', 'Post', 'Orcl'). Направление кодируется
+    суффиксом из двух фиксированных имён БД."""
+    for dbm in _DB_NAMES:
+        for dbs in _DB_NAMES:
+            suf = dbm + dbs
+            if key.endswith(suf) and len(key) > len(suf):
+                return key[:-len(suf)], dbm, dbs
+    return key, "Post", "Orcl"
+
+
+def _dag_files():
+    d = os.path.join(ROOT, "dags")
+    if not os.path.isdir(d):
+        return []
+    return [os.path.join(d, f) for f in sorted(os.listdir(d))
+            if f.endswith(".py") and not f.startswith("__")]
+
+
+def existing_tags():
+    """Все теги из dags/*.py — чтобы UI подсказывал уже использованные.
+    Новый тег попадёт сюда автоматически после сохранения дага с этим тегом."""
+    tags = set()
+    pat = re.compile(r"tags\s*=\s*\[(.*?)\]", re.S)
+    for f in _dag_files():
+        try:
+            txt = open(f, encoding="utf-8").read()
+        except OSError:
+            continue
+        m = pat.search(txt)
+        if m:
+            tags.update(re.findall(r"""['"]([^'"]+)['"]""", m.group(1)))
+    return sorted(tags)
+
+
+def existing_lines():
+    """Имена всех линий (ключей) из etlFolder/config.d/*.json — для режима правки."""
+    d = os.path.join(ETLFOLDER, "config.d")
+    keys = []
+    if os.path.isdir(d):
+        for f in sorted(os.listdir(d)):
+            if not f.endswith(".json"):
+                continue
+            try:
+                obj = json.load(open(os.path.join(d, f), encoding="utf-8"))
+            except Exception:
+                continue
+            keys.extend(obj.keys())
+    return sorted(keys)
+
+
+def _find_config_body(key):
+    d = os.path.join(ETLFOLDER, "config.d")
+    for f in sorted(os.listdir(d)):
+        if not f.endswith(".json"):
+            continue
+        path = os.path.join(d, f)
+        try:
+            obj = json.load(open(path, encoding="utf-8"))
+        except Exception:
+            continue
+        if key in obj:
+            return obj[key], path
+    raise KeyError(f"Линия '{key}' не найдена в config.d.")
+
+
+def _norm_col(c):
+    def g(*ks):
+        for k in ks:
+            if k in c:
+                return c[k]
+        return None
+    return {
+        "column_name": g("column_name", "COLUMN_NAME"),
+        "data_type": g("data_type", "DATA_TYPE"),
+        "data_scale": g("data_scale", "DATA_SCALE"),
+        "is_primary_key": "Primary Key"
+        if g("is_primary_key", "IS_PRIMARY_KEY") == "Primary Key" else None,
+    }
+
+
+def _cols_from_struct(rel):
+    obj = json.load(open(os.path.join(ETLFOLDER, rel), encoding="utf-8"))
+    return [_norm_col(c) for c in obj.get("data", [])]
+
+
+def _find_dag_id(line, table_master, dbm, dbs):
+    """Найти РЕАЛЬНОЕ имя файла дага для линии (не угадать по формуле).
+
+    Иначе правка линии, чей даг назван не по формуле (другой регистр и т.п.),
+    создала бы второй файл-дубль. Сначала пробуем формулу, затем ищем по
+    содержимому: точное совпадение по tableNameEtlJobs, иначе по тройке
+    tableNameMaster + dbMaster + dbSlave."""
+    cand = default_dag_id(line, dbm, dbs)
+    if os.path.exists(os.path.join(ROOT, "dags", f"{cand}.py")):
+        return cand
+    p_line = re.compile(r'tableNameEtlJobs\s*=\s*[\'"]%s[\'"]' % re.escape(line))
+    p_tm = re.compile(r'tableNameMaster\s*=\s*[\'"]%s[\'"]' % re.escape(table_master))
+    p_dbm = re.compile(r'dbMaster\s*=\s*[\'"]%s[\'"]' % re.escape(dbm))
+    p_dbs = re.compile(r'dbSlave\s*=\s*[\'"]%s[\'"]' % re.escape(dbs))
+    fallback = None
+    for f in _dag_files():
+        try:
+            txt = open(f, encoding="utf-8").read()
+        except OSError:
+            continue
+        name = os.path.splitext(os.path.basename(f))[0]
+        if p_line.search(txt):
+            return name
+        if fallback is None and p_tm.search(txt) and p_dbm.search(txt) and p_dbs.search(txt):
+            fallback = name
+    return fallback or cand
+
+
+def _parse_dag_file(dag_id):
+    """Расписание / retryMode / теги из dags/<dag_id>.py (best-effort)."""
+    res = {"schedule_kind": "interval", "schedule_minutes": 1, "schedule_cron": "",
+           "retry_mode": "frequent", "tags": []}
+    try:
+        txt = open(os.path.join(ROOT, "dags", f"{dag_id}.py"), encoding="utf-8").read()
+    except OSError:
+        return res
+    m = re.search(r"retryMode\s*=\s*['\"](\w+)['\"]", txt)
+    if m:
+        res["retry_mode"] = m.group(1)
+    m = re.search(r"tags\s*=\s*\[(.*?)\]", txt, re.S)
+    if m:
+        res["tags"] = re.findall(r"""['"]([^'"]+)['"]""", m.group(1))
+    m = re.search(r"schedule_interval\s*=\s*(.+),\s*$", txt, re.M)
+    if m:
+        expr = m.group(1).strip()
+        tmd = re.search(r"timedelta\(minutes\s*=\s*(\d+)\)", expr)
+        if tmd:
+            res["schedule_kind"], res["schedule_minutes"] = "interval", int(tmd.group(1))
+        else:
+            res["schedule_kind"] = "cron"
+            res["schedule_cron"] = expr.strip().strip("'\"")
+    return res
+
+
+def load_line(key):
+    """Собрать спецификацию существующей линии для заполнения формы (режим правки).
+    Колонки и сопоставление берутся из сохранённых structures (в их парном порядке);
+    расписание/retry/теги — из файла дага."""
+    line, dbm, dbs = split_key(key)
+    body, _ = _find_config_body(key)
+    master_cols = _cols_from_struct(body["structureMaster"])
+    slave_cols = _cols_from_struct(body["structureSlave"])
+    pairs = list(zip([c["column_name"] for c in master_cols],
+                     [c["column_name"] for c in slave_cols]))
+    table_master = body.get("tableNameMaster", line)
+    dag_id = _find_dag_id(line, table_master, dbm, dbs)
+    sched = _parse_dag_file(dag_id)
+
+    extra = {k: body[k] for k in
+             ("filterClause", "filterClauseSlave", "conflictExtra",
+              "conflictWhere", "truncatePeriod") if k in body}
+    select_sql = body.get("selectSql")
+    select_sql_text = ""
+    if select_sql:
+        try:
+            select_sql_text = open(os.path.join(ETLFOLDER, select_sql),
+                                   encoding="utf-8").read()
+        except OSError:
+            select_sql_text = ""
+
+    return {
+        "key": key, "line_name": line, "dag_id": dag_id,
+        "table_master": body.get("tableNameMaster", line),
+        "table_slave": body.get("tableNameSlave", ""),
+        "db_master": dbm, "db_slave": dbs,
+        "mode": body.get("mode", "iud"),
+        "period_column": body.get("periodColumn"),
+        "slave_period_column": body.get("slavePeriodColumn"),
+        "doc": body.get("_doc", ""),
+        "master_cols": master_cols, "slave_cols": slave_cols, "pairs": pairs,
+        "struct_master_rel": body["structureMaster"],
+        "struct_slave_rel": body["structureSlave"],
+        "extra": extra,
+        "select_sql": select_sql, "select_sql_text": select_sql_text,
+        "tags": sched["tags"], "retry_mode": sched["retry_mode"],
+        "schedule_kind": sched["schedule_kind"],
+        "schedule_minutes": sched["schedule_minutes"],
+        "schedule_cron": sched["schedule_cron"],
+    }
 
 
 def write_files(files, overwrite=False):
