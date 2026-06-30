@@ -108,10 +108,19 @@ sync_jupyter_clone() {
     local ans=""
     read -r -p "Перезаписать рабочую копию на сервере версией из '$BRANCH'? (y/N) " ans || ans=""
     if [[ "$ans" == "y" || "$ans" == "Y" ]]; then
-        ssh "$dest" "git -C '$JUPYTER_CLONE' fetch -q origin '$BRANCH' \
+        # umask 002 — чтобы переписанные файлы остались груп-записываемыми (etldev).
+        if ssh "$dest" "umask 002; git -C '$JUPYTER_CLONE' fetch -q origin '$BRANCH' \
             && git -C '$JUPYTER_CLONE' reset --hard 'origin/$BRANCH' \
-            && git -C '$JUPYTER_CLONE' clean -fd"
-        echo "   Jupyter-клон принудительно синхронизирован с '$BRANCH'."
+            && git -C '$JUPYTER_CLONE' clean -fd"; then
+            echo "   Jupyter-клон принудительно синхронизирован с '$BRANCH'."
+        else
+            echo "!! Не удалось перезаписать Jupyter-клон — похоже, права на каталоги"
+            echo "   (для удаления файла нужна запись на его папку, а не на сам файл)."
+            echo "   Один раз выполни на сервере от root, чтобы клон стал общим для группы etldev:"
+            echo "     sudo chgrp -R etldev $JUPYTER_CLONE"
+            echo "     sudo find $JUPYTER_CLONE -type d -exec chmod 2775 {} +"
+            echo "   затем снова запусти bash local/dev-push.sh и ответь y."
+        fi
     else
         echo "   Оставил как есть. Разобраться вручную на сервере:"
         echo "     ssh $dest"

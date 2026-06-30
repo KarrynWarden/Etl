@@ -194,6 +194,20 @@ for d in "$BARE" "$SRC" "$JUPYTER_CLONE"; do
 done
 echo "  ok"
 
+echo "== 9c. права Jupyter-клона (общий доступ группе $GROUP) =="
+# Клон правят и jupyter (редактор), и devel (force-sync из dev-push при сбросе
+# несохранённых правок). Чтобы любой из группы мог удалять/заменять файлы коллег,
+# каталоги должны быть груп-записываемыми с setgid (для unlink важна запись на
+# КАТАЛОГ, а не на файл). Без этого reset --hard падает с «unable to unlink».
+if [[ -d "$JUPYTER_CLONE/.git" ]]; then
+    chgrp -R "$GROUP" "$JUPYTER_CLONE" 2>/dev/null || true
+    find "$JUPYTER_CLONE" -type d -exec chmod 2775 {} + 2>/dev/null || true
+    find "$JUPYTER_CLONE" -type f -exec chmod g+rw {} + 2>/dev/null || true
+    echo "  ok"
+else
+    echo "  ($JUPYTER_CLONE не найден — пропуск)"
+fi
+
 echo "== 10. Запуск =="
 systemctl daemon-reload
 systemctl enable --now airflow-test-scheduler airflow-test-webserver
