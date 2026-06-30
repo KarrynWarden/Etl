@@ -44,11 +44,27 @@ bash install.sh
 ### Вариант Б — из папки wheels напрямую
 
 ```bash
-python -m pip install --no-index --find-links=./wheels ipywidgets
+/opt/jupyter/bin/python -m pip install --no-index --find-links=./wheels ipywidgets
 ```
 
 Флаг `--no-index` запрещает pip выходить в сеть, `--find-links` указывает на локальную папку.
 Уже установленные подходящие зависимости (ipython, traitlets и т.д.) переустановлены не будут.
+
+> **Важно — правильный Python.** Ставить нужно в тот же Python, где работает Jupyter.
+> На сервере под `root` команда `python` может указывать на системный **Python 2.7**, и тогда
+> pip не найдёт py3-wheel'ы («No matching distribution found»). Используйте интерпретатор
+> Jupyter явно — обычно `/opt/jupyter/bin/python`. Проверить:
+>
+> ```bash
+> /opt/jupyter/bin/python --version       # должно быть Python 3.10.x
+> /opt/jupyter/bin/python -m pip --version # pip из /opt/jupyter/.../site-packages
+> ```
+>
+> `install.sh` сам пытается найти интерпретатор Jupyter; путь можно задать вручную:
+>
+> ```bash
+> PYTHON=/opt/jupyter/bin/python bash install.sh
+> ```
 
 ## Проверка
 
