@@ -234,6 +234,10 @@ def launch():
     map_title = W.HTML("")
     hide_unmapped = W.Checkbox(description="Скрывать непривязанные", value=False,
                                indent=False)
+    # шапка над колонками: какая таблица/БД слева (ведущая) и справа (ведомая) —
+    # чтобы не гадать по регистру, из какой таблицы колонка
+    map_head = W.HBox([], layout=W.Layout(align_items="center",
+                                          border_bottom="2px solid #bbb", padding="2px"))
     map_box = W.VBox([], layout=W.Layout(max_height="420px", overflow="auto",
                                          border="1px solid #ddd", padding="4px"))
     out = W.Output()
@@ -300,6 +304,18 @@ def launch():
     # ── отрисовка таблицы сопоставления колонок ──
     def _render_mapping(mcols, scols, pair_map=None, pk_names=None,
                         period_m=None, period_s=None):
+        # шапка: явно подписываем, какая таблица/БД слева и справа
+        m_lbl = (tm.value.strip() or "ведущая")
+        s_lbl = (ts.value.strip() or "ведомая")
+        map_head.children = [
+            W.HTML(f"<b>ВЕДУЩАЯ</b> · <code>{m_lbl}</code> "
+                   f"<span style='color:#888'>[{dbm.value}]</span>",
+                   layout=W.Layout(width="324px")),
+            W.HTML(f"<b>ВЕДОМАЯ</b> · <code>{s_lbl}</code> "
+                   f"<span style='color:#888'>[{dbs.value}]</span>",
+                   layout=W.Layout(width="280px")),
+            W.HTML("<b>PK</b>", layout=W.Layout(width="80px")),
+        ]
         slave_opts = [_NONE] + [c["column_name"] for c in scols]
         rows, widgets = [], []
         for mcol in mcols:
@@ -594,7 +610,7 @@ def launch():
         W.HTML("<hr>"),
         W.HTML("<b>Колонки</b> (ведущая → ведомая; отметь PK, составной ключ — "
                "несколько галочек):"),
-        period_box, W.HBox([map_title, hide_unmapped]), map_box,
+        period_box, W.HBox([map_title, hide_unmapped]), map_head, map_box,
         W.HBox([btn_prev, btn_make]),
     ])
 
