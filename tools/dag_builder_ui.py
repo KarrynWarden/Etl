@@ -36,7 +36,7 @@ def launch():
     import ipywidgets as W
     from IPython.display import display
 
-    state = {"master_cols": [], "slave_cols": [], "rows": [],
+    state = {"master_cols": [], "slave_cols": [], "rows": [], "row_widgets": [],
              "period_w": None, "slave_period_w": None,
              "struct_master_rel": None, "struct_slave_rel": None,
              "tags_auto": True, "_tags_guard": False}
@@ -232,6 +232,8 @@ def launch():
     # ── зоны вывода ──
     period_box = W.HBox([])
     map_title = W.HTML("")
+    hide_unmapped = W.Checkbox(description="Скрывать непривязанные", value=False,
+                               indent=False)
     map_box = W.VBox([], layout=W.Layout(max_height="420px", overflow="auto",
                                          border="1px solid #ddd", padding="4px"))
     out = W.Output()
@@ -285,6 +287,16 @@ def launch():
             _refresh_archive_lists()
     work_mode.observe(_on_work_mode, names="value")
 
+    # ── фильтр строк: показывать только привязанные (для проверки) ──
+    def _apply_row_filter(_=None):
+        widgets = state.get("row_widgets", [])
+        if hide_unmapped.value:
+            map_box.children = [w for (m, dd, pk), w in zip(state["rows"], widgets)
+                                if dd.value != _NONE]
+        else:
+            map_box.children = widgets
+    hide_unmapped.observe(_apply_row_filter, names="value")
+
     # ── отрисовка таблицы сопоставления колонок ──
     def _render_mapping(mcols, scols, pair_map=None, pk_names=None,
                         period_m=None, period_s=None):
@@ -309,7 +321,8 @@ def launch():
                 layout=W.Layout(align_items="center", min_height="42px",
                                 padding="4px 2px", border_bottom="1px solid #eee")))
         state["rows"] = rows
-        map_box.children = widgets
+        state["row_widgets"] = widgets
+        _apply_row_filter()
 
         m_names = [c["column_name"] for c in mcols]
         s_names = [c["column_name"] for c in scols]
@@ -385,28 +398,62 @@ def launch():
             spec["schedule_cron"] = sched_cron.value.strip()
         return spec
 
+    def _current_mapping():
+        """Текущее сопоставление из формы: {master_name: slave_name|None} и набор PK."""
+        pm = {}
+        pk = set()
+        for mcol, dd, pkw in state["rows"]:
+            nm = mcol["column_name"]
+            pm[nm] = None if dd.value == _NONE else dd.value
+            if pkw.value:
+                pk.add(nm)
+        return pm, pk
+
     # ── снять структуры из БД ──
     def on_snap(_):
         try:
             if not tm.value.strip() or not ts.value.strip():
                 _log("Заполни имена ведущей и ведомой таблиц."); return
+            edit = work_mode.value == "edit"
+            # в правке сохраняем текущие связки/PK/период, чтобы пересъём не снёс их
+            prev_pairs, prev_pk = (_current_mapping() if edit and state["rows"]
+                                   else ({}, None))
+            prev_pm = state["period_w"].value if (edit and state["period_w"]) else None
+            prev_ps = state["slave_period_w"].value if (edit and state["slave_period_w"]) else None
+
             _log("Снимаю структуры из БД…")
             mcols = B.snap_structure(dbm.value, tm.value.strip(), user_m_get())
             scols = B.snap_structure(dbs.value, ts.value.strip(), user_s_get())
             state["master_cols"], state["slave_cols"] = mcols, scols
 
-            sugg, unmatched = B.auto_match(mcols, scols)
-            pair_map = {m["column_name"]: s for m, s in zip(mcols, sugg)}
-            _render_mapping(mcols, scols, pair_map=pair_map)
-
-            matched = sum(1 for s in sugg if s)
-            note = (f"Сопоставление колонок: ведущая {len(mcols)} / ведомая {len(scols)}, "
-                    f"авто-совпало {matched}.")
-            if unmatched:
-                note += (" <b>Без пары в ведомой:</b> "
-                         + ", ".join(f"<code>{u}</code>" for u in unmatched))
-            map_title.value = note
-            _log("Структуры сняты. Поправь выпадашки и галочки PK, затем «Предпросмотр».")
+            if edit:
+                # НЕ авто-матчим: новые колонки остаются непривязанными (их могли
+                # намеренно не включать), старые связки сохраняем как есть.
+                slave_names = {c["column_name"] for c in scols}
+                pair_map = {n: (s if s in slave_names else None)
+                            for n, s in prev_pairs.items()}
+                _render_mapping(mcols, scols, pair_map=pair_map, pk_names=prev_pk,
+                                period_m=prev_pm, period_s=prev_ps)
+                new_cols = [c["column_name"] for c in mcols if c["column_name"] not in prev_pairs]
+                note = (f"Пересъём (правка): ведущая {len(mcols)} / ведомая {len(scols)}. "
+                        "Существующие связки и PK сохранены.")
+                if new_cols:
+                    note += (" <b>Новые колонки (привяжи вручную при необходимости):</b> "
+                             + ", ".join(f"<code>{c}</code>" for c in new_cols))
+                map_title.value = note
+                _log("Структуры обновлены, связки сохранены. Привяжи новые поля и «Сохранить».")
+            else:
+                sugg, unmatched = B.auto_match(mcols, scols)
+                pair_map = {m["column_name"]: s for m, s in zip(mcols, sugg)}
+                _render_mapping(mcols, scols, pair_map=pair_map)
+                matched = sum(1 for s in sugg if s)
+                note = (f"Сопоставление колонок: ведущая {len(mcols)} / ведомая {len(scols)}, "
+                        f"авто-совпало {matched}.")
+                if unmatched:
+                    note += (" <b>Без пары в ведомой:</b> "
+                             + ", ".join(f"<code>{u}</code>" for u in unmatched))
+                map_title.value = note
+                _log("Структуры сняты. Поправь выпадашки и галочки PK, затем «Предпросмотр».")
         except Exception as e:
             _log(f"Ошибка снятия структур: {type(e).__name__}: {e}")
 
@@ -547,7 +594,8 @@ def launch():
         W.HTML("<hr>"),
         W.HTML("<b>Колонки</b> (ведущая → ведомая; отметь PK, составной ключ — "
                "несколько галочек):"),
-        period_box, map_title, map_box, W.HBox([btn_prev, btn_make]),
+        period_box, W.HBox([map_title, hide_unmapped]), map_box,
+        W.HBox([btn_prev, btn_make]),
     ])
 
     _refresh_default_tags()   # проставить 3 тега по умолчанию
