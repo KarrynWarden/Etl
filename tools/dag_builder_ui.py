@@ -39,7 +39,7 @@ def launch():
     state = {"master_cols": [], "slave_cols": [], "rows": [], "row_widgets": [],
              "period_w": None, "slave_period_w": None,
              "struct_master_rel": None, "struct_slave_rel": None,
-             "tags_auto": True, "_tags_guard": False}
+             "tags_auto": True, "_tags_guard": False, "_opts_guard": False}
 
     # ── режим работы ──
     work_mode = W.ToggleButtons(
@@ -301,6 +301,29 @@ def launch():
             map_box.children = widgets
     hide_unmapped.observe(_apply_row_filter, names="value")
 
+    # ── связь 1:1: в каждой выпадашке оставляем только ещё не занятые колонки ──
+    # ведомой (плюс собственный текущий выбор), чтобы одну ведомую колонку нельзя
+    # было назначить дважды и список был короче.
+    def _refresh_slave_options():
+        if state.get("_opts_guard"):
+            return
+        all_s = [c["column_name"] for c in state["slave_cols"]]
+        used = {dd.value for _m, dd, _p in state["rows"] if dd.value != _NONE}
+        state["_opts_guard"] = True
+        try:
+            for _m, dd, _p in state["rows"]:
+                cur = dd.value
+                opts = [_NONE] + [s for s in all_s if s == cur or s not in used]
+                if list(dd.options) != opts:
+                    dd.options = opts
+                    dd.value = cur            # сохранить выбор строки
+        finally:
+            state["_opts_guard"] = False
+
+    def _on_pair_change(_=None):
+        _refresh_slave_options()
+        _apply_row_filter()
+
     # ── отрисовка таблицы сопоставления колонок ──
     def _render_mapping(mcols, scols, pair_map=None, pk_names=None,
                         period_m=None, period_s=None):
@@ -328,6 +351,7 @@ def launch():
                          layout=W.Layout(width="300px"))
             dd = W.Dropdown(options=slave_opts, value=sval if sval in slave_opts else _NONE,
                             layout=W.Layout(width="280px"))
+            dd.observe(_on_pair_change, names="value")
             pk = W.Checkbox(value=is_pk, description="PK", indent=False,
                             layout=W.Layout(width="80px"))
             rows.append((mcol, dd, pk))
@@ -338,6 +362,7 @@ def launch():
                                 padding="4px 2px", border_bottom="1px solid #eee")))
         state["rows"] = rows
         state["row_widgets"] = widgets
+        _refresh_slave_options()   # сразу убрать занятые из чужих списков
         _apply_row_filter()
 
         m_names = [c["column_name"] for c in mcols]
