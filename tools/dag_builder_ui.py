@@ -38,18 +38,43 @@ def launch():
 
     state = {"master_cols": [], "slave_cols": [], "rows": [],
              "period_w": None, "slave_period_w": None,
-             "struct_master_rel": None, "struct_slave_rel": None}
+             "struct_master_rel": None, "struct_slave_rel": None,
+             "tags_auto": True, "_tags_guard": False}
 
     # ── режим работы ──
     work_mode = W.ToggleButtons(
-        options=[("➕ Создать новый", "new"), ("✏️ Редактировать", "edit")],
-        value="new", style={"button_width": "180px"})
+        options=[("➕ Создать новый", "new"), ("✏️ Редактировать", "edit"),
+                 ("🗄 Архив", "archive")],
+        value="new", style={"button_width": "170px"})
     edit_pick = W.Dropdown(description="Линия", options=B.existing_lines(),
                            layout=W.Layout(width="380px"),
                            style={"description_width": "90px"})
     btn_load = W.Button(description="Загрузить линию", icon="upload",
                         layout=W.Layout(width="200px"))
     edit_box = W.HBox([edit_pick, btn_load])
+
+    # ── панель архива (скрыть/восстановить даг без удаления) ──
+    arch_active = W.Dropdown(description="Активная линия", options=[],
+                             layout=W.Layout(width="380px"),
+                             style={"description_width": "120px"})
+    btn_archive = W.Button(description="🗄 В архив", button_style="warning",
+                           layout=W.Layout(width="180px"))
+    arch_archived = W.Dropdown(description="В архиве", options=[],
+                               layout=W.Layout(width="380px"),
+                               style={"description_width": "120px"})
+    btn_restore = W.Button(description="♻ Восстановить", button_style="success",
+                           layout=W.Layout(width="180px"))
+    arch_help = W.HTML(
+        "<span style='color:#888'>Архив прячет даг от Airflow <b>без удаления</b>: "
+        "файл уезжает в <code>dags/_archived/</code> (Airflow его не парсит) и на линию "
+        "ставится <code>skipAudit</code>. Конфиг и структуры остаются. Изменения вступают "
+        "в силу <b>после деплоя</b>. Восстановление возвращает всё назад.</span>")
+    archive_box = W.VBox([arch_help, W.HBox([arch_active, btn_archive]),
+                          W.HBox([arch_archived, btn_restore])])
+
+    def _refresh_archive_lists():
+        arch_active.options = B.list_active_lines()
+        arch_archived.options = B.list_archived_lines()
 
     # ── шапка-форма ──
     tm = W.Text(description="Ведущая", placeholder="prbdir  или  KOKNAEV.PRBDIR",
@@ -61,15 +86,25 @@ def launch():
     dbs = W.Dropdown(description="БД ведомой", options=["Orcl", "Post"], value="Orcl",
                      layout=W.Layout(width="220px"), style={"description_width": "110px"})
     # «Пользователь БД» = под каким набором реквизитов (.env) ходим в базу при
-    # СНЯТИИ структуры. Combobox: можно выбрать из списка или вписать своё имя.
-    user_m = W.Combobox(description="Пользователь ведущей", value="MAIN",
-                        options=["MAIN", "A56"], ensure_option=False,
-                        layout=W.Layout(width="320px"),
-                        style={"description_width": "150px"})
-    user_s = W.Combobox(description="Пользователь ведомой", value="MAIN",
-                        options=["MAIN", "A56"], ensure_option=False,
-                        layout=W.Layout(width="320px"),
-                        style={"description_width": "150px"})
+    # СНЯТИИ структуры. Выпадающий список (показывает варианты сразу по клику) +
+    # пункт «своё…», открывающий поле ручного ввода имени набора.
+    _USER_SENT = "✏ своё…"
+
+    def _user_field(desc, opts=("MAIN", "A56")):
+        dd = W.Dropdown(description=desc, options=list(opts) + [_USER_SENT], value=opts[0],
+                        layout=W.Layout(width="300px"), style={"description_width": "150px"})
+        txt = W.Text(placeholder="имя набора из .env", layout=W.Layout(width="190px"))
+        txt.layout.display = "none"
+        dd.observe(lambda _:
+                   setattr(txt.layout, "display", "" if dd.value == _USER_SENT else "none"),
+                   names="value")
+
+        def get():
+            return (txt.value.strip() or "MAIN") if dd.value == _USER_SENT else dd.value
+        return W.HBox([dd, txt]), get
+
+    user_m_box, user_m_get = _user_field("Пользователь ведущей")
+    user_s_box, user_s_get = _user_field("Пользователь ведомой")
     line = W.Text(description="Имя линии", placeholder="по умолч. = имя ведущей",
                   layout=W.Layout(width="380px"), style={"description_width": "110px"})
     dag = W.Text(description="dag_id", placeholder="по умолч. авто (см. ниже)",
@@ -116,19 +151,42 @@ def launch():
     sched_kind.observe(_on_sched_kind, names="value")
 
     # ── теги (несколько; из существующих + новые) ──
+    # По умолчанию проставляются 3 тега: направление, имя таблицы, базовый DbSync.
+    # Авто-теги обновляются, пока пользователь не тронул поле руками.
     tags_input = W.TagsInput(value=[], allow_duplicates=False,
                              layout=W.Layout(width="640px"))
-    tag_pick = W.Combobox(placeholder="выбрать из существующих или вписать новый",
-                          options=B.existing_tags(), ensure_option=False,
+    # Dropdown показывает существующие теги сразу по клику (без ввода буквы).
+    tag_pick = W.Dropdown(options=[""] + B.existing_tags(),
                           layout=W.Layout(width="420px"))
-    btn_add_tag = W.Button(description="＋ тег", layout=W.Layout(width="100px"))
+    btn_add_tag = W.Button(description="＋ выбранный", layout=W.Layout(width="140px"))
 
     def _add_tag(_):
-        t = tag_pick.value.strip()
+        t = (tag_pick.value or "").strip()
         if t:
             tags_input.value = list(dict.fromkeys(list(tags_input.value) + [t]))
             tag_pick.value = ""
     btn_add_tag.on_click(_add_tag)
+
+    def _default_tags():
+        ln = line.value.strip() or (B.bare(tm.value.strip()).lower() if tm.value.strip() else "")
+        t = [f"{dbm.value}{dbs.value}"]
+        if ln:
+            t.append(ln)
+        t.append("DbSync")
+        return list(dict.fromkeys(t))
+
+    def _refresh_default_tags(_=None):
+        if state.get("tags_auto", True) and work_mode.value == "new":
+            state["_tags_guard"] = True
+            tags_input.value = _default_tags()
+            state["_tags_guard"] = False
+
+    def _on_tags_change(_):
+        if not state.get("_tags_guard"):
+            state["tags_auto"] = False     # пользователь правил теги — авто больше не вмешивается
+    tags_input.observe(_on_tags_change, names="value")
+    for _w in (tm, line, dbm, dbs):
+        _w.observe(_refresh_default_tags, names="value")
 
     # ── дополнительно (необязательные ключи конфига), по-русски ──
     f_filter = W.Text(description="Фильтр ведущей", layout=W.Layout(width="640px"),
@@ -149,15 +207,25 @@ def launch():
                        style={"description_width": "180px"})
     f_trunc = W.Checkbox(description="Сравнивать период по дате (truncatePeriod)",
                          value=False, indent=False)
+    f_skip_audit = W.Checkbox(description="Не аудировать линию (skipAudit)",
+                              value=False, indent=False)
+    f_audit_excl = W.Text(description="Не сверять поля (аудит)",
+                          placeholder="через запятую: updatedate, hash",
+                          layout=W.Layout(width="640px"),
+                          style={"description_width": "180px"})
     adv_help = W.HTML(
         "<span style='color:#888'>"
         "<b>Фильтр ведущей/ведомой</b> — доп. условие WHERE (например <code>doctype = 7</code>).<br>"
         "<b>SQL ведущей</b> — если перенос идёт не из таблицы, а из своего запроса.<br>"
         "<b>Конфликт: доп. колонки</b> — лишние колонки в ON CONFLICT (upsert).<br>"
         "<b>Конфликт: условие WHERE</b> — для частичного уникального индекса.<br>"
-        "<b>truncatePeriod</b> — сравнивать период по дате, без времени.</span>")
+        "<b>truncatePeriod</b> — сравнивать период по дате, без времени.<br>"
+        "<b>skipAudit</b> — исключить линию из общего аудита (AuditAll).<br>"
+        "<b>Не сверять поля</b> — auditExcludeFields: колонки, которые аудит игнорирует "
+        "(часто меняющиеся служебные поля).</span>")
     advanced = W.Accordion(children=[W.VBox(
-        [adv_help, f_filter, f_filter_s, f_sql, f_sql_name, f_confl, f_confl_w, f_trunc])])
+        [adv_help, f_filter, f_filter_s, f_sql, f_sql_name, f_confl, f_confl_w,
+         f_trunc, f_skip_audit, f_audit_excl])])
     advanced.set_title(0, "Дополнительно (необязательно)")
     advanced.selected_index = None
 
@@ -199,15 +267,22 @@ def launch():
         w.observe(_update_dag_preview, names="value")
     _update_dag_preview()
 
-    # ── режим: показывать селектор линии только в правке ──
+    # ── режим: что показывать (new/edit — форма сборки; archive — панель архива) ──
     def _on_work_mode(_=None):
-        edit_box.layout.display = "" if work_mode.value == "edit" else "none"
-        btn_make.description = ("3) Сохранить изменения" if work_mode.value == "edit"
+        m = work_mode.value
+        edit_box.layout.display = "" if m == "edit" else "none"
+        archive_box.layout.display = "" if m == "archive" else "none"
+        build_area.layout.display = "none" if m == "archive" else ""
+        btn_make.description = ("3) Сохранить изменения" if m == "edit"
                                 else "3) Создать файлы")
-        if work_mode.value == "new":
+        if m == "new":
             # уходя из правки, забыть исходные пути структур, чтобы новая линия
-            # не записалась поверх чужих файлов
+            # не записалась поверх чужих файлов; вернуть авто-теги
             state["struct_master_rel"] = state["struct_slave_rel"] = None
+            state["tags_auto"] = True
+            _refresh_default_tags()
+        elif m == "archive":
+            _refresh_archive_lists()
     work_mode.observe(_on_work_mode, names="value")
 
     # ── отрисовка таблицы сопоставления колонок ──
@@ -238,10 +313,10 @@ def launch():
 
         m_names = [c["column_name"] for c in mcols]
         s_names = [c["column_name"] for c in scols]
-        pm = period_m if period_m in m_names else \
-            ("createdate" if "createdate" in m_names else (m_names[0] if m_names else None))
-        ps = period_s if period_s in s_names else \
-            ("createdate" if "createdate" in s_names else (s_names[0] if s_names else None))
+        # дефолт колонки-периода: createdate без учёта регистра (Oracle отдаёт
+        # CREATEDATE), иначе колонка с типом дата/время — а не первая по алфавиту
+        pm = period_m if period_m in m_names else B.default_period_column(mcols)
+        ps = period_s if period_s in s_names else B.default_period_column(scols)
         state["period_w"] = W.Dropdown(description="periodColumn", options=m_names, value=pm,
                                         style={"description_width": "130px"},
                                         layout=W.Layout(width="330px"))
@@ -272,6 +347,11 @@ def launch():
         }
         if f_trunc.value:
             extra["truncatePeriod"] = True
+        if f_skip_audit.value:
+            extra["skipAudit"] = True
+        excl = [c.strip() for c in f_audit_excl.value.replace(";", ",").split(",") if c.strip()]
+        if excl:
+            extra["auditExcludeFields"] = excl
 
         spec = {
             "table_master": tm.value.strip(), "table_slave": ts.value.strip(),
@@ -311,18 +391,13 @@ def launch():
             if not tm.value.strip() or not ts.value.strip():
                 _log("Заполни имена ведущей и ведомой таблиц."); return
             _log("Снимаю структуры из БД…")
-            mcols = B.snap_structure(dbm.value, tm.value.strip(), user_m.value.strip() or "MAIN")
-            scols = B.snap_structure(dbs.value, ts.value.strip(), user_s.value.strip() or "MAIN")
+            mcols = B.snap_structure(dbm.value, tm.value.strip(), user_m_get())
+            scols = B.snap_structure(dbs.value, ts.value.strip(), user_s_get())
             state["master_cols"], state["slave_cols"] = mcols, scols
 
             sugg, unmatched = B.auto_match(mcols, scols)
             pair_map = {m["column_name"]: s for m, s in zip(mcols, sugg)}
             _render_mapping(mcols, scols, pair_map=pair_map)
-
-            if not tags_input.value:
-                tags_input.value = [f"{dbm.value}{dbs.value}",
-                                    line.value.strip() or B.bare(tm.value.strip()).lower(),
-                                    "DbSync"]
 
             matched = sum(1 for s in sugg if s)
             note = (f"Сопоставление колонок: ведущая {len(mcols)} / ведомая {len(scols)}, "
@@ -369,6 +444,11 @@ def launch():
             f_confl.value = ex.get("conflictExtra", "") or ""
             f_confl_w.value = ex.get("conflictWhere", "") or ""
             f_trunc.value = bool(ex.get("truncatePeriod"))
+            f_skip_audit.value = bool(ex.get("skipAudit"))
+            ae = ex.get("auditExcludeFields")
+            if isinstance(ae, str):
+                ae = [x.strip() for x in ae.split(",") if x.strip()]
+            f_audit_excl.value = ", ".join(ae) if ae else ""
             f_sql.value = data["select_sql_text"] or ""
             f_sql_name.value = (os.path.splitext(os.path.basename(data["select_sql"]))[0]
                                 if data.get("select_sql") else "")
@@ -421,26 +501,60 @@ def launch():
         except Exception as e:
             _log(f"Ошибка создания: {type(e).__name__}: {e}")
 
+    # ── архив: убрать в архив / восстановить ──
+    def on_archive(_):
+        try:
+            key = arch_active.value
+            if not key:
+                _log("Выбери активную линию."); return
+            did = B.archive_line(key)
+            _refresh_archive_lists()
+            edit_pick.options = B.existing_lines()
+            _log(f"Линия «{key}» (даг {did}) убрана в архив: файл в dags/_archived/, "
+                 "выставлен skipAudit. Вступит в силу после деплоя. Восстановить — тут же.")
+        except Exception as e:
+            _log(f"Ошибка архивации: {type(e).__name__}: {e}")
+
+    def on_restore(_):
+        try:
+            key = arch_archived.value
+            if not key:
+                _log("Выбери линию из архива."); return
+            did = B.restore_line(key)
+            _refresh_archive_lists()
+            edit_pick.options = B.existing_lines()
+            _log(f"Линия «{key}» (даг {did}) восстановлена. Вступит в силу после деплоя.")
+        except Exception as e:
+            _log(f"Ошибка восстановления: {type(e).__name__}: {e}")
+
     btn_snap.on_click(on_snap)
     btn_prev.on_click(on_preview)
     btn_make.on_click(on_make)
     btn_load.on_click(on_load)
+    btn_archive.on_click(on_archive)
+    btn_restore.on_click(on_restore)
 
-    _on_work_mode()  # скрыть селектор линии в режиме «новый»
-
-    header = W.VBox([
-        W.HTML("<h3>Генератор ETL-линии</h3>"),
-        work_mode, edit_box, W.HTML("<hr>"),
-        W.HBox([tm, ts]), W.HBox([dbm, dbs]), W.HBox([user_m, user_s]),
+    # форма сборки (new/edit) — прячется целиком в режиме архива
+    build_area = W.VBox([
+        W.HBox([tm, ts]), W.HBox([dbm, dbs]), W.HBox([user_m_box, user_s_box]),
         W.HBox([line, dag]), dag_preview,
         W.HBox([mode, retry]), doc,
         W.HTML("<b>Расписание и ретраи</b>"), sched_kind, sched_inputs, sched_help,
-        W.HTML("<b>Теги</b> (несколько; новый появится в списке после сохранения):"),
+        W.HTML("<b>Теги</b> (несколько; новый тег введи прямо в поле и нажми Enter; "
+               "из списка ниже — выбери и «＋»):"),
         tags_input, W.HBox([tag_pick, btn_add_tag]),
         advanced, btn_snap,
+        W.HTML("<hr>"),
+        W.HTML("<b>Колонки</b> (ведущая → ведомая; отметь PK, составной ключ — "
+               "несколько галочек):"),
+        period_box, map_title, map_box, W.HBox([btn_prev, btn_make]),
     ])
-    mapping = W.VBox([W.HTML("<b>Колонки</b> (ведущая → ведомая; отметь PK, "
-                             "составной ключ — несколько галочек):"),
-                      period_box, map_title, map_box,
-                      W.HBox([btn_prev, btn_make])])
-    display(W.VBox([header, W.HTML("<hr>"), mapping, W.HTML("<hr>"), out]))
+
+    _refresh_default_tags()   # проставить 3 тега по умолчанию
+    _on_work_mode()           # выставить видимость по текущему режиму
+
+    display(W.VBox([
+        W.HTML("<h3>Генератор ETL-линии</h3>"),
+        work_mode, edit_box, archive_box, W.HTML("<hr>"),
+        build_area, W.HTML("<hr>"), out,
+    ]))

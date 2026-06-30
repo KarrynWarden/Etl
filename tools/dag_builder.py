@@ -309,6 +309,25 @@ def default_dag_id(line, dbm, dbs):
     return re.sub(r"[^a-z0-9]", "", line.lower()).capitalize() + dbm + dbs
 
 
+def default_period_column(cols):
+    """Колонка-период по умолчанию. Без учёта регистра (Oracle отдаёт ИМЕНА в
+    ВЕРХНЕМ регистре, поэтому прямой поиск 'createdate' не находил 'CREATEDATE'):
+    createdate -> первая колонка с типом дата/время -> первая с 'date' в имени ->
+    первая колонка."""
+    if not cols:
+        return None
+    for c in cols:
+        if c["column_name"].lower() == "createdate":
+            return c["column_name"]
+    for c in cols:
+        if any(w in str(c.get("data_type") or "").lower() for w in ("date", "timestamp")):
+            return c["column_name"]
+    for c in cols:
+        if "date" in c["column_name"].lower():
+            return c["column_name"]
+    return cols[0]["column_name"]
+
+
 # ─────────────────────── существующие линии / теги (для UI) ───────────────────────
 
 _DB_NAMES = ("Post", "Orcl")
@@ -400,40 +419,61 @@ def _cols_from_struct(rel):
     return [_norm_col(c) for c in obj.get("data", [])]
 
 
-def _find_dag_id(line, table_master, dbm, dbs):
-    """Найти РЕАЛЬНОЕ имя файла дага для линии (не угадать по формуле).
+ARCHIVE_DIRNAME = "_archived"
 
-    Иначе правка линии, чей даг назван не по формуле (другой регистр и т.п.),
-    создала бы второй файл-дубль. Сначала пробуем формулу, затем ищем по
-    содержимому: точное совпадение по tableNameEtlJobs, иначе по тройке
-    tableNameMaster + dbMaster + dbSlave."""
+
+def _dags_dir():
+    return os.path.join(ROOT, "dags")
+
+
+def _archive_dir():
+    return os.path.join(_dags_dir(), ARCHIVE_DIRNAME)
+
+
+def _all_dag_files():
+    """Файлы дагов и в dags/, и в архиве dags/_archived/."""
+    files = list(_dag_files())
+    ad = _archive_dir()
+    if os.path.isdir(ad):
+        files += [os.path.join(ad, f) for f in sorted(os.listdir(ad))
+                  if f.endswith(".py") and not f.startswith("__")]
+    return files
+
+
+def _resolve_dag_path(line, table_master, dbm, dbs):
+    """Найти РЕАЛЬНЫЙ файл дага линии (а не угадать по формуле) — иначе правка
+    дага, названного не по формуле (другой регистр и т.п.), создала бы дубль.
+    Ищет и в dags/, и в архиве. Возвращает (path, dag_id, archived)."""
     cand = default_dag_id(line, dbm, dbs)
-    if os.path.exists(os.path.join(ROOT, "dags", f"{cand}.py")):
-        return cand
+    for base, arch in ((_dags_dir(), False), (_archive_dir(), True)):
+        p = os.path.join(base, f"{cand}.py")
+        if os.path.exists(p):
+            return p, cand, arch
     p_line = re.compile(r'tableNameEtlJobs\s*=\s*[\'"]%s[\'"]' % re.escape(line))
     p_tm = re.compile(r'tableNameMaster\s*=\s*[\'"]%s[\'"]' % re.escape(table_master))
     p_dbm = re.compile(r'dbMaster\s*=\s*[\'"]%s[\'"]' % re.escape(dbm))
     p_dbs = re.compile(r'dbSlave\s*=\s*[\'"]%s[\'"]' % re.escape(dbs))
     fallback = None
-    for f in _dag_files():
+    for f in _all_dag_files():
         try:
             txt = open(f, encoding="utf-8").read()
         except OSError:
             continue
         name = os.path.splitext(os.path.basename(f))[0]
+        arch = os.path.dirname(os.path.abspath(f)) == os.path.abspath(_archive_dir())
         if p_line.search(txt):
-            return name
+            return f, name, arch
         if fallback is None and p_tm.search(txt) and p_dbm.search(txt) and p_dbs.search(txt):
-            fallback = name
-    return fallback or cand
+            fallback = (f, name, arch)
+    return fallback or (os.path.join(_dags_dir(), f"{cand}.py"), cand, False)
 
 
-def _parse_dag_file(dag_id):
-    """Расписание / retryMode / теги из dags/<dag_id>.py (best-effort)."""
+def _parse_dag_file(path):
+    """Расписание / retryMode / теги из файла дага (best-effort)."""
     res = {"schedule_kind": "interval", "schedule_minutes": 1, "schedule_cron": "",
            "retry_mode": "frequent", "tags": []}
     try:
-        txt = open(os.path.join(ROOT, "dags", f"{dag_id}.py"), encoding="utf-8").read()
+        txt = open(path, encoding="utf-8").read()
     except OSError:
         return res
     m = re.search(r"retryMode\s*=\s*['\"](\w+)['\"]", txt)
@@ -465,12 +505,13 @@ def load_line(key):
     pairs = list(zip([c["column_name"] for c in master_cols],
                      [c["column_name"] for c in slave_cols]))
     table_master = body.get("tableNameMaster", line)
-    dag_id = _find_dag_id(line, table_master, dbm, dbs)
-    sched = _parse_dag_file(dag_id)
+    dag_path, dag_id, _arch = _resolve_dag_path(line, table_master, dbm, dbs)
+    sched = _parse_dag_file(dag_path)
 
     extra = {k: body[k] for k in
              ("filterClause", "filterClauseSlave", "conflictExtra",
-              "conflictWhere", "truncatePeriod") if k in body}
+              "conflictWhere", "truncatePeriod", "auditExcludeFields", "skipAudit")
+             if k in body}
     select_sql = body.get("selectSql")
     select_sql_text = ""
     if select_sql:
@@ -499,6 +540,85 @@ def load_line(key):
         "schedule_minutes": sched["schedule_minutes"],
         "schedule_cron": sched["schedule_cron"],
     }
+
+
+# ─────────────────────── архив дагов (скрыть / восстановить) ───────────────────────
+# «Архив» = убрать даг из видимости Airflow без удаления: файл дага переезжает в
+# dags/_archived/, который Airflow не парсит (через dags/.airflowignore), плюс на
+# линии ставится skipAudit (иначе AuditDag продолжал бы её аудировать). Восстановление
+# возвращает файл назад и снимает skipAudit. Конфиг и структуры остаются на месте.
+
+def ensure_airflowignore():
+    """Гарантировать, что Airflow игнорирует папку архива (dags/.airflowignore)."""
+    path = os.path.join(_dags_dir(), ".airflowignore")
+    rule = ARCHIVE_DIRNAME + "/"
+    lines = []
+    if os.path.exists(path):
+        lines = open(path, encoding="utf-8").read().splitlines()
+        if any(l.strip() in (rule, ARCHIVE_DIRNAME) for l in lines):
+            return path
+    with open(path, "a", encoding="utf-8") as fp:
+        if lines and lines[-1].strip():
+            fp.write("\n")
+        fp.write(rule + "\n")
+    return path
+
+
+def _set_skip_audit(key, value):
+    """Проставить (True) или снять (False) skipAudit у линии в её config.d-файле."""
+    body, path = _find_config_body(key)
+    obj = json.load(open(path, encoding="utf-8"))
+    if value:
+        obj[key]["skipAudit"] = True
+    else:
+        obj[key].pop("skipAudit", None)
+    with open(path, "w", encoding="utf-8") as fp:
+        json.dump(obj, fp, ensure_ascii=False, indent=2)
+        fp.write("\n")
+
+
+def _line_dag_info(key):
+    body, _ = _find_config_body(key)
+    line, dbm, dbs = split_key(key)
+    tm = body.get("tableNameMaster", line)
+    return _resolve_dag_path(line, tm, dbm, dbs)  # (path, dag_id, archived)
+
+
+def list_archived_lines():
+    """Линии (ключи), чей даг сейчас в архиве."""
+    return [k for k in existing_lines() if _line_dag_info(k)[2]]
+
+
+def list_active_lines():
+    """Линии (ключи), чей даг активен (не в архиве)."""
+    return [k for k in existing_lines() if not _line_dag_info(k)[2]]
+
+
+def archive_line(key):
+    """Убрать даг линии из Airflow (в архив) + skipAudit. Возвращает dag_id."""
+    path, dag_id, archived = _line_dag_info(key)
+    if archived:
+        raise ValueError(f"Линия '{key}' уже в архиве.")
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Файл дага для '{key}' не найден ({path}).")
+    os.makedirs(_archive_dir(), exist_ok=True)
+    ensure_airflowignore()
+    os.replace(path, os.path.join(_archive_dir(), f"{dag_id}.py"))
+    _set_skip_audit(key, True)
+    return dag_id
+
+
+def restore_line(key):
+    """Вернуть даг линии из архива в Airflow + снять skipAudit. Возвращает dag_id."""
+    path, dag_id, archived = _line_dag_info(key)
+    if not archived:
+        raise ValueError(f"Линия '{key}' не в архиве.")
+    dst = os.path.join(_dags_dir(), f"{dag_id}.py")
+    if os.path.exists(dst):
+        raise FileExistsError(f"Активный даг с таким именем уже есть: dags/{dag_id}.py")
+    os.replace(path, dst)
+    _set_skip_audit(key, False)
+    return dag_id
 
 
 def write_files(files, overwrite=False):
