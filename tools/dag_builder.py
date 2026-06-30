@@ -35,6 +35,26 @@ def keys_for(db):
     return PG_KEYS if db == "Post" else ORCL_KEYS
 
 
+def _read_text(path):
+    """Прочитать текстовый файл терпимо к кодировке. Файлы (даги/конфиги/sql)
+    могли быть сохранены Windows-редактором в UTF-16 или с BOM — строгий utf-8
+    на таком падает 'invalid start byte 0xff'. Порядок: BOM → utf-8 → cp1251."""
+    with open(path, "rb") as fp:
+        raw = fp.read()
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return raw.decode("utf-16")
+    if raw.startswith(b"\xef\xbb\xbf"):
+        return raw.decode("utf-8-sig")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode("cp1251", errors="replace")
+
+
+def _read_json(path):
+    return json.loads(_read_text(path))
+
+
 def bare(table):
     """Имя без схемы: 'KOKNAEV.PRBDIR' -> 'PRBDIR'."""
     return table.split(".")[-1]
@@ -359,7 +379,7 @@ def existing_tags():
     pat = re.compile(r"tags\s*=\s*\[(.*?)\]", re.S)
     for f in _dag_files():
         try:
-            txt = open(f, encoding="utf-8").read()
+            txt = _read_text(f)
         except OSError:
             continue
         m = pat.search(txt)
@@ -377,7 +397,7 @@ def existing_lines():
             if not f.endswith(".json"):
                 continue
             try:
-                obj = json.load(open(os.path.join(d, f), encoding="utf-8"))
+                obj = _read_json(os.path.join(d, f))
             except Exception:
                 continue
             keys.extend(obj.keys())
@@ -391,7 +411,7 @@ def _find_config_body(key):
             continue
         path = os.path.join(d, f)
         try:
-            obj = json.load(open(path, encoding="utf-8"))
+            obj = _read_json(path)
         except Exception:
             continue
         if key in obj:
@@ -415,7 +435,7 @@ def _norm_col(c):
 
 
 def _cols_from_struct(rel):
-    obj = json.load(open(os.path.join(ETLFOLDER, rel), encoding="utf-8"))
+    obj = _read_json(os.path.join(ETLFOLDER, rel))
     return [_norm_col(c) for c in obj.get("data", [])]
 
 
@@ -456,7 +476,7 @@ def _resolve_dag_path(line, table_master, dbm, dbs):
     fallback = None
     for f in _all_dag_files():
         try:
-            txt = open(f, encoding="utf-8").read()
+            txt = _read_text(f)
         except OSError:
             continue
         name = os.path.splitext(os.path.basename(f))[0]
@@ -473,7 +493,7 @@ def _parse_dag_file(path):
     res = {"schedule_kind": "interval", "schedule_minutes": 1, "schedule_cron": "",
            "retry_mode": "frequent", "tags": []}
     try:
-        txt = open(path, encoding="utf-8").read()
+        txt = _read_text(path)
     except OSError:
         return res
     m = re.search(r"retryMode\s*=\s*['\"](\w+)['\"]", txt)
@@ -516,8 +536,7 @@ def load_line(key):
     select_sql_text = ""
     if select_sql:
         try:
-            select_sql_text = open(os.path.join(ETLFOLDER, select_sql),
-                                   encoding="utf-8").read()
+            select_sql_text = _read_text(os.path.join(ETLFOLDER, select_sql))
         except OSError:
             select_sql_text = ""
 
@@ -554,7 +573,7 @@ def ensure_airflowignore():
     rule = ARCHIVE_DIRNAME + "/"
     lines = []
     if os.path.exists(path):
-        lines = open(path, encoding="utf-8").read().splitlines()
+        lines = _read_text(path).splitlines()
         if any(l.strip() in (rule, ARCHIVE_DIRNAME) for l in lines):
             return path
     with open(path, "a", encoding="utf-8") as fp:
@@ -567,7 +586,7 @@ def ensure_airflowignore():
 def _set_skip_audit(key, value):
     """Проставить (True) или снять (False) skipAudit у линии в её config.d-файле."""
     body, path = _find_config_body(key)
-    obj = json.load(open(path, encoding="utf-8"))
+    obj = _read_json(path)
     if value:
         obj[key]["skipAudit"] = True
     else:
