@@ -157,15 +157,26 @@ def launch():
                              layout=W.Layout(width="640px"))
     # Dropdown показывает существующие теги сразу по клику (без ввода буквы).
     tag_pick = W.Dropdown(options=[""] + B.existing_tags(),
-                          layout=W.Layout(width="420px"))
-    btn_add_tag = W.Button(description="＋ выбранный", layout=W.Layout(width="140px"))
+                          layout=W.Layout(width="300px"))
+    btn_add_tag = W.Button(description="＋ выбранный", layout=W.Layout(width="130px"))
+    # Отдельное поле для РУЧНОГО ввода нового тега (Dropdown не даёт печатать).
+    tag_new = W.Text(placeholder="новый тег вручную", layout=W.Layout(width="220px"))
+    btn_add_new = W.Button(description="＋ новый", layout=W.Layout(width="110px"))
 
-    def _add_tag(_):
-        t = (tag_pick.value or "").strip()
+    def _add_tag_value(t):
+        t = (t or "").strip()
         if t:
             tags_input.value = list(dict.fromkeys(list(tags_input.value) + [t]))
-            tag_pick.value = ""
+
+    def _add_tag(_):
+        _add_tag_value(tag_pick.value)
+        tag_pick.value = ""
+
+    def _add_new(_):
+        _add_tag_value(tag_new.value)
+        tag_new.value = ""
     btn_add_tag.on_click(_add_tag)
+    btn_add_new.on_click(_add_new)
 
     def _default_tags():
         ln = line.value.strip() or (B.bare(tm.value.strip()).lower() if tm.value.strip() else "")
@@ -628,9 +639,9 @@ def launch():
         W.HBox([line, dag]), dag_preview,
         W.HBox([mode, retry]), doc,
         W.HTML("<b>Расписание и ретраи</b>"), sched_kind, sched_inputs, sched_help,
-        W.HTML("<b>Теги</b> (несколько; новый тег введи прямо в поле и нажми Enter; "
-               "из списка ниже — выбери и «＋»):"),
-        tags_input, W.HBox([tag_pick, btn_add_tag]),
+        W.HTML("<b>Теги</b> (несколько). Из списка — выбери и «＋ выбранный». "
+               "Новый — впиши в поле и «＋ новый»:"),
+        tags_input, W.HBox([tag_pick, btn_add_tag, tag_new, btn_add_new]),
         advanced, btn_snap,
         W.HTML("<hr>"),
         W.HTML("<b>Колонки</b> (ведущая → ведомая; отметь PK, составной ключ — "
