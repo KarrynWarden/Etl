@@ -74,6 +74,12 @@ while read oldrev newrev ref; do
         # несохранённые правки — если рабочая копия «грязная», просто пропустит).
         if [ -d "$JUPYTER_CLONE/.git" ]; then
             ( unset GIT_DIR GIT_WORK_TREE
+              # Ноутбук-лаунчер Jupyter автосохраняет (execution_count/выводы/метаданные
+              # виджетов) — эти правки всегда шум и «пачкают» клон, блокируя ff-merge.
+              # skip-worktree = git вообще перестаёт следить за этим файлом (не проверяет
+              # и не перезаписывает), поэтому его автосейв больше не мешает деплою.
+              # Идемпотентно; сам лаунчер тривиален и почти не меняется.
+              git -C "$JUPYTER_CLONE" update-index --skip-worktree tools/new_dag.ipynb 2>/dev/null || true
               git -C "$JUPYTER_CLONE" fetch -q origin "$DEPLOY_BRANCH" \
               && git -C "$JUPYTER_CLONE" merge -q --ff-only "origin/$DEPLOY_BRANCH" ) \
               && echo "Jupyter-клон обновлён до $DEPLOY_BRANCH" \
