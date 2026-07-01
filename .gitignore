@@ -23,6 +23,9 @@ airflow.db
 airflow.cfg
 logs/
 
+# Офлайн-бандлы: собранные архивы — артефакты сборки (сами wheel'ы версионируются)
+voila-offline/voila-offline.tar.gz
+
 # Сгенерированные общие виды конфигов (источник — фрагменты config.d/, SpTableName.d/, ...)
 # Рантайм читает фрагменты; эти файлы — только для просмотра, их пересобирает tools/regen_config.py
 etlFolder/config.json
