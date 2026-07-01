@@ -18,6 +18,7 @@
 UI (ipywidgets) вызывает эти функции; сам по себе модуль консольно-тестируемый.
 Запуск проверки шаблонов без БД:  python3 tools/dag_builder.py --selftest
 """
+import contextlib
 import json
 import os
 import re
@@ -53,6 +54,20 @@ def _read_text(path):
 
 def _read_json(path):
     return json.loads(_read_text(path))
+
+
+@contextlib.contextmanager
+def _group_writable():
+    """На время создания файлов ставим umask 002 → новые файлы 664, каталоги 775
+    (груп-записываемые). В связке с setgid-каталогами группы etldev это значит,
+    что файлы, созданные приложением под пользователем jupyter, остаются
+    редактируемыми и удаляемыми с dev-ПК (пользователь devel, та же группа).
+    Без этого umask по умолчанию (022) даёт 644/755 — и devel не может их удалить."""
+    old = os.umask(0o002)
+    try:
+        yield
+    finally:
+        os.umask(old)
 
 
 def bare(table):
@@ -620,10 +635,11 @@ def archive_line(key):
         raise ValueError(f"Линия '{key}' уже в архиве.")
     if not os.path.exists(path):
         raise FileNotFoundError(f"Файл дага для '{key}' не найден ({path}).")
-    os.makedirs(_archive_dir(), exist_ok=True)
-    ensure_airflowignore()
-    os.replace(path, os.path.join(_archive_dir(), f"{dag_id}.py"))
-    _set_skip_audit(key, True)
+    with _group_writable():
+        os.makedirs(_archive_dir(), exist_ok=True)
+        ensure_airflowignore()
+        os.replace(path, os.path.join(_archive_dir(), f"{dag_id}.py"))
+        _set_skip_audit(key, True)
     return dag_id
 
 
@@ -635,8 +651,9 @@ def restore_line(key):
     dst = os.path.join(_dags_dir(), f"{dag_id}.py")
     if os.path.exists(dst):
         raise FileExistsError(f"Активный даг с таким именем уже есть: dags/{dag_id}.py")
-    os.replace(path, dst)
-    _set_skip_audit(key, False)
+    with _group_writable():
+        os.replace(path, dst)
+        _set_skip_audit(key, False)
     return dag_id
 
 
@@ -645,16 +662,17 @@ def write_files(files, overwrite=False):
     существующие файлы (чтобы не затереть чужую линию). Возвращает список
     записанных абсолютных путей. В конце валидирует сборку конфига."""
     written = []
-    for rel, content in files:
-        path = os.path.join(ROOT, rel)
-        if os.path.exists(path) and not overwrite:
-            raise FileExistsError(
-                f"Файл уже существует: {rel}. Включи overwrite или выбери другое имя."
-            )
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as fp:
-            fp.write(content)
-        written.append(path)
+    with _group_writable():
+        for rel, content in files:
+            path = os.path.join(ROOT, rel)
+            if os.path.exists(path) and not overwrite:
+                raise FileExistsError(
+                    f"Файл уже существует: {rel}. Включи overwrite или выбери другое имя."
+                )
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fp:
+                fp.write(content)
+            written.append(path)
 
     # Валидация: конфиг должен собраться (ловит дубль ключа линии / битый json)
     os.environ.setdefault("ETL_FULL_PATH", ROOT + os.sep)
