@@ -1,0 +1,32 @@
+# systemd-сервис: веб-конструктор ETL-дагов (Voilà).
+#
+# Установка на сервере:
+#   sudo cp voila-offline/etl-dagbuilder.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now etl-dagbuilder
+#   systemctl status etl-dagbuilder
+#
+# Открыть: http://<сервер>:8083/   (порт 8083 — свободный: 8080 прод, 8081 Jupyter,
+# 8082 airflow-test). Правь порт/пути ниже при необходимости.
+
+[Unit]
+Description=ETL DAG Builder (Voila web UI)
+After=network.target
+
+[Service]
+Type=simple
+# Тот же пользователь, что правит Jupyter-клон; группа etldev — общий доступ.
+User=jupyter
+Group=etldev
+# umask 002 -> файлы, которые генерит приложение, груп-записываемые (правятся с dev-ПК).
+UMask=0002
+# Каталог общего Jupyter-клона (оттуда импортируется tools/, туда пишутся даги).
+WorkingDirectory=/opt/jupyter/workdir/konkin/etl
+ExecStart=/opt/jupyter/bin/voila tools/dagbuilder_app.ipynb \
+    --no-browser --port=8083 --Voila.ip=0.0.0.0 \
+    --VoilaConfiguration.show_tracebacks=True
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

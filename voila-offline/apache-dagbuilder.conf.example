@@ -1,0 +1,20 @@
+# ОПЦИОНАЛЬНО: отдать конструктор под уже существующим доменом через Apache,
+# чтобы НЕ просить у сисадминов новый DNS. Пример — путь /dagbuilder/ на том же
+# VirtualHost, что и airflow-test. Нужны модули: proxy, proxy_http, proxy_wstunnel,
+# rewrite (sudo a2enmod proxy proxy_http proxy_wstunnel rewrite).
+#
+# При таком варианте Voilà нужно запускать с базовым путём — в
+# etl-dagbuilder.service добавь в ExecStart:  --base_url=/dagbuilder/
+#
+# Если доступ по прямому порту (http://<сервер>:8083) устраивает — этот файл не нужен.
+
+<Location /dagbuilder/>
+    ProxyPreserveHost On
+    ProxyPass         http://127.0.0.1:8083/dagbuilder/
+    ProxyPassReverse  http://127.0.0.1:8083/dagbuilder/
+
+    # WebSocket (виджеты Voilà общаются с ядром по ws)
+    RewriteEngine On
+    RewriteCond %{HTTP:Upgrade} =websocket [NC]
+    RewriteRule ^/dagbuilder/(.*)$ ws://127.0.0.1:8083/dagbuilder/$1 [P,L]
+</Location>
