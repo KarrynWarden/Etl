@@ -258,6 +258,30 @@ def _normalizePeriod(value):
     return value
 
 
+def _normalizeCompareValue(value, truncate):
+    """Нормализовать значение для сравнения master/slave в section_compare.
+
+    Разные драйверы возвращают одну и ту же дату по-разному: Oracle DATE →
+    datetime.datetime (00:00:00), Postgres date → datetime.date. Без нормализации
+    множества {datetime} и {date} никогда не равны → ложное «данные отличаются»
+    → бесконечные обновления группы.
+
+    truncate=True (из truncatePeriod): сравниваем по ДАТЕ (день), время
+    отбрасываем (datetime → date) — независимо от имени колонки. Иначе только
+    унифицируем ТИП, не теряя реального времени: date → datetime в полночь,
+    так что date == datetime(00:00), но два разных времени по-прежнему различны.
+    """
+    if value is None:
+        return None
+    if truncate:
+        return value.date() if isinstance(value, datetime.datetime) else value
+    if isinstance(value, datetime.datetime):
+        return value
+    if isinstance(value, datetime.date):
+        return datetime.datetime(value.year, value.month, value.day)
+    return value
+
+
 def _bindList(values, prefix):
     """Сгенерировать (in_clause, params) для Oracle IN-выражения.
 
@@ -1354,16 +1378,19 @@ def _maxIudIdrw(cursor, dbMaster, tableNameEtlJobs):
     return cursor.fetchone()[0]
 
 
-def _diffPeriods(masterRows, slaveRows):
-    """Группы, требующие обновления: либо нет на стороне ведомой, либо
-    lastupdate на ведущей больше, либо отличаются.
+def _diffPeriods(masterRows, slaveRows, truncatePeriod=False):
+    """Группы, требующие обновления: нет на стороне ведомой либо множества
+    lastupdate по группе отличаются.
+
+    Значения нормализуются (_normalizeCompareValue) с учётом truncatePeriod,
+    иначе date из Postgres и datetime из Oracle сравниваются как разные и группа
+    «отличается» бесконечно.
     """
-    #slaveByPeriod = {_normalizePeriod(row[0]): row[1] for row in slaveRows}
-    #print('full slave', slaveByPeriod)
     def _bucket(rows):
         buckets = defaultdict(set)
         for period, lu in rows:
-            buckets[_normalizePeriod(period)].add(lu)
+            buckets[_normalizePeriod(period)].add(
+                _normalizeCompareValue(lu, truncatePeriod))
         return buckets
 
     masterMap = _bucket(masterRows)
@@ -1373,12 +1400,6 @@ def _diffPeriods(masterRows, slaveRows):
     for period, masterSet in masterMap.items():
         if masterSet != slaveMap.get(period, set()):
             diff.append(period)
-    #for period, masterUpd in masterRows:
-    #    normPeriod = _normalizePeriod(period)
-    #    slaveUpd = slaveByPeriod.get(normPeriod)
-    #    print('DIFF ', normPeriod, ' slaveUpd ', slaveUpd, ' masterUpd ', masterUpd, ' slaveBy ', slaveByPeriod.get(normPeriod), ' append ? ', slaveUpd is None or masterUpd != slaveUpd)
-    #    if slaveUpd is None or masterUpd != slaveUpd:
-    #        diff.append(normPeriod)
     return diff
 
 
@@ -1481,7 +1502,7 @@ def _runSectionCompare(cfg, ctx, selectSql):
         ctx["cursorMaster"], dbMaster, selectSql, cfg["periodColumn"],
     )
 
-    needUpdate = set(_diffPeriods(masterRows, slaveRows))
+    needUpdate = set(_diffPeriods(masterRows, slaveRows, cfg.get("truncatePeriod")))
 
     # 2. сигналы из etl_log_iud_row
     iudPeriods = _selectIudPeriods(ctx["cursorMaster"], dbMaster, tableNameEtlJobs)
