@@ -45,6 +45,34 @@ chgrp -R "$GROUP" "$BARE" "$SRC"
 chmod -R 2775 "$BARE" "$SRC"           # setgid (2): новые файлы наследуют группу $GROUP
 chown -R "$RUNAS":"$RUNAS" "$AHOME"
 
+echo "== 2b. Wrapper для проверки DAG'ов =="
+mkdir -p "$ROOT/bin"
+cat > "$ROOT/bin/check_dags.sh" <<'WRAPPER'
+#!/bin/bash
+# Проверка валидности DAG'ов: поднимаем окружение и убеждаемся, что ни один DAG
+# не падает при импорте.
+# ВАЖНО: сам по себе `airflow dags list` возвращает 0 даже при ошибках импорта
+# (он просто перечисляет то, что распарсилось), поэтому дополнительно проверяем
+# `dags list-import-errors` — строки с путём *.py означают сломанный DAG.
+set -a
+source /opt/airflow-test/airflow-test.env
+set +a
+AIRFLOW=/opt/airflow/venv/bin/airflow
+# 1) базовая проверка, что CLI и metadata поднимаются
+"$AIRFLOW" dags list >/dev/null || exit 1
+# 2) ошибки импорта DAG'ов -> падаем с ненулевым кодом
+ERRORS=$("$AIRFLOW" dags list-import-errors 2>&1 || true)
+if printf '%s\n' "$ERRORS" | grep -qE '\.py'; then
+    echo "Ошибки импорта DAG'ов:"
+    printf '%s\n' "$ERRORS"
+    exit 1
+fi
+exit 0
+WRAPPER
+chmod 750 "$ROOT/bin/check_dags.sh"
+chown root:"$GROUP" "$ROOT/bin/check_dags.sh"
+echo "  ok"
+
 echo "== 3. bare-репозиторий =="
 if [[ ! -e "$BARE/HEAD" ]]; then
     git init --bare "$BARE" >/dev/null
@@ -60,36 +88,47 @@ echo "== 4. post-receive hook (деплой + рестарт) =="
 cat > "$BARE/hooks/post-receive" <<HOOK
 #!/bin/bash
 set -e
-# Jupyter-клон правят И jupyter (редактор), И этот хук (от devel при merge).
-# umask 002 => новые/переписанные файлы получают права 664 и остаются
-# редактируемыми группой etldev (иначе devel создаёт их 644 и jupyter теряет запись).
 umask 002
+
 while read oldrev newrev ref; do
     branch=\${ref#refs/heads/}
     if [ "\$branch" = "$DEPLOY_BRANCH" ]; then
         git --git-dir=$BARE --work-tree=$SRC checkout -f "$DEPLOY_BRANCH"
         python3 "$SRC/tools/regen_config.py" config SpTableName SpOnce >/dev/null 2>&1 || true
-        sudo systemctl restart airflow-test-scheduler airflow-test-webserver
-        # Авто-подтягивание последней версии в общий Jupyter-клон (ff-only: не затрёт
-        # несохранённые правки — если рабочая копия «грязная», просто пропустит).
-        if [ -d "$JUPYTER_CLONE/.git" ]; then
-            ( unset GIT_DIR GIT_WORK_TREE
-              # Ноутбук-лаунчер Jupyter автосохраняет (execution_count/выводы/метаданные
-              # виджетов) — эти правки всегда шум и «пачкают» клон, блокируя ff-merge.
-              # skip-worktree = git вообще перестаёт следить за этим файлом (не проверяет
-              # и не перезаписывает), поэтому его автосейв больше не мешает деплою.
-              # Идемпотентно; сам лаунчер тривиален и почти не меняется.
-              git -C "$JUPYTER_CLONE" update-index --skip-worktree tools/new_dag.ipynb 2>/dev/null || true
-              git -C "$JUPYTER_CLONE" fetch -q origin "$DEPLOY_BRANCH" \
-              && git -C "$JUPYTER_CLONE" merge -q --ff-only "origin/$DEPLOY_BRANCH" ) \
-              && echo "Jupyter-клон обновлён до $DEPLOY_BRANCH" \
-              || echo "Jupyter-клон не обновлён (несохранённые правки/дивергенция/права) — пропуск"
+
+        # === ПРОВЕРКА ВАЛИДНОСТИ DAG'ОВ ===
+        echo "== Проверка валидности DAG'ов =="
+        if PARSE_LOG=\$(sudo -u "$RUNAS" "$ROOT/bin/check_dags.sh" 2>&1); then
+            echo "  OK: Все DAG'и успешно распарсены."
+
+            # Если всё хорошо, рестартуем сервисы и обновляем Jupyter
+            sudo systemctl restart airflow-test-scheduler airflow-test-webserver
+
+            if [ -d "$JUPYTER_CLONE/.git" ]; then
+                ( unset GIT_DIR GIT_WORK_TREE
+                # Ноутбук-лаунчер Jupyter автосохраняет (execution_count/выводы/виджеты) —
+                # это шум, «пачкает» клон и блокирует ff-merge. skip-worktree = git
+                # перестаёт следить за файлом (не проверяет и не перезаписывает).
+                git -C "$JUPYTER_CLONE" update-index --skip-worktree tools/new_dag.ipynb 2>/dev/null || true
+                git -C "$JUPYTER_CLONE" fetch -q origin "$DEPLOY_BRANCH" \
+                && git -C "$JUPYTER_CLONE" merge -q --ff-only "origin/$DEPLOY_BRANCH" ) \
+                && echo "Jupyter-клон обновлён до $DEPLOY_BRANCH" \
+                || echo "Jupyter-клон не обновлён (несохранённые правки/дивергенция/права) — пропуск"
+            else
+                echo "Jupyter-клон: $JUPYTER_CLONE/.git не найден или недоступен под \$(id -un) — пропуск"
+            fi
+            echo "deploy: ветка $DEPLOY_BRANCH -> $SRC, airflow-test перезапущен"
         else
-            # .git может быть не виден из-за отсутствия прав прохода (x) на родительских
-            # каталогах ($JUPYTER_CLONE открыт для etldev, но напр. /opt/jupyter мог быть 700).
-            echo "Jupyter-клон: $JUPYTER_CLONE/.git не найден или недоступен под \$(id -un) — пропуск"
+            # Если парсинг упал, выводим ошибку и НЕ рестартуем сервисы!
+            echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+            echo "!! КРИТИЧЕСКАЯ ОШИБКА: Новые DAG'и не парсятся!       !!"
+            echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+            echo "\$PARSE_LOG"
+            echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+            echo "!! Сервисы НЕ перезапущены, чтобы не ломать рабочую версию. !!"
+            echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
         fi
-        echo "deploy: ветка $DEPLOY_BRANCH -> $SRC, airflow-test перезапущен"
+        # ==================================
     else
         echo "ветка \$branch получена (без деплоя)"
     fi
@@ -187,11 +226,20 @@ RestartSec=5
 WantedBy=multi-user.target
 UNIT
 
-echo "== 9. sudoers: hook может рестартить airflow-test без пароля =="
+echo "== 9. sudoers: hook может рестартить airflow-test и проверять даги без пароля =="
 SUDO=/etc/sudoers.d/airflow-test
 SCTL=$(command -v systemctl)
-echo "%$GROUP ALL=(root) NOPASSWD: $SCTL restart airflow-test-scheduler airflow-test-webserver" > "$SUDO.tmp"
-if visudo -cf "$SUDO.tmp"; then mv "$SUDO.tmp" "$SUDO"; chmod 440 "$SUDO"; echo "  ok"; else echo "  !! sudoers невалиден, не ставлю"; rm -f "$SUDO.tmp"; fi
+
+cat > "$SUDO.tmp" <<SUDOERS
+%$GROUP ALL=(root) NOPASSWD: $SCTL restart airflow-test-scheduler airflow-test-webserver
+%$GROUP ALL=($RUNAS) NOPASSWD: $ROOT/bin/check_dags.sh
+SUDOERS
+
+if visudo -cf "$SUDO.tmp"; then
+    mv "$SUDO.tmp" "$SUDO"; chmod 440 "$SUDO"; echo "  ok"
+else
+    echo "  !! sudoers невалиден, не ставлю"; rm -f "$SUDO.tmp"
+fi
 
 echo "== 9b. git safe.directory (репо разных владельцев: hook/devel/root) =="
 for d in "$BARE" "$SRC" "$JUPYTER_CLONE"; do
