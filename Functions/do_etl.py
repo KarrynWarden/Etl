@@ -259,17 +259,18 @@ def _normalizePeriod(value):
 
 
 def _normalizeCompareValue(value, truncate):
-    """Нормализовать значение для сравнения master/slave в section_compare.
+    """Нормализовать значение lastupdate для сравнения master/slave в section_compare.
 
     Разные драйверы возвращают одну и ту же дату по-разному: Oracle DATE →
     datetime.datetime (00:00:00), Postgres date → datetime.date. Без нормализации
     множества {datetime} и {date} никогда не равны → ложное «данные отличаются»
     → бесконечные обновления группы.
 
-    truncate=True (из truncatePeriod): сравниваем по ДАТЕ (день), время
-    отбрасываем (datetime → date) — независимо от имени колонки. Иначе только
-    унифицируем ТИП, не теряя реального времени: date → datetime в полночь,
-    так что date == datetime(00:00), но два разных времени по-прежнему различны.
+    По умолчанию (truncate=False) сохраняем точность timestamp: только унифицируем
+    ТИП — date → datetime в полночь, так что date == datetime(00:00), но два разных
+    времени по-прежнему различаются (реальный lastupdate не теряется).
+    truncate=True (опция конфига truncateLastupdate): сравниваем lastupdate по ДАТЕ
+    (день), время отбрасываем — для случаев, когда одна из БД хранит только дату.
     """
     if value is None:
         return None
@@ -1378,19 +1379,21 @@ def _maxIudIdrw(cursor, dbMaster, tableNameEtlJobs):
     return cursor.fetchone()[0]
 
 
-def _diffPeriods(masterRows, slaveRows, truncatePeriod=False):
+def _diffPeriods(masterRows, slaveRows, truncateLastupdate=False):
     """Группы, требующие обновления: нет на стороне ведомой либо множества
     lastupdate по группе отличаются.
 
-    Значения нормализуются (_normalizeCompareValue) с учётом truncatePeriod,
-    иначе date из Postgres и datetime из Oracle сравниваются как разные и группа
+    Ключ-период всегда приводится к дате (_normalizePeriod). Значения lastupdate
+    нормализуются (_normalizeCompareValue): по умолчанию — с точностью timestamp
+    (унификация типа date/datetime), а по флагу truncateLastupdate — по дате.
+    Без этого date из Postgres и datetime из Oracle считаются разными и группа
     «отличается» бесконечно.
     """
     def _bucket(rows):
         buckets = defaultdict(set)
         for period, lu in rows:
             buckets[_normalizePeriod(period)].add(
-                _normalizeCompareValue(lu, truncatePeriod))
+                _normalizeCompareValue(lu, truncateLastupdate))
         return buckets
 
     masterMap = _bucket(masterRows)
@@ -1502,7 +1505,7 @@ def _runSectionCompare(cfg, ctx, selectSql):
         ctx["cursorMaster"], dbMaster, selectSql, cfg["periodColumn"],
     )
 
-    needUpdate = set(_diffPeriods(masterRows, slaveRows, cfg.get("truncatePeriod")))
+    needUpdate = set(_diffPeriods(masterRows, slaveRows, cfg.get("truncateLastupdate")))
 
     # 2. сигналы из etl_log_iud_row
     iudPeriods = _selectIudPeriods(ctx["cursorMaster"], dbMaster, tableNameEtlJobs)
@@ -1572,6 +1575,9 @@ def Do_etl(tableNameMaster, tableNameSlave=None, structureMaster=None,
     config.setdefault("conflictExtra", ())
     config.setdefault("conflictWhere", None)
     config.setdefault("truncatePeriod", False)
+    # section_compare: обрезать ли lastupdate до даты при сравнении групп.
+    # По умолчанию False — lastupdate сравнивается с точностью timestamp.
+    config.setdefault("truncateLastupdate", False)
     config.update(overrides)
     print('caps name ', tableNameEtlJobs or config["tableNameMaster"] or tableNameMaster, tableNameEtlJobs,' or ', config["tableNameMaster"], ' or ', tableNameMaster)
     return _run(config)
