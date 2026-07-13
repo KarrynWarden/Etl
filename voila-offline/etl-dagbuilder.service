@@ -23,7 +23,8 @@ Group=etldev
 UMask=0002
 # Каталог общего Jupyter-клона (оттуда импортируется tools/, туда пишутся даги).
 WorkingDirectory=/opt/jupyter/workdir/konkin/etl
-ExecStart=/opt/jupyter/bin/voila tools/dagbuilder_app.ipynb \
+# Через `python -m voila` (надёжнее, чем путь к бинарнику voila).
+ExecStart=/opt/jupyter/bin/python -m voila tools/dagbuilder_app.ipynb \
     --no-browser --port=8084 --Voila.ip=0.0.0.0 \
     --VoilaConfiguration.show_tracebacks=True
 # Для доступа через Apache по подпути (напр. https://airflow-test.oms66.ru/dagbuilder/)
