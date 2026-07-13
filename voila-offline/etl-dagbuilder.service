@@ -6,8 +6,9 @@
 #   sudo systemctl enable --now etl-dagbuilder
 #   systemctl status etl-dagbuilder
 #
-# Открыть: http://<сервер>:8083/   (порт 8083 — свободный: 8080 прод, 8081 Jupyter,
-# 8082 airflow-test). Правь порт/пути ниже при необходимости.
+# Порт 8084 (8083 на сервере уже занят другим gunicorn — проверь bash check-ports.sh).
+# Прямой доступ по IP закрыт сетью, поэтому смотри README: доступ через SSH-туннель
+# (лично) или Apache под существующим доменом (коллегам).
 
 [Unit]
 Description=ETL DAG Builder (Voila web UI)
@@ -23,8 +24,10 @@ UMask=0002
 # Каталог общего Jupyter-клона (оттуда импортируется tools/, туда пишутся даги).
 WorkingDirectory=/opt/jupyter/workdir/konkin/etl
 ExecStart=/opt/jupyter/bin/voila tools/dagbuilder_app.ipynb \
-    --no-browser --port=8083 --Voila.ip=0.0.0.0 \
+    --no-browser --port=8084 --Voila.ip=0.0.0.0 \
     --VoilaConfiguration.show_tracebacks=True
+# Для доступа через Apache по подпути (напр. https://airflow-test.oms66.ru/dagbuilder/)
+# добавь к ExecStart:  --base_url=/dagbuilder/   (см. apache-dagbuilder.conf.example).
 Restart=on-failure
 RestartSec=5
 

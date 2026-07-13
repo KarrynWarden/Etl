@@ -18,9 +18,10 @@ declare -A KNOWN=(
   [8080]="airflow prod"
   [8081]="JupyterLab"
   [8082]="airflow-test"
-  [8083]="Voila (конструктор дагов)"
+  [8083]="занят gunicorn (прод-webserver?)"
+  [8084]="Voila (конструктор дагов)"
 )
-SUGGEST_FROM=8083
+SUGGEST_FROM=8084
 SUGGEST_TO=8099
 
 have() { command -v "$1" >/dev/null 2>&1; }
