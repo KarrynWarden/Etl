@@ -1314,10 +1314,18 @@ def _splitPkValue(value, pkCount):
 
 
 def _groupSummary(distinctIds):
-    """[(period, count, 'ok')] — для последующего пересчёта статусов."""
+    """[(period, count, 'ok')] — для последующего пересчёта статусов.
+
+    Записи с NULL-периодом (period is None) в сводку НЕ включаются: сами записи
+    переносятся поштучно в основном цикле, но период-статус для «пустого» периода
+    не имеет смысла. Плюс None нельзя ни сравнивать в sorted() (иначе TypeError
+    '<' not supported between datetime and NoneType), ни биндить в
+    etl_jobs.period (там NOT NULL)."""
     counts = {}
     for entry in distinctIds:
         period = entry[1]
+        if period is None:
+            continue
         counts[period] = counts.get(period, 0) + 1
     return [[period, counts[period], "ok"] for period in sorted(counts.keys())]
 
