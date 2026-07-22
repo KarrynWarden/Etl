@@ -657,10 +657,14 @@ def restore_line(key):
     return dag_id
 
 
-def write_files(files, overwrite=False):
+def write_files(files, overwrite=False, validate="config"):
     """Записать [(relpath, content)] под ROOT. Без overwrite не трогает
     существующие файлы (чтобы не затереть чужую линию). Возвращает список
-    записанных абсолютных путей. В конце валидирует сборку конфига."""
+    записанных абсолютных путей. В конце валидирует сборку конфига.
+
+    validate: имя конфига для проверки сборки после записи — 'config'
+    (сложный ETL), 'SpTableName' (справочники) или 'SpOnce' (разовый перенос).
+    None — не валидировать."""
     written = []
     with _group_writable():
         for rel, content in files:
@@ -675,11 +679,12 @@ def write_files(files, overwrite=False):
             written.append(path)
 
     # Валидация: конфиг должен собраться (ловит дубль ключа линии / битый json)
-    os.environ.setdefault("ETL_FULL_PATH", ROOT + os.sep)
-    import sys
-    sys.path.insert(0, ROOT)
-    from Functions.functionsFile.loadConfig import assemble
-    assemble("config")
+    if validate:
+        os.environ.setdefault("ETL_FULL_PATH", ROOT + os.sep)
+        import sys
+        sys.path.insert(0, ROOT)
+        from Functions.functionsFile.loadConfig import assemble
+        assemble(validate)
     return written
 
 

@@ -32,6 +32,11 @@ def do_etl_sp():
     # Создаем dependence_map с информацией о dbMaster для каждой зависимости
     dependence_map = {}
     for spNameDb in list(arrSp.keys()):
+        # Отключённая таблица (disabled=true) временно НЕ переносится: пропускаем её,
+        # но конфиг и SQL остаются на месте — снять флаг можно в конструкторе.
+        if arrSp[spNameDb].get('disabled'):
+            print(f'Справочник {spNameDb} отключён (disabled) — пропуск')
+            continue
         tableNameMaster = spNameDb[:-8]
         if tableNameMaster[-1] in ['1','2']:
             tableNameMaster = tableNameMaster[:-1]

@@ -2,16 +2,13 @@ import datetime as dt
 import logging
 import colorlog
 import sys
-import json
 
 sys.path.append("../..")  # добавляем две родительские папки в sys.path
 
-from airflow.models import DAG, TaskInstance
+from airflow.models import DAG
 from airflow.operators.python_operator import PythonOperator
-from airflow.exceptions import AirflowSkipException, AirflowException
-from Functions.spEtlOnce import SpEtl
+from Functions.spEtlNew import SpEtl
 from Functions.functionsFile.takeOneQuery import TakeOneQuery
-from Src.fullPath import FULL_PATH
 from Src.spQueries import selectAllSpSql
 from Functions.functionsFile.loadConfig import assemble, resolvePath
 
@@ -24,22 +21,46 @@ args = {
     'timezone': 'Asia/Yekaterinburg',
 }
 
-def do_etl_sp():
+
+def do_etl_sp_one(spNameDb):
+    """Разовый перенос ОДНОЙ таблицы. Каждая таблица — своя задача, поэтому
+    Airflow гоняет их ПАРАЛЛЕЛЬНО (в пределах пула/parallelism), а не по очереди."""
     action = "EtlSpOnce"
     arrSp = assemble("SpOnce")["data"]
-    for spNameDb in list(arrSp.keys()):
-        tableNameMaster = spNameDb[:-8]
-        dbMaster = spNameDb[-8:-4]
-        dbSlave = spNameDb[-4:]
-        addSql = arrSp[spNameDb].get('addSql', '')
-        selectSql = arrSp[spNameDb].get('selectSql', '')
-        tableNameSlave = arrSp[spNameDb].get('tableNameSlave', '')
-        if selectSql:
-            selectSql = TakeOneQuery(resolvePath(selectSql))
-        else:
-            selectSql = selectAllSpSql.format(tableNameMaster)
-        mode = 'once'
-        SpEtl(tableNameMaster, tableNameSlave, TakeOneQuery(resolvePath(addSql)), action, selectSql, dbMaster, dbSlave, mode)
+    entry = arrSp[spNameDb]
+
+    # Метка -> имя ведущей + направление (срез, как в регулярном справочнике).
+    tableNameMaster = spNameDb[:-8]
+    dbMaster = spNameDb[-8:-4]
+    dbSlave = spNameDb[-4:]
+    addSql = entry.get('addSql', '')
+    selectSql = entry.get('selectSql', '')
+    tableNameSlave = entry.get('tableNameSlave', '')
+
+    if selectSql:
+        selectSql = TakeOneQuery(resolvePath(selectSql))
+    else:
+        selectSql = selectAllSpSql.format(tableNameMaster)
+
+    SpEtl(
+        tableNameMaster,
+        tableNameSlave,
+        TakeOneQuery(resolvePath(addSql)),
+        action,
+        selectSql,
+        dbMaster,
+        dbSlave,
+        'once',
+    )
+
+
+# Список таблиц разового переноса читаем на этапе сборки дага (только json, без БД),
+# чтобы создать по задаче на таблицу — тогда они выполняются параллельно.
+try:
+    _spOnce = assemble("SpOnce")["data"]
+except Exception as _e:  # битый фрагмент не должен ронять парсинг всего дага
+    logging.getLogger('airflow.task').error(f"SpOnce: не удалось собрать конфиг: {_e}")
+    _spOnce = {}
 
 with DAG(dag_id='SpEtlOnce',
          default_args=args,
@@ -63,11 +84,13 @@ with DAG(dag_id='SpEtlOnce',
     handler.setFormatter(formatter)
     logger.addHandler(handler)
 
-    do_etl_sp = PythonOperator(
-        task_id='do_etl_sp',
-        provide_context=True,
-        python_callable=do_etl_sp,
-        dag=dag
-    )
-
-    do_etl_sp
+    for _spNameDb, _entry in _spOnce.items():
+        # Отключённую таблицу в разовый прогон не включаем (симметрично регулярному).
+        if _entry.get('disabled'):
+            continue
+        PythonOperator(
+            task_id=f'once_{_spNameDb}',
+            python_callable=do_etl_sp_one,
+            op_args=[_spNameDb],
+            dag=dag,
+        )

@@ -32,9 +32,10 @@ _SCHED_KINDS = {
 _KIND_TO_LABEL = {v: k for k, v in _SCHED_KINDS.items()}
 
 
-def launch():
+def _complex_ui():
+    """Построить виджет конструктора «сложного» ETL (ведёт себя как раньше).
+    Возвращает VBox — его встраивают во вкладку в launch()."""
     import ipywidgets as W
-    from IPython.display import display
 
     state = {"master_cols": [], "slave_cols": [], "rows": [], "row_widgets": [],
              "period_w": None, "slave_period_w": None,
@@ -645,8 +646,431 @@ def launch():
     _refresh_default_tags()   # проставить 3 тега по умолчанию
     _on_work_mode()           # выставить видимость по текущему режиму
 
-    display(W.VBox([
-        W.HTML("<h3>Генератор ETL-линии</h3>"),
+    return W.VBox([
+        W.HTML("<h3>Сложный ETL (свой даг на линию)</h3>"),
         work_mode, edit_box, archive_box, W.HTML("<hr>"),
         build_area, W.HTML("<hr>"), out,
-    ]))
+    ])
+
+
+def _sp_ui():
+    """Конструктор ETL справочников и разового переноса (delete+insert).
+
+    Общая логика на оба типа (regular/once); отличается лишь каталог фрагмента
+    и даг, который их гоняет. Возвращает VBox для вкладки в launch()."""
+    import ipywidgets as W
+    from tools import sp_builder as SP  # noqa: E402
+
+    state = {"master_cols": [], "slave_cols": [], "rows": [], "row_widgets": [],
+             "_opts_guard": False}
+
+    # ── тип линии и режим работы ──
+    kind = W.ToggleButtons(
+        options=[("📚 Справочник (регулярный)", "regular"),
+                 ("🔂 Разовый перенос", "once")],
+        value="regular", style={"button_width": "230px"})
+    work_mode = W.ToggleButtons(
+        options=[("➕ Создать", "new"), ("✏️ Редактировать", "edit"),
+                 ("🚦 Вкл/выкл таблицу", "toggle")],
+        value="new", style={"button_width": "190px"})
+
+    # ── правка: выбор существующей линии ──
+    edit_pick = W.Dropdown(description="Линия", options=[],
+                           layout=W.Layout(width="380px"),
+                           style={"description_width": "90px"})
+    btn_load = W.Button(description="Загрузить линию", icon="upload",
+                        layout=W.Layout(width="200px"))
+    edit_box = W.HBox([edit_pick, btn_load])
+
+    # ── панель включения/выключения (не удаляя) ──
+    tgl_active = W.Dropdown(description="Включённая", options=[],
+                            layout=W.Layout(width="380px"),
+                            style={"description_width": "110px"})
+    btn_disable = W.Button(description="🚫 Отключить", button_style="warning",
+                           layout=W.Layout(width="180px"))
+    tgl_disabled = W.Dropdown(description="Отключённая", options=[],
+                              layout=W.Layout(width="380px"),
+                              style={"description_width": "110px"})
+    btn_enable = W.Button(description="✅ Включить", button_style="success",
+                          layout=W.Layout(width="180px"))
+    tgl_help = W.HTML(
+        "<span style='color:#888'>Отключение <b>не удаляет</b> таблицу: во фрагмент "
+        "ставится <code>disabled: true</code>, и регулярный даг справочников "
+        "(<code>SpEtlNew</code>) её пропускает. Конфиг и SQL остаются — включить "
+        "обратно можно тут же. Действует <b>после деплоя</b>.</span>")
+    toggle_box = W.VBox([tgl_help, W.HBox([tgl_active, btn_disable]),
+                         W.HBox([tgl_disabled, btn_enable])])
+
+    def _refresh_toggle_lists():
+        tgl_active.options = SP.list_active_sp_lines(kind.value)
+        tgl_disabled.options = SP.list_disabled_sp_lines(kind.value)
+
+    # ── шапка-форма ──
+    tm = W.Text(description="Ведущая", placeholder="SPMKB  или  KOKNAEV.SPMKB",
+                layout=W.Layout(width="380px"), style={"description_width": "110px"})
+    ts = W.Text(description="Ведомая", placeholder="spmkb  или  KOKNAEV.spmkb",
+                layout=W.Layout(width="380px"), style={"description_width": "110px"})
+    dbm = W.Dropdown(description="БД ведущей", options=["Orcl", "Post"], value="Orcl",
+                     layout=W.Layout(width="220px"), style={"description_width": "110px"})
+    dbs = W.Dropdown(description="БД ведомой", options=["Post", "Orcl"], value="Post",
+                     layout=W.Layout(width="220px"), style={"description_width": "110px"})
+
+    _USER_SENT = "✏ своё…"
+
+    def _user_field(desc, opts=("MAIN", "A56")):
+        dd = W.Dropdown(description=desc, options=list(opts) + [_USER_SENT], value=opts[0],
+                        layout=W.Layout(width="300px"), style={"description_width": "150px"})
+        txt = W.Text(placeholder="имя набора из .env", layout=W.Layout(width="190px"))
+        txt.layout.display = "none"
+        dd.observe(lambda _:
+                   setattr(txt.layout, "display", "" if dd.value == _USER_SENT else "none"),
+                   names="value")
+
+        def get():
+            return (txt.value.strip() or "MAIN") if dd.value == _USER_SENT else dd.value
+        return W.HBox([dd, txt]), get
+
+    user_m_box, user_m_get = _user_field("Пользователь ведущей")
+    user_s_box, user_s_get = _user_field("Пользователь ведомой")
+
+    line = W.Text(description="Метка линии", placeholder="по умолч. = имя ведущей",
+                  layout=W.Layout(width="380px"), style={"description_width": "110px"})
+    key_preview = W.HTML("")
+    dependence = W.Text(description="Зависимость", placeholder="напр. SPACC (необязательно)",
+                        layout=W.Layout(width="380px"), style={"description_width": "110px"})
+    doc = W.Text(description="Комментарий", placeholder="_doc: краткое описание",
+                 layout=W.Layout(width="640px"), style={"description_width": "110px"})
+
+    # ── источник SELECT ──
+    src_mode = W.ToggleButtons(
+        options=[("Из таблицы (авто SELECT)", "table"),
+                 ("Свой SELECT-запрос", "custom")],
+        value="table", style={"button_width": "230px"})
+    src_help = W.HTML(
+        "<span style='color:#888'><b>Из таблицы</b> — назови ведущую, SELECT и INSERT "
+        "соберутся сами по сопоставленным колонкам. <b>Свой SELECT</b> — вставь запрос; "
+        "колонки снимутся из курсора, сопоставишь их со столбцами ведомой, получишь "
+        "INSERT. Регистр имён из БД (Oracle — ВЕРХНИЙ, Postgres — нижний) учитывается "
+        "автоматически.</span>")
+    f_sql = W.Textarea(description="SELECT ведущей",
+                       placeholder="SELECT a.ID, a.NAME FROM KOKNAEV.IPERSON a WHERE a.ACT = 1",
+                       layout=W.Layout(width="760px", height="120px"),
+                       style={"description_width": "110px"})
+    sql_box = W.VBox([f_sql])
+
+    def _on_src_mode(_=None):
+        custom = src_mode.value == "custom"
+        sql_box.layout.display = "" if custom else "none"
+        # В режиме «свой SELECT» имя ведущей нужно лишь как метка линии (ключ),
+        # структуру берём из запроса. Подсказываем это подписью поля.
+        tm.description = "Метка (ведущая)" if custom else "Ведущая"
+        tm.placeholder = ("имя для ключа линии, напр. ipersonact" if custom
+                          else "SPMKB  или  KOKNAEV.SPMKB")
+    src_mode.observe(_on_src_mode, names="value")
+
+    # ── зоны сопоставления/вывода ──
+    map_title = W.HTML("")
+    hide_unmapped = W.Checkbox(description="Скрывать непривязанные", value=False,
+                               indent=False)
+    map_head = W.HBox([], layout=W.Layout(align_items="center",
+                                          border_bottom="2px solid #bbb", padding="2px"))
+    map_box = W.VBox([], layout=W.Layout(max_height="420px", overflow="auto",
+                                         border="1px solid #ddd", padding="4px"))
+    out = W.Output()
+
+    btn_snap = W.Button(description="1) Снять колонки", button_style="primary",
+                        icon="download", layout=W.Layout(width="260px"))
+    btn_prev = W.Button(description="2) Предпросмотр", icon="eye",
+                        layout=W.Layout(width="200px"))
+    btn_make = W.Button(description="3) Создать файлы", button_style="success",
+                        icon="check", layout=W.Layout(width="220px"))
+
+    def _log(msg, clear=True):
+        with out:
+            if clear:
+                out.clear_output()
+            print(msg)
+
+    # ── предпросмотр ключа линии ──
+    def _update_key_preview(_=None):
+        lbl = line.value.strip() or (B.bare(tm.value.strip()) if tm.value.strip() else "")
+        if lbl:
+            key_preview.value = ("<span style='color:#888'>ключ линии: "
+                                 f"<code>{SP.sp_key(lbl, dbm.value, dbs.value)}</code></span>")
+        else:
+            key_preview.value = ("<span style='color:#888'>ключ появится, когда "
+                                 "заполнишь ведущую/метку</span>")
+    for _w in (tm, line, dbm, dbs):
+        _w.observe(_update_key_preview, names="value")
+
+    # ── связь 1:1 в выпадашках (не назначать одну ведомую дважды) ──
+    def _refresh_slave_options():
+        if state.get("_opts_guard"):
+            return
+        all_s = [c["column_name"] for c in state["slave_cols"]]
+        used = {dd.value for _m, dd in state["rows"] if dd.value != _NONE}
+        state["_opts_guard"] = True
+        try:
+            for _m, dd in state["rows"]:
+                cur = dd.value
+                opts = [_NONE] + [s for s in all_s if s == cur or s not in used]
+                if list(dd.options) != opts:
+                    dd.options = opts
+                    dd.value = cur
+        finally:
+            state["_opts_guard"] = False
+
+    def _apply_row_filter(_=None):
+        widgets = state.get("row_widgets", [])
+        if hide_unmapped.value:
+            map_box.children = [w for (m, dd), w in zip(state["rows"], widgets)
+                                if dd.value != _NONE]
+        else:
+            map_box.children = widgets
+    hide_unmapped.observe(_apply_row_filter, names="value")
+
+    def _on_pair_change(_=None):
+        _refresh_slave_options()
+        _apply_row_filter()
+
+    def _render_mapping(mcols, scols, pair_map=None):
+        m_lbl = (tm.value.strip() or "запрос ведущей")
+        s_lbl = (ts.value.strip() or "ведомая")
+        map_head.children = [
+            W.HTML(f"<b>ВЕДУЩАЯ</b> · <code>{m_lbl}</code> "
+                   f"<span style='color:#888'>[{dbm.value}]</span>",
+                   layout=W.Layout(width="324px")),
+            W.HTML(f"<b>ВЕДОМАЯ</b> · <code>{s_lbl}</code> "
+                   f"<span style='color:#888'>[{dbs.value}]</span>",
+                   layout=W.Layout(width="280px")),
+        ]
+        slave_opts = [_NONE] + [c["column_name"] for c in scols]
+        rows, widgets = [], []
+        for mcol in mcols:
+            name = mcol["column_name"]
+            sval = pair_map.get(name) if pair_map else None
+            dtype = mcol.get("data_type") or ""
+            lbl = W.HTML(f"<code>{name}</code> <span style='color:#888'>{dtype}</span>",
+                         layout=W.Layout(width="300px"))
+            dd = W.Dropdown(options=slave_opts,
+                            value=sval if sval in slave_opts else _NONE,
+                            layout=W.Layout(width="280px"))
+            dd.observe(_on_pair_change, names="value")
+            rows.append((mcol, dd))
+            widgets.append(W.HBox(
+                [lbl, W.HTML("→", layout=W.Layout(width="24px")), dd],
+                layout=W.Layout(align_items="center", min_height="40px",
+                                padding="4px 2px", border_bottom="1px solid #eee")))
+        state["rows"] = rows
+        state["row_widgets"] = widgets
+        _refresh_slave_options()
+        _apply_row_filter()
+
+    def _collect_pairs():
+        return [(mcol["column_name"], None if dd.value == _NONE else dd.value)
+                for mcol, dd in state["rows"]]
+
+    def _build_spec():
+        return {
+            "kind": kind.value,
+            "master_table": tm.value.strip(),
+            "slave_table": ts.value.strip(),
+            "db_master": dbm.value, "db_slave": dbs.value,
+            "master_label": line.value.strip() or None,
+            "select_mode": src_mode.value,
+            "select_sql_text": f_sql.value.strip() or None,
+            "pairs": _collect_pairs(),
+            "dependence": dependence.value.strip() or None,
+            "doc": doc.value.strip() or None,
+        }
+
+    # ── снять колонки ──
+    def on_snap(_):
+        try:
+            if not ts.value.strip():
+                _log("Заполни имя ведомой таблицы."); return
+            if src_mode.value == "custom":
+                if not f_sql.value.strip():
+                    _log("Вставь SELECT-запрос ведущей."); return
+                _log("Снимаю колонки запроса и ведомой из БД…")
+                mcols = SP.snap_query_columns(dbm.value, f_sql.value.strip(), user_m_get())
+            else:
+                if not tm.value.strip():
+                    _log("Заполни имя ведущей таблицы."); return
+                _log("Снимаю структуры ведущей и ведомой из БД…")
+                mcols = B.snap_structure(dbm.value, tm.value.strip(), user_m_get())
+            scols = B.snap_structure(dbs.value, ts.value.strip(), user_s_get())
+            state["master_cols"], state["slave_cols"] = mcols, scols
+
+            sugg, unmatched = B.auto_match(mcols, scols)
+            pair_map = {m["column_name"]: s for m, s in zip(mcols, sugg)}
+            _render_mapping(mcols, scols, pair_map=pair_map)
+            matched = sum(1 for s in sugg if s)
+            note = (f"Колонки: ведущая {len(mcols)} / ведомая {len(scols)}, "
+                    f"авто-совпало {matched}.")
+            if src_mode.value == "custom":
+                note += (" <b>Важно:</b> для своего SELECT сопоставь <b>каждую</b> "
+                         "колонку запроса — вставка идёт по порядку.")
+            if unmatched:
+                note += (" Без пары в ведомой: "
+                         + ", ".join(f"<code>{u}</code>" for u in unmatched))
+            map_title.value = note
+            _log("Колонки сняты. Поправь сопоставление и жми «Предпросмотр».")
+        except Exception as e:
+            _log(f"Ошибка снятия колонок: {type(e).__name__}: {e}")
+
+    # ── загрузить существующую линию ──
+    def on_load(_):
+        try:
+            key = edit_pick.value
+            if not key:
+                _log("Выбери линию из списка."); return
+            data = SP.load_sp_line(kind.value, key)
+            tm.value = data["master_table"]
+            ts.value = data["slave_table"]
+            dbm.value = data["db_master"]
+            dbs.value = data["db_slave"]
+            line.value = data["master_label"]
+            dependence.value = data["dependence"] or ""
+            doc.value = data["doc"] or ""
+            # если Select.sql — простой SELECT ... FROM t, это режим «из таблицы»
+            src_mode.value = "table" if SP._master_from_select(data["select_sql_text"]) \
+                else "custom"
+            f_sql.value = data["select_sql_text"] if src_mode.value == "custom" else ""
+            _on_src_mode()
+            state["master_cols"], state["slave_cols"], state["rows"] = [], [], []
+            map_box.children, map_head.children = [], []
+            map_title.value = (f"Загружена линия <code>{key}</code>. Нажми «Снять колонки», "
+                               "чтобы подтянуть столбцы из БД и пересобрать сопоставление.")
+            _log(f"Линия «{key}» загружена. Сними колонки, поправь и «Сохранить изменения».")
+        except Exception as e:
+            _log(f"Ошибка загрузки линии: {type(e).__name__}: {e}")
+
+    def on_preview(_):
+        try:
+            if not state["rows"]:
+                _log("Сначала сними колонки (кнопка 1)."); return
+            files, key = SP.build_sp_all(_build_spec())
+            with out:
+                out.clear_output()
+                print(f"Ключ линии: {key}\n")
+                for rel, content in files:
+                    print("=" * 70); print(rel); print("-" * 70); print(content)
+        except Exception as e:
+            _log(f"Ошибка предпросмотра: {type(e).__name__}: {e}")
+
+    def on_make(_):
+        try:
+            if not state["rows"]:
+                _log("Сначала сними колонки (кнопка 1)."); return
+            files, key = SP.build_sp_all(_build_spec())
+            validate = SP.SP_KIND_CONFIG[kind.value]
+            written = B.write_files(files, overwrite=(work_mode.value == "edit"),
+                                    validate=validate)
+            edit_pick.options = SP.list_sp_lines(kind.value)
+            with out:
+                out.clear_output()
+                print(f"Готово (линия «{key}», конфиг {validate} собрался):")
+                for p in written:
+                    print("  ", os.path.relpath(p, ROOT))
+                print("\nДальше выкатить на тест:")
+                print("  sh deploy/deploy-test.sh \"справочник/разовый перенос\"")
+        except FileExistsError as e:
+            _log(f"{e}\nТакая линия уже есть. Переключись в «✏️ Редактировать».")
+        except Exception as e:
+            _log(f"Ошибка создания: {type(e).__name__}: {e}")
+
+    # ── вкл/выкл ──
+    def on_disable(_):
+        try:
+            key = tgl_active.value
+            if not key:
+                _log("Выбери включённую линию."); return
+            SP.set_sp_disabled(kind.value, key, True)
+            _refresh_toggle_lists()
+            edit_pick.options = SP.list_sp_lines(kind.value)
+            _log(f"Линия «{key}» отключена (disabled=true): регулярный даг её пропустит. "
+                 "Вступит в силу после деплоя. Включить обратно — тут же.")
+        except Exception as e:
+            _log(f"Ошибка отключения: {type(e).__name__}: {e}")
+
+    def on_enable(_):
+        try:
+            key = tgl_disabled.value
+            if not key:
+                _log("Выбери отключённую линию."); return
+            SP.set_sp_disabled(kind.value, key, False)
+            _refresh_toggle_lists()
+            edit_pick.options = SP.list_sp_lines(kind.value)
+            _log(f"Линия «{key}» снова включена. Вступит в силу после деплоя.")
+        except Exception as e:
+            _log(f"Ошибка включения: {type(e).__name__}: {e}")
+
+    btn_snap.on_click(on_snap)
+    btn_prev.on_click(on_preview)
+    btn_make.on_click(on_make)
+    btn_load.on_click(on_load)
+    btn_disable.on_click(on_disable)
+    btn_enable.on_click(on_enable)
+
+    # ── видимость по режимам ──
+    def _on_mode(_=None):
+        m = work_mode.value
+        edit_box.layout.display = "" if m == "edit" else "none"
+        toggle_box.layout.display = "" if m == "toggle" else "none"
+        build_area.layout.display = "none" if m == "toggle" else ""
+        btn_make.description = ("3) Сохранить изменения" if m == "edit"
+                                else "3) Создать файлы")
+        if m == "edit":
+            edit_pick.options = SP.list_sp_lines(kind.value)
+        elif m == "toggle":
+            _refresh_toggle_lists()
+    work_mode.observe(_on_mode, names="value")
+
+    def _on_kind(_=None):
+        # зависимость — только для регулярного справочника
+        dependence.layout.display = "" if kind.value == "regular" else "none"
+        if work_mode.value == "edit":
+            edit_pick.options = SP.list_sp_lines(kind.value)
+        elif work_mode.value == "toggle":
+            _refresh_toggle_lists()
+        _update_key_preview()
+    kind.observe(_on_kind, names="value")
+
+    build_area = W.VBox([
+        W.HBox([tm, ts]), W.HBox([dbm, dbs]), W.HBox([user_m_box, user_s_box]),
+        W.HBox([line, dependence]), key_preview, doc,
+        W.HTML("<b>Источник данных ведущей</b>"), src_mode, src_help, sql_box,
+        btn_snap,
+        W.HTML("<hr>"),
+        W.HTML("<b>Сопоставление колонок</b> (ведущая → ведомая; порядок = порядок "
+               "вставки):"),
+        W.HBox([map_title, hide_unmapped]), map_head, map_box,
+        W.HBox([btn_prev, btn_make]),
+    ])
+
+    _on_src_mode()
+    _on_kind()
+    _on_mode()
+    _update_key_preview()
+
+    return W.VBox([
+        W.HTML("<h3>Справочники и разовый перенос (delete + insert)</h3>"),
+        kind, work_mode, edit_box, toggle_box, W.HTML("<hr>"),
+        build_area, W.HTML("<hr>"), out,
+    ])
+
+
+def launch():
+    """Показать конструктор: две вкладки — «Сложный ETL» и «Справочники / разовый».
+
+    Это единая точка входа; веб-конструктор (Voilà) запускает именно её через
+    tools/dagbuilder_app.ipynb, поэтому обновление этого модуля обновляет и
+    веб-версию (после перезапуска сервиса etl-dagbuilder)."""
+    import ipywidgets as W
+    from IPython.display import display
+
+    tabs = W.Tab([_complex_ui(), _sp_ui()])
+    tabs.set_title(0, "Сложный ETL")
+    tabs.set_title(1, "Справочники / разовый")
+    display(tabs)
