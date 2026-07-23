@@ -273,8 +273,11 @@ def load_sp_line(kind, key):
 
     select_rel = body.get("selectSql")
     select_text = _text(select_rel)
+    add_text = _text(body.get("addSql"))
     # если Select.sql — это простой `SELECT ... FROM <master>`, режим 'table'
     master_from = _master_from_select(select_text)
+    # текущее сопоставление колонок — прямо из сохранённых SQL (без обращения к БД)
+    master_cols, slave_cols, pairs = restore_mapping(select_text, add_text)
     return {
         "key": key, "kind": kind,
         "master_label": line, "db_master": dbm, "db_slave": dbs,
@@ -284,7 +287,8 @@ def load_sp_line(kind, key):
         "disabled": bool(body.get("disabled")),
         "doc": body.get("_doc", ""),
         "select_sql": select_rel, "select_sql_text": select_text,
-        "add_sql": body.get("addSql"), "add_sql_text": _text(body.get("addSql")),
+        "add_sql": body.get("addSql"), "add_sql_text": add_text,
+        "master_cols": master_cols, "slave_cols": slave_cols, "pairs": pairs,
         "sql_dir_name": (os.path.basename(os.path.dirname(select_rel))
                          if select_rel else None),
     }
@@ -301,6 +305,84 @@ def _master_from_select(text):
         return None
     m = _SELECT_FROM_RE.match(text.strip())
     return m.group(1) if m else None
+
+
+def _split_top_level(s):
+    """Разбить список через запятую по верхнему уровню (запятые внутри скобок
+    не считаются разделителями): 'a, f(x, y), b' -> ['a', 'f(x, y)', 'b']."""
+    parts, depth, cur = [], 0, ""
+    for ch in s:
+        if ch in "([":
+            depth += 1
+        elif ch in ")]":
+            depth = max(0, depth - 1)
+        if ch == "," and depth == 0:
+            parts.append(cur.strip())
+            cur = ""
+        else:
+            cur += ch
+    if cur.strip():
+        parts.append(cur.strip())
+    return [p for p in parts if p]
+
+
+_SELECT_LIST_RE = re.compile(r"\bSELECT\b(.*?)\bFROM\b", re.S | re.I)
+_INSERT_COLS_RE = re.compile(
+    r"\bINSERT\s+INTO\s+([A-Za-z0-9_.\"]+)\s*\(([^)]*)\)\s*VALUES", re.S | re.I)
+
+
+def parse_select_columns(text):
+    """Список колонок из SELECT-списка простого `SELECT c1, c2, ... FROM ...`.
+
+    Для сгенерированного запроса «из таблицы» вернёт чистые имена колонок. Для
+    своего SELECT — выражения как есть (напр. 'a.ID'); если распарсить нельзя
+    (нет FROM, '*' и т.п.) — пустой список."""
+    if not text:
+        return []
+    m = _SELECT_LIST_RE.search(text)
+    if not m:
+        return []
+    cols = _split_top_level(m.group(1))
+    if any(c == "*" or c.endswith(".*") for c in cols):
+        return []
+    return cols
+
+
+def parse_insert_columns(text):
+    """(таблица, [колонки]) из `INSERT INTO t (c1, c2, ...) VALUES ...`.
+    Если распарсить нельзя — (None, [])."""
+    if not text:
+        return None, []
+    m = _INSERT_COLS_RE.search(text)
+    if not m:
+        return None, []
+    table = m.group(1)
+    cols = [c for c in _split_top_level(m.group(2))]
+    return table, cols
+
+
+def _cols_as_dicts(names):
+    return [{"column_name": n, "data_type": "", "data_scale": None,
+             "is_primary_key": None} for n in names]
+
+
+def restore_mapping(select_text, add_text):
+    """Восстановить (master_cols, slave_cols, pairs) из сохранённых SQL — без БД.
+
+    Позиционное сопоставление: SELECT-колонка i <-> INSERT-колонка i. Если число
+    колонок в SELECT и INSERT не совпало (или SELECT не распарсился), метки
+    ведущей заменяются заглушками «(колонка N)», а порядок берётся из INSERT —
+    так текущее сопоставление всё равно видно, пусть и без имён из ведущей.
+    Возвращает пустые списки, если INSERT распарсить не удалось.
+    """
+    _tbl, ins_cols = parse_insert_columns(add_text)
+    if not ins_cols:
+        return [], [], []
+    sel_cols = parse_select_columns(select_text)
+    if len(sel_cols) != len(ins_cols):
+        sel_cols = [f"(колонка {i + 1})" for i in range(len(ins_cols))]
+    pairs = list(zip(sel_cols, ins_cols))
+    return _cols_as_dicts(sel_cols), _cols_as_dicts(ins_cols), pairs
 
 
 # ─────────────────────────── самопроверка (без БД) ───────────────────────────
@@ -369,6 +451,30 @@ def _selftest():
     # 4) разбор ведущей из простого SELECT
     assert _master_from_select("SELECT ID, NAME\nFROM KOKNAEV.SPMKB\n") == "KOKNAEV.SPMKB"
     assert _master_from_select("SELECT a.ID FROM T a WHERE a.x=1") is None
+
+    # 5) парсинг колонок из сохранённых SQL (режим правки без БД)
+    assert parse_select_columns("SELECT ID,\n       NAME,\n       CODE\nFROM T\n") == \
+        ["ID", "NAME", "CODE"]
+    assert parse_insert_columns("INSERT INTO spmkb (id, name, code)\nVALUES %s\n") == \
+        ("spmkb", ["id", "name", "code"])
+    assert parse_insert_columns("INSERT INTO KOKNAEV.spacc (id, name)\nVALUES (:1, :2)\n") == \
+        ("KOKNAEV.spacc", ["id", "name"])
+    # верхнеуровневые запятые (функции с запятыми внутри не рвутся)
+    assert parse_select_columns("SELECT a.id, coalesce(x, 0) v FROM t") == \
+        ["a.id", "coalesce(x, 0) v"]
+    # восстановление сопоставления: SELECT[i] <-> INSERT[i]
+    mc, sc, pr = restore_mapping("SELECT ID, NAME, CODE\nFROM T\n",
+                                 "INSERT INTO spmkb (id, name, code)\nVALUES %s\n")
+    assert [c["column_name"] for c in mc] == ["ID", "NAME", "CODE"]
+    assert [c["column_name"] for c in sc] == ["id", "name", "code"]
+    assert pr == [("ID", "id"), ("NAME", "name"), ("CODE", "code")]
+    # рассинхрон числа колонок -> метки-заглушки, порядок из INSERT
+    mc2, sc2, pr2 = restore_mapping("SELECT * FROM T",
+                                    "INSERT INTO t (a, b)\nVALUES (:1, :2)\n")
+    assert [c["column_name"] for c in sc2] == ["a", "b"]
+    assert [c["column_name"] for c in mc2] == ["(колонка 1)", "(колонка 2)"]
+    # нераспарсиваемый INSERT -> пусто
+    assert restore_mapping("", "") == ([], [], [])
     print("sp_builder selftest OK")
 
 

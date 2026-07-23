@@ -938,11 +938,44 @@ def _sp_ui():
                 else "custom"
             f_sql.value = data["select_sql_text"] if src_mode.value == "custom" else ""
             _on_src_mode()
-            state["master_cols"], state["slave_cols"], state["rows"] = [], [], []
-            map_box.children, map_head.children = [], []
-            map_title.value = (f"Загружена линия <code>{key}</code>. Нажми «Снять колонки», "
-                               "чтобы подтянуть столбцы из БД и пересобрать сопоставление.")
-            _log(f"Линия «{key}» загружена. Сними колонки, поправь и «Сохранить изменения».")
+
+            # Текущее сопоставление колонок — из сохранённых Select.sql/Add.sql,
+            # БЕЗ обращения к БД. Пользователь сразу видит, что и куда льётся.
+            mcols, scols, pairs = (data.get("master_cols") or [],
+                                   data.get("slave_cols") or [],
+                                   data.get("pairs") or [])
+            state["master_cols"], state["slave_cols"] = mcols, scols
+            if mcols and scols:
+                _render_mapping(mcols, scols, pair_map=dict(pairs))
+                map_title.value = (
+                    f"Загружена линия <code>{key}</code>. Показано <b>текущее</b> "
+                    "сопоставление из сохранённого SQL. Правки колонок сохранятся как "
+                    "есть; чтобы подтянуть новые столбцы из БД — нажми «Снять колонки».")
+            else:
+                state["rows"] = []
+                map_box.children, map_head.children = [], []
+                map_title.value = (
+                    f"Загружена линия <code>{key}</code>. Сопоставление из SQL "
+                    "распарсить не удалось — нажми «Снять колонки», чтобы собрать его "
+                    "из БД.")
+
+            # Показать текущие SELECT и INSERT (то, что реально лежит в файлах линии).
+            with out:
+                out.clear_output()
+                print(f"Линия «{key}» загружена.\n")
+                if data.get("select_sql"):
+                    print("=" * 70)
+                    print(f"ТЕКУЩИЙ SELECT ведущей  ({data['select_sql']})")
+                    print("-" * 70)
+                    print(data.get("select_sql_text") or "(файл пуст/не найден)")
+                    print()
+                if data.get("add_sql"):
+                    print("=" * 70)
+                    print(f"ТЕКУЩИЙ INSERT в ведомую  ({data['add_sql']})")
+                    print("-" * 70)
+                    print(data.get("add_sql_text") or "(файл пуст/не найден)")
+                    print()
+                print("Поправь что нужно и нажми «Сохранить изменения».")
         except Exception as e:
             _log(f"Ошибка загрузки линии: {type(e).__name__}: {e}")
 
