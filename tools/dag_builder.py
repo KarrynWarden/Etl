@@ -725,17 +725,16 @@ def current_branch(root=ROOT):
     return br if (p.returncode == 0 and br and br != "HEAD") else None
 
 
-def git_commit_push(paths, message, root=ROOT):
-    """Закоммитить указанные пути и запушить текущую ветку в origin.
+GIT_AREAS = ("etlFolder", "dags")   # что конструктор трогает — этим и ограничиваем git
 
-    Возвращает (ok: bool, log: str). Ошибки НЕ бросаются — текст возвращается
-    для показа в UI (кнопка «создать и запушить» на сервере, где у пользователя
-    jupyter могут быть или не быть настроены креды к origin).
+
+def _git_runner(root):
+    """Вернуть функцию run(*git-args) -> (rc, output) с безопасным окружением.
+
+    GIT_TERMINAL_PROMPT=0: не зависать на интерактивном запросе логина/пароля
+    (веб-сессия Voilà) — вместо этого git сразу падает с понятной ошибкой.
     """
     import subprocess
-
-    # GIT_TERMINAL_PROMPT=0: не зависать на интерактивном запросе логина/пароля
-    # (веб-сессия Voilà) — вместо этого git сразу падает с понятной ошибкой.
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
 
     def run(*args, timeout=120):
@@ -748,38 +747,164 @@ def git_commit_push(paths, message, root=ROOT):
                          "пользователя сервиса или выложи обычным деплоем.")
         return p.returncode, ((p.stdout or "") + (p.stderr or "")).strip()
 
+    return run
+
+
+def _commit_and_push(run, branch, message):
+    """Коммит уже проиндексированного + push. Возвращает (ok, log)."""
     log = []
-    branch = current_branch(root)
-    if not branch:
-        return False, ("git: не удалось определить ветку (detached HEAD или это не "
-                       "git-клон). Закоммить/запушь вручную.")
-
-    rel = [os.path.relpath(p, root) for p in paths]
-    rc, out = run("add", "--", *rel)
-    if rc != 0:
-        return False, f"git add не удался:\n{out}"
-
     rc, out = run("commit", "-m", message)
     if rc != 0:
-        # Нечего коммитить — не ошибка (наши файлы идентичны тому, что уже в истории).
-        # Коммитим только свои пути (без -a), поэтому git может сказать и
-        # "nothing to commit", и "no changes added to commit" — оба означают одно.
+        # Нечего коммитить — не ошибка (проиндексированное идентично истории).
         low = out.lower()
         if any(s in low for s in ("nothing to commit", "no changes added to commit",
                                   "nothing added to commit", "ничего для коммита")):
-            log.append("git: коммитить нечего (наши файлы уже в истории/идентичны).")
-        else:
-            return False, f"git commit не удался:\n{out}"
-    else:
-        log.append(f"git commit: {out.splitlines()[0] if out else 'ok'}")
+            return True, "git: коммитить нечего (изменений нет)."
+        return False, f"git commit не удался:\n{out}"
+    log.append(f"git commit: {out.splitlines()[0] if out else 'ok'}")
 
     rc, out = run("push", "origin", "HEAD")
     if rc != 0:
         return False, ("\n".join(log) + f"\n\ngit push НЕ удался (ветка {branch}):\n{out}"
-                       "\n\nФайлы созданы локально — выложи их обычным деплоем "
+                       "\n\nИзменения сохранены локально — выложи их обычным деплоем "
                        "(local/dev-push.sh / deploy-test.sh).")
     log.append(f"git push origin {branch}: ok\n{out}".rstrip())
     return True, "\n".join(log)
+
+
+def git_status_short(root=ROOT, areas=GIT_AREAS):
+    """Краткий статус (`git status --porcelain`) по областям конструктора —
+    что реально изменено на диске и попадёт в «просто запушить». '' если чисто."""
+    run = _git_runner(root)
+    rc, out = run("status", "--porcelain", "--", *areas)
+    return out if rc == 0 else ""
+
+
+def git_commit_push(paths, message, root=ROOT):
+    """Проиндексировать указанные пути и запушить текущую ветку в origin.
+
+    Возвращает (ok, log). Ошибки НЕ бросаются — текст возвращается для показа в
+    UI (на сервере у пользователя сервиса могут быть или не быть креды к origin).
+    """
+    run = _git_runner(root)
+    branch = current_branch(root)
+    if not branch:
+        return False, ("git: не удалось определить ветку (detached HEAD или это не "
+                       "git-клон). Закоммить/запушь вручную.")
+    rel = [os.path.relpath(p, root) for p in paths]
+    rc, out = run("add", "--", *rel)
+    if rc != 0:
+        return False, f"git add не удался:\n{out}"
+    return _commit_and_push(run, branch, message)
+
+
+def git_push_saved(message, root=ROOT, areas=GIT_AREAS):
+    """«Просто запушить»: закоммитить и запушить ВСЕ уже сохранённые на диске
+    изменения в областях конструктора (add -A по etlFolder/ и dags/), НЕ трогая
+    несохранённую форму. Возвращает (ok, log)."""
+    run = _git_runner(root)
+    branch = current_branch(root)
+    if not branch:
+        return False, ("git: не удалось определить ветку (detached HEAD или это не "
+                       "git-клон). Закоммить/запушь вручную.")
+    rc, out = run("add", "-A", "--", *areas)
+    if rc != 0:
+        return False, f"git add не удался:\n{out}"
+    return _commit_and_push(run, branch, message)
+
+
+# ─────────────────────────── удаление линии насовсем ───────────────────────────
+
+def _all_config_bodies():
+    """key -> body по всем фрагментам config.d (для проверки общих файлов)."""
+    d = os.path.join(ETLFOLDER, "config.d")
+    out = {}
+    if os.path.isdir(d):
+        for f in sorted(os.listdir(d)):
+            if not f.endswith(".json"):
+                continue
+            try:
+                obj = _read_json(os.path.join(d, f))
+            except Exception:
+                continue
+            out.update(obj)
+    return out
+
+
+def _ref_shared(rel, exclude_key):
+    """Ссылается ли на файл `rel` (структура/selectSql) ещё какая-то линия, кроме
+    exclude_key. Структуры общие у таблицы с несколькими направлениями — их нельзя
+    удалять, пока жива хоть одна линия."""
+    if not rel:
+        return False
+    for k, body in _all_config_bodies().items():
+        if k == exclude_key:
+            continue
+        if rel in (body.get("structureMaster"), body.get("structureSlave"),
+                   body.get("selectSql")):
+            return True
+    return False
+
+
+def line_delete_targets(key):
+    """Список путей, которые удалит delete_line(key) — для предпросмотра в UI."""
+    body, path = _find_config_body(key)
+    line, dbm, dbs = split_key(key)
+    tm = body.get("tableNameMaster", line)
+    dagpath, _dag_id, _arch = _resolve_dag_path(line, tm, dbm, dbs)
+    obj = _read_json(path)
+    targets = [path if len(obj) <= 1 else f"{path} (ключ {key})"]
+    if os.path.exists(dagpath):
+        targets.append(dagpath)
+    for rel in (body.get("selectSql"), body.get("structureMaster"),
+                body.get("structureSlave")):
+        if rel and not _ref_shared(rel, key):
+            p = os.path.join(ETLFOLDER, rel)
+            if os.path.exists(p):
+                targets.append(p)
+    return targets
+
+
+def delete_line(key, remove_struct=True):
+    """Удалить линию сложного ETL НАСОВСЕМ: фрагмент config.d, файл дага (из dags/
+    или архива) и — если не используются другими линиями — selectSql и структуры.
+    Возвращает список удалённых путей. Пустые каталоги структур прибираются."""
+    body, path = _find_config_body(key)
+    line, dbm, dbs = split_key(key)
+    tm = body.get("tableNameMaster", line)
+    dagpath, _dag_id, _arch = _resolve_dag_path(line, tm, dbm, dbs)
+    obj = _read_json(path)
+    removed = []
+    with _group_writable():
+        if len(obj) <= 1:
+            os.remove(path)
+            removed.append(path)
+        else:
+            obj.pop(key, None)
+            with open(path, "w", encoding="utf-8") as fp:
+                json.dump(obj, fp, ensure_ascii=False, indent=2)
+                fp.write("\n")
+            removed.append(f"{path} (ключ {key})")
+        if os.path.exists(dagpath):
+            os.remove(dagpath)
+            removed.append(dagpath)
+        refs = [body.get("selectSql")]
+        if remove_struct:
+            refs += [body.get("structureMaster"), body.get("structureSlave")]
+        for rel in refs:
+            if rel and not _ref_shared(rel, key):
+                p = os.path.join(ETLFOLDER, rel)
+                if os.path.exists(p):
+                    os.remove(p)
+                    removed.append(p)
+                parent = os.path.dirname(p)
+                try:
+                    if os.path.isdir(parent) and not os.listdir(parent):
+                        os.rmdir(parent)
+                        removed.append(parent)
+                except OSError:
+                    pass
+    return removed
 
 
 # ─────────────────────────── самопроверка (без БД) ───────────────────────────

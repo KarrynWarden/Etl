@@ -42,6 +42,10 @@ def do_etl_sp_one(spNameDb):
     else:
         selectSql = selectAllSpSql.format(tableNameMaster)
 
+    # Режим разового переноса: 'append' — дополнить ведомую без очистки (SQL обычно
+    # с WHERE); иначе 'once' — полная перезаливка (очистить + залить).
+    mode = 'append' if entry.get('append') else 'once'
+
     SpEtl(
         tableNameMaster,
         tableNameSlave,
@@ -50,7 +54,7 @@ def do_etl_sp_one(spNameDb):
         selectSql,
         dbMaster,
         dbSlave,
-        'once',
+        mode,
     )
 
 

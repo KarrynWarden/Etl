@@ -183,6 +183,10 @@ def build_sp_all(spec):
         body["_doc"] = spec["doc"]
     if spec.get("disabled"):
         body["disabled"] = True
+    # разовый перенос: 'append' — дополнять ведомую без очистки (актуально только
+    # для kind='once'; регулярный справочник всегда полная перезаливка)
+    if kind == "once" and spec.get("append"):
+        body["append"] = True
 
     fragment = {key: body}
     files = [
@@ -293,6 +297,80 @@ def move_sp_line(key, from_kind, to_kind):
     return to_path
 
 
+def _all_sql_dirs(exclude=None):
+    """Множество каталогов queries/sp/<...>, на которые ссылаются ДРУГИЕ линии
+    (обоих типов). exclude — (kind, key) исключить из подсчёта. Нужно, чтобы при
+    удалении линии не снести SQL, который делит с ней другая линия."""
+    dirs = set()
+    for kind in SP_KIND_CONFIG:
+        d = _sp_dir(kind)
+        if not os.path.isdir(d):
+            continue
+        for f in sorted(os.listdir(d)):
+            if not f.endswith(".json"):
+                continue
+            try:
+                obj = B._read_json(os.path.join(d, f))
+            except Exception:
+                continue
+            for k, body in obj.items():
+                if exclude and exclude == (kind, k):
+                    continue
+                for rel in (body.get("selectSql"), body.get("addSql")):
+                    if rel:
+                        dirs.add(os.path.dirname(os.path.abspath(
+                            os.path.join(ETLFOLDER, rel))))
+    return dirs
+
+
+def sp_line_targets(kind, key):
+    """Что физически будет удалено при удалении линии — для предпросмотра в UI.
+    Возвращает (fragment_path_или_ключ, sql_dir_или_None, sql_dir_shared: bool)."""
+    body, path, obj = _find_sp_fragment(kind, key)
+    sql_dir = None
+    for rel in (body.get("selectSql"), body.get("addSql")):
+        if rel:
+            sql_dir = os.path.dirname(os.path.abspath(os.path.join(ETLFOLDER, rel)))
+    shared = bool(sql_dir and sql_dir in _all_sql_dirs(exclude=(kind, key)))
+    frag_desc = path if len(obj) <= 1 else f"{path} (ключ {key})"
+    return frag_desc, sql_dir, shared
+
+
+def delete_sp_line(kind, key, remove_sql=True):
+    """Удалить линию справочника/разового переноса НАСОВСЕМ.
+
+    Удаляет фрагмент (файл целиком, если в нём один ключ; иначе только ключ) и,
+    если remove_sql, каталог его SQL (queries/sp/<...>) — но лишь когда он не
+    используется другой линией и лежит строго под queries/sp (страховка).
+    Возвращает список удалённых путей.
+    """
+    body, path, obj = _find_sp_fragment(kind, key)
+    removed = []
+    sql_dir = None
+    for rel in (body.get("selectSql"), body.get("addSql")):
+        if rel:
+            sql_dir = os.path.dirname(os.path.abspath(os.path.join(ETLFOLDER, rel)))
+    shared = bool(sql_dir and sql_dir in _all_sql_dirs(exclude=(kind, key)))
+    sp_root = os.path.abspath(os.path.join(ETLFOLDER, "queries", "sp")) + os.sep
+
+    with B._group_writable():
+        if len(obj) <= 1:
+            os.remove(path)
+            removed.append(path)
+        else:
+            obj.pop(key, None)
+            with open(path, "w", encoding="utf-8") as fp:
+                json.dump(obj, fp, ensure_ascii=False, indent=2)
+                fp.write("\n")
+            removed.append(f"{path} (ключ {key})")
+        if (remove_sql and sql_dir and not shared and os.path.isdir(sql_dir)
+                and (sql_dir + os.sep).startswith(sp_root)):
+            import shutil
+            shutil.rmtree(sql_dir)
+            removed.append(sql_dir)
+    return removed
+
+
 def load_sp_line(kind, key):
     """Собрать спецификацию существующей линии для формы (режим правки)."""
     body, _path, _obj = _find_sp_fragment(kind, key)
@@ -320,6 +398,7 @@ def load_sp_line(kind, key):
         "slave_table": body.get("tableNameSlave", ""),
         "dependence": body.get("dependence", ""),
         "disabled": bool(body.get("disabled")),
+        "append": bool(body.get("append")),
         "doc": body.get("_doc", ""),
         "select_sql": select_rel, "select_sql_text": select_text,
         "add_sql": body.get("addSql"), "add_sql_text": add_text,
@@ -527,8 +606,29 @@ def _selftest():
         assert list_sp_lines("once") == [] and list_sp_lines("regular") == ["FOOOrclPost"]
         move_sp_line("FOOOrclPost", "regular", "once")
         assert list_sp_lines("regular") == [] and list_sp_lines("once") == ["FOOOrclPost"]
+
+        # удаление: фрагмент + SQL-каталог (лежащий под queries/sp) сносятся
+        os.makedirs(os.path.join(ETLFOLDER, "queries", "sp", "FOO"))
+        for fn in ("Select.sql", "Add.sql"):
+            with open(os.path.join(ETLFOLDER, "queries", "sp", "FOO", fn), "w") as fp:
+                fp.write("x")
+        delete_sp_line("once", "FOOOrclPost")
+        assert list_sp_lines("once") == []
+        assert not os.path.isdir(os.path.join(ETLFOLDER, "queries", "sp", "FOO"))
     finally:
         ETLFOLDER = _saved
+
+    # 7) флаг append только для разового (kind=once)
+    _p = [("A", "a"), ("B", "b")]
+    f_once, _ = build_sp_all({"kind": "once", "master_table": "", "slave_table": "t",
+                              "db_master": "Orcl", "db_slave": "Post", "master_label": "T",
+                              "select_mode": "custom", "select_sql_text": "SELECT A,B FROM X",
+                              "pairs": _p, "append": True})
+    assert json.loads(dict(f_once)["etlFolder/SpOnce.d/TOrclPost.json"])["TOrclPost"]["append"] is True
+    f_reg, _ = build_sp_all({"kind": "regular", "master_table": "M", "slave_table": "t",
+                             "db_master": "Orcl", "db_slave": "Post", "master_label": "T",
+                             "select_mode": "table", "pairs": _p, "append": True})
+    assert "append" not in json.loads(dict(f_reg)["etlFolder/SpTableName.d/TOrclPost.json"])["TOrclPost"]
     print("sp_builder selftest OK")
 
 

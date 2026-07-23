@@ -15,10 +15,14 @@ def SpEtl(tableNameMaster, tableNameSlave, addAllSpSql, action, selectSpSql, dbM
         # Подготовка slave-соединения
         con2 = DbConnectOrcl() if dbMaster == "Post" else DbConnectPost()
         cursor2 = con2.cursor()
-        
-        # Очистка целевой таблицы
-        cursor2.execute(deleteAllSpSql.format(tableNameSlave))
-        print(f'Справочник {tableNameSlave} очищен')
+
+        # Очистка целевой таблицы. Режим 'append' (разовое ДОПОЛНЕНИЕ) её пропускает —
+        # ведомая не очищается, новые строки просто дописываются (SQL обычно с WHERE).
+        if mode == 'append':
+            print(f'Режим дополнения: {tableNameSlave} НЕ очищается, строки дописываются')
+        else:
+            cursor2.execute(deleteAllSpSql.format(tableNameSlave))
+            print(f'Справочник {tableNameSlave} очищен')
         
         # Выборка данных из master
         cursor.execute(selectSpSql)

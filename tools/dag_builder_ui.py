@@ -32,6 +32,135 @@ _SCHED_KINDS = {
 _KIND_TO_LABEL = {v: k for k, v in _SCHED_KINDS.items()}
 
 
+def _rel(p):
+    """Путь относительно корня репо для читаемого вывода. Терпит хвост вида
+    ' (ключ X)' у строк-описаний удаляемого."""
+    p = str(p)
+    first = p.split(" ", 1)[0]
+    if os.path.isabs(first):
+        return os.path.relpath(first, ROOT) + p[len(first):]
+    return p
+
+
+def _esc(s):
+    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _push_only_controls(W, out, message_fn=None):
+    """Кнопка «Просто запушить» + подтверждение: коммит+push УЖЕ сохранённых на
+    диске изменений (etlFolder/, dags/), без генерации файлов из текущей формы.
+    Показывает список изменений перед выкладкой."""
+    message_fn = message_fn or (lambda: "dagbuilder: выложить сохранённые изменения")
+    info = W.HTML()
+    btn_yes = W.Button(description="✅ Да, запушить сохранённое", button_style="danger",
+                       layout=W.Layout(width="260px"))
+    btn_no = W.Button(description="Отмена", layout=W.Layout(width="120px"))
+    confirm = W.VBox([info, W.HBox([btn_yes, btn_no])],
+                     layout=W.Layout(display="none", border="1px solid #17a2b8",
+                                     padding="6px", margin="4px 0"))
+    btn = W.Button(description="Просто запушить", icon="upload",
+                   layout=W.Layout(width="200px"))
+
+    def _show(_):
+        changed = B.git_status_short()
+        if not changed.strip():
+            with out:
+                out.clear_output()
+                print("Нечего пушить: в etlFolder/ и dags/ нет сохранённых изменений.")
+            return
+        br = B.current_branch() or "— (detached)"
+        info.value = (
+            "<b>Запушить сохранённые изменения?</b> Будет <code>git commit</code> и "
+            f"<code>git push origin {br}</code>. Текущая несохранённая форма НЕ "
+            "затрагивается. Будет выложено:"
+            f"<pre style='max-height:220px;overflow:auto'>{_esc(changed)}</pre>")
+        confirm.layout.display = ""
+
+    def _hide(_):
+        confirm.layout.display = "none"
+
+    def _go(_):
+        confirm.layout.display = "none"
+        ok, log = B.git_push_saved(message_fn())
+        with out:
+            out.clear_output()
+            print("✅ Запушено:" if ok else "⚠ Не запушено:")
+            print(log)
+
+    btn.on_click(_show)
+    btn_yes.on_click(_go)
+    btn_no.on_click(_hide)
+    return btn, confirm
+
+
+def _delete_controls(W, out, list_fn, targets_fn, delete_fn, after_fn, label="линию"):
+    """Выпадашка + кнопка «🗑 Удалить» + двухшаговое подтверждение со списком
+    файлов, которые будут удалены. list_fn()->ключи, targets_fn(key)->пути,
+    delete_fn(key)->удалённые, after_fn() дергается после удаления (обновить
+    связанные списки). Возвращает (pick, btn, confirm, refresh_fn)."""
+    pick = W.Dropdown(description="Линия", options=[],
+                      layout=W.Layout(width="380px"),
+                      style={"description_width": "90px"})
+    btn = W.Button(description=f"🗑 Удалить {label}", button_style="danger",
+                   layout=W.Layout(width="240px"))
+    info = W.HTML()
+    btn_yes = W.Button(description="⚠️ Да, удалить насовсем", button_style="danger",
+                       layout=W.Layout(width="260px"))
+    btn_no = W.Button(description="Отмена", layout=W.Layout(width="120px"))
+    confirm = W.VBox([info, W.HBox([btn_yes, btn_no])],
+                     layout=W.Layout(display="none", border="2px solid #dc3545",
+                                     padding="6px", margin="4px 0"))
+
+    def _refresh():
+        pick.options = list_fn()
+
+    def _show(_):
+        key = pick.value
+        if not key:
+            with out:
+                out.clear_output(); print("Выбери линию для удаления.")
+            return
+        try:
+            targets = targets_fn(key)
+        except Exception as e:
+            with out:
+                out.clear_output(); print(f"Не удалось собрать список: {type(e).__name__}: {e}")
+            return
+        lst = "\n".join("  " + _rel(t) for t in targets) or "  (файлы не найдены)"
+        info.value = (
+            f"<b>Удалить линию «{_esc(key)}» НАСОВСЕМ?</b> Будут удалены файлы:"
+            f"<pre style='max-height:220px;overflow:auto'>{_esc(lst)}</pre>"
+            "Действие необратимо на диске (пока не запушено — восстановимо из git). "
+            "Общие структуры/SQL, используемые другими линиями, не трогаются.")
+        confirm.layout.display = ""
+
+    def _hide(_):
+        confirm.layout.display = "none"
+
+    def _go(_):
+        confirm.layout.display = "none"
+        key = pick.value
+        try:
+            removed = delete_fn(key)
+        except Exception as e:
+            with out:
+                out.clear_output(); print(f"Ошибка удаления: {type(e).__name__}: {e}")
+            return
+        _refresh()
+        after_fn()
+        with out:
+            out.clear_output()
+            print(f"Линия «{key}» удалена. Удалено:")
+            for r in removed:
+                print("  ", _rel(r))
+            print("\nВыложи удаление: кнопка «Просто запушить» или обычный деплой.")
+
+    btn.on_click(_show)
+    btn_yes.on_click(_go)
+    btn_no.on_click(_hide)
+    return pick, btn, confirm, _refresh
+
+
 def _publish_controls(W, out, do_write, message_fn):
     """Кнопка «создать и запушить» + подтверждение (защита от мисклика).
 
@@ -302,11 +431,11 @@ def _complex_ui():
                                          border="1px solid #ddd", padding="4px"))
     out = W.Output()
 
-    btn_snap = W.Button(description="1) Снять структуры из БД", button_style="primary",
+    btn_snap = W.Button(description="Снять структуры из БД", button_style="primary",
                         icon="download", layout=W.Layout(width="260px"))
-    btn_prev = W.Button(description="2) Предпросмотр", icon="eye",
+    btn_prev = W.Button(description="Предпросмотр", icon="eye",
                         layout=W.Layout(width="200px"))
-    btn_make = W.Button(description="3) Создать файлы", button_style="success",
+    btn_make = W.Button(description="Создать файлы", button_style="success",
                         icon="check", layout=W.Layout(width="220px"))
 
     def _log(msg, clear=True):
@@ -339,8 +468,8 @@ def _complex_ui():
         edit_box.layout.display = "" if m == "edit" else "none"
         archive_box.layout.display = "" if m == "archive" else "none"
         build_area.layout.display = "none" if m == "archive" else ""
-        btn_make.description = ("3) Сохранить изменения" if m == "edit"
-                                else "3) Создать файлы")
+        btn_make.description = ("Сохранить изменения" if m == "edit"
+                                else "Создать файлы")
         if m == "new":
             # уходя из правки, забыть исходные пути структур, чтобы новая линия
             # не записалась поверх чужих файлов; вернуть авто-теги
@@ -349,6 +478,7 @@ def _complex_ui():
             _refresh_default_tags()
         elif m == "archive":
             _refresh_archive_lists()
+            del_refresh()
     work_mode.observe(_on_work_mode, names="value")
 
     # ── фильтр строк: показывать только привязанные (для проверки) ──
@@ -620,7 +750,7 @@ def _complex_ui():
     def on_preview(_):
         try:
             if not state["rows"]:
-                _log("Сначала сними структуры (кнопка 1) или загрузи линию."); return
+                _log("Сначала сними структуры («Снять структуры из БД») или загрузи линию."); return
             files = B.build_all(_build_spec())
             with out:
                 out.clear_output()
@@ -633,7 +763,7 @@ def _complex_ui():
         """Собрать и записать файлы линии. Возвращает список путей. Бросает при
         пустом сопоставлении/конфликте имён — вызывающий показывает ошибку."""
         if not state["rows"]:
-            raise RuntimeError("Сначала сними структуры (кнопка 1) или загрузи линию.")
+            raise RuntimeError("Сначала сними структуры («Снять структуры из БД») или загрузи линию.")
         files = B.build_all(_build_spec())
         # в режиме правки перезаписываем существующие файлы намеренно
         return B.write_files(files, overwrite=(work_mode.value == "edit"))
@@ -661,6 +791,21 @@ def _complex_ui():
         return f"dagbuilder: {'правка' if work_mode.value == 'edit' else 'новая'} линия {ln}"
 
     btn_pub, pub_confirm = _publish_controls(W, out, _write_current, _commit_msg)
+    btn_push_only, push_only_confirm = _push_only_controls(W, out)
+
+    # удаление линии насовсем (живёт в панели архива — рядом со «скрыть»)
+    def _after_delete_complex():
+        edit_pick.options = B.existing_lines()
+        _refresh_archive_lists()
+    del_pick, del_btn, del_confirm, del_refresh = _delete_controls(
+        W, out, B.existing_lines, B.line_delete_targets, B.delete_line,
+        _after_delete_complex, label="линию ETL")
+    del_help = W.HTML(
+        "<span style='color:#888'><b>Удалить насовсем</b> (не архив): убирает фрагмент "
+        "config.d, файл дага и — если не используются другими линиями — структуры и "
+        "selectSql. Затем выложи «Просто запушить» или деплоем.</span>")
+    archive_box.children = tuple(archive_box.children) + (
+        W.HTML("<hr>"), del_help, W.HBox([del_pick, del_btn]), del_confirm)
 
     # автозаполнение парного имени таблицы с приведением регистра под БД
     btn_case = W.Button(description="⇄ имя по регистру БД", icon="magic",
@@ -729,7 +874,8 @@ def _complex_ui():
         W.HTML("<b>Колонки</b> (ведущая → ведомая; отметь PK, составной ключ — "
                "несколько галочек):"),
         period_box, W.HBox([map_title, hide_unmapped]), map_head, map_box,
-        W.HBox([btn_prev, btn_make, btn_pub]), pub_confirm,
+        W.HBox([btn_prev, btn_make, btn_pub, btn_push_only]),
+        pub_confirm, push_only_confirm,
     ])
 
     _refresh_default_tags()   # проставить 3 тега по умолчанию
@@ -863,6 +1009,20 @@ def _sp_ui():
                        style={"description_width": "110px"})
     sql_box = W.VBox([f_sql])
 
+    # режим разового переноса: перенести (очистить+залить) / дополнить (без очистки)
+    once_mode = W.ToggleButtons(
+        options=[("Перенести (очистить + залить)", "replace"),
+                 ("Дополнить (без очистки)", "append")],
+        value="replace", style={"button_width": "260px"})
+    once_mode_help = W.HTML(
+        "<span style='color:#888'><b>Перенести</b> — ведомая очищается и заливается "
+        "заново. <b>Дополнить</b> — ведомая НЕ очищается, строки дописываются (SELECT "
+        "обычно с WHERE на нужную часть). Типичный сценарий: сперва «Перенести», затем "
+        "тем же переносом «Дополнить» с другим SELECT — ведомая и INSERT те же, "
+        "меняется только запрос.</span>")
+    once_mode_box = W.VBox([W.HTML("<b>Режим разового переноса</b>"),
+                            once_mode, once_mode_help])
+
     def _on_src_mode(_=None):
         custom = src_mode.value == "custom"
         sql_box.layout.display = "" if custom else "none"
@@ -883,11 +1043,11 @@ def _sp_ui():
                                          border="1px solid #ddd", padding="4px"))
     out = W.Output()
 
-    btn_snap = W.Button(description="1) Снять колонки", button_style="primary",
+    btn_snap = W.Button(description="Снять колонки", button_style="primary",
                         icon="download", layout=W.Layout(width="260px"))
-    btn_prev = W.Button(description="2) Предпросмотр", icon="eye",
+    btn_prev = W.Button(description="Предпросмотр", icon="eye",
                         layout=W.Layout(width="200px"))
-    btn_make = W.Button(description="3) Создать файлы", button_style="success",
+    btn_make = W.Button(description="Создать файлы", button_style="success",
                         icon="check", layout=W.Layout(width="220px"))
 
     def _log(msg, clear=True):
@@ -986,6 +1146,7 @@ def _sp_ui():
             "select_sql_text": f_sql.value.strip() or None,
             "pairs": _collect_pairs(),
             "dependence": dependence.value.strip() or None,
+            "append": (kind.value == "once" and once_mode.value == "append"),
             "doc": doc.value.strip() or None,
         }
 
@@ -1042,6 +1203,7 @@ def _sp_ui():
             src_mode.value = "table" if SP._master_from_select(data["select_sql_text"]) \
                 else "custom"
             f_sql.value = data["select_sql_text"] if src_mode.value == "custom" else ""
+            once_mode.value = "append" if data.get("append") else "replace"
             _on_src_mode()
 
             # Текущее сопоставление колонок — из сохранённых Select.sql/Add.sql,
@@ -1087,7 +1249,7 @@ def _sp_ui():
     def on_preview(_):
         try:
             if not state["rows"]:
-                _log("Сначала сними колонки (кнопка 1)."); return
+                _log("Сначала сними колонки («Снять колонки»)."); return
             files, key = SP.build_sp_all(_build_spec())
             with out:
                 out.clear_output()
@@ -1100,7 +1262,7 @@ def _sp_ui():
     def _write_current():
         """Собрать и записать файлы sp-линии. Возвращает список путей."""
         if not state["rows"]:
-            raise RuntimeError("Сначала сними колонки (кнопка 1).")
+            raise RuntimeError("Сначала сними колонки («Снять колонки»).")
         files, _key = SP.build_sp_all(_build_spec())
         validate = SP.SP_KIND_CONFIG[kind.value]
         written = B.write_files(files, overwrite=(work_mode.value == "edit"),
@@ -1201,27 +1363,69 @@ def _sp_ui():
     btn_enable.on_click(on_enable)
     btn_move.on_click(on_move)
 
+    # push-only для формы сборки и отдельный — для панели вкл/выкл (свой виджет:
+    # один и тот же кнопка-виджет нельзя разместить в двух контейнерах)
+    btn_push_only, push_only_confirm = _push_only_controls(W, out)
+    tgl_btn_push, tgl_push_confirm = _push_only_controls(W, out)
+
+    # удаление sp-линии насовсем (в панели вкл/выкл)
+    def _sp_list():
+        return SP.list_sp_lines(kind.value)
+
+    def _sp_targets(key):
+        frag, sql_dir, shared = SP.sp_line_targets(kind.value, key)
+        items = [frag]
+        if sql_dir and shared:
+            items.append(f"{sql_dir}  (общий с другой линией — НЕ будет удалён)")
+        elif sql_dir:
+            items.append(sql_dir)
+        return items
+
+    def _sp_delete(key):
+        return SP.delete_sp_line(kind.value, key)
+
+    def _after_sp_delete():
+        edit_pick.options = SP.list_sp_lines(kind.value)
+        _refresh_toggle_lists()
+
+    sp_del_pick, sp_del_btn, sp_del_confirm, sp_del_refresh = _delete_controls(
+        W, out, _sp_list, _sp_targets, _sp_delete, _after_sp_delete,
+        label="линию справочника")
+    sp_del_help = W.HTML(
+        "<span style='color:#888'><b>Удалить насовсем:</b> убирает фрагмент линии и "
+        "её SQL (queries/sp/…), если он не используется другой линией. Затем выложи "
+        "«Просто запушить» ниже или деплоем.</span>")
+    toggle_box.children = tuple(toggle_box.children) + (
+        W.HTML("<hr>"), sp_del_help, W.HBox([sp_del_pick, sp_del_btn]), sp_del_confirm,
+        W.HTML("<hr>"),
+        W.HTML("<b>Выложить сделанное</b> (вкл/выкл, перевод, удаление меняют файлы "
+               "на диске — их нужно запушить):"),
+        W.HBox([tgl_btn_push]), tgl_push_confirm)
+
     # ── видимость по режимам ──
     def _on_mode(_=None):
         m = work_mode.value
         edit_box.layout.display = "" if m == "edit" else "none"
         toggle_box.layout.display = "" if m == "toggle" else "none"
         build_area.layout.display = "none" if m == "toggle" else ""
-        btn_make.description = ("3) Сохранить изменения" if m == "edit"
-                                else "3) Создать файлы")
+        btn_make.description = ("Сохранить изменения" if m == "edit"
+                                else "Создать файлы")
         if m == "edit":
             edit_pick.options = SP.list_sp_lines(kind.value)
         elif m == "toggle":
             _refresh_toggle_lists()
+            sp_del_refresh()
     work_mode.observe(_on_mode, names="value")
 
     def _on_kind(_=None):
-        # зависимость — только для регулярного справочника
+        # зависимость и режим разового — зависят от типа линии
         dependence.layout.display = "" if kind.value == "regular" else "none"
+        once_mode_box.layout.display = "" if kind.value == "once" else "none"
         if work_mode.value == "edit":
             edit_pick.options = SP.list_sp_lines(kind.value)
         elif work_mode.value == "toggle":
             _refresh_toggle_lists()
+            sp_del_refresh()
         _update_key_preview()
     kind.observe(_on_kind, names="value")
 
@@ -1230,12 +1434,14 @@ def _sp_ui():
         W.HBox([dbm, dbs]), W.HBox([user_m_box, user_s_box]),
         W.HBox([line, dependence]), key_preview, doc,
         W.HTML("<b>Источник данных ведущей</b>"), src_mode, src_help, sql_box,
+        once_mode_box,
         btn_snap,
         W.HTML("<hr>"),
         W.HTML("<b>Сопоставление колонок</b> (ведущая → ведомая; порядок = порядок "
                "вставки):"),
         W.HBox([map_title, hide_unmapped]), map_head, map_box,
-        W.HBox([btn_prev, btn_make, btn_pub]), pub_confirm,
+        W.HBox([btn_prev, btn_make, btn_pub, btn_push_only]),
+        pub_confirm, push_only_confirm,
     ])
 
     _on_src_mode()
