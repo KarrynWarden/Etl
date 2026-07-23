@@ -46,6 +46,18 @@ def _esc(s):
     return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _spinner_html(text):
+    """HTML с CSS-спиннером. Анимация чисто клиентская (@keyframes), поэтому
+    крутится даже пока ядро занято синхронным git push — мгновенный фидбек, что
+    операция идёт, и не создаётся ощущение «кнопка не нажалась»."""
+    return ("<div style='display:flex;align-items:center;gap:8px;color:#333'>"
+            "<span style='display:inline-block;width:16px;height:16px;"
+            "border:3px solid #cfd8dc;border-top-color:#1976d2;border-radius:50%;"
+            "animation:ccspin 0.8s linear infinite'></span>"
+            f"<b>{_esc(text)}</b>"
+            "<style>@keyframes ccspin{to{transform:rotate(360deg)}}</style></div>")
+
+
 def _push_only_controls(W, out, message_fn=None):
     """Кнопка «Просто запушить» + подтверждение: коммит+push УЖЕ сохранённых на
     диске изменений (etlFolder/, dags/), без генерации файлов из текущей формы.
@@ -58,7 +70,8 @@ def _push_only_controls(W, out, message_fn=None):
     confirm = W.VBox([info, W.HBox([btn_yes, btn_no])],
                      layout=W.Layout(display="none", border="1px solid #17a2b8",
                                      padding="6px", margin="4px 0"))
-    btn = W.Button(description="Просто запушить", icon="upload",
+    # button_style="info" — «Просто запушить» выделено цветом как важное действие
+    btn = W.Button(description="Просто запушить", icon="upload", button_style="info",
                    layout=W.Layout(width="200px"))
 
     def _show(_):
@@ -80,8 +93,19 @@ def _push_only_controls(W, out, message_fn=None):
         confirm.layout.display = "none"
 
     def _go(_):
+        from IPython.display import display, HTML
         confirm.layout.display = "none"
-        ok, log = B.git_push_saved(message_fn())
+        # блокируем кнопки и показываем спиннер, пока идёт push (несколько секунд)
+        for b in (btn, btn_yes, btn_no):
+            b.disabled = True
+        with out:
+            out.clear_output()
+            display(HTML(_spinner_html("Выкладываю в git — подождите…")))
+        try:
+            ok, log = B.git_push_saved(message_fn())
+        finally:
+            for b in (btn, btn_yes, btn_no):
+                b.disabled = False
         with out:
             out.clear_output()
             print("✅ Запушено:" if ok else "⚠ Не запушено:")
@@ -192,16 +216,28 @@ def _publish_controls(W, out, do_write, message_fn):
         confirm.layout.display = "none"
 
     def _go(_):
+        from IPython.display import display, HTML
         confirm.layout.display = "none"
+        for b in (btn_pub, btn_yes, btn_no):
+            b.disabled = True
+        with out:
+            out.clear_output()
+            display(HTML(_spinner_html("Создаю файлы и выкладываю в git — подождите…")))
         try:
             written = do_write()
         except Exception as e:
+            for b in (btn_pub, btn_yes, btn_no):
+                b.disabled = False
             with out:
                 out.clear_output()
                 print(f"Не выложено — ошибка при создании файлов: "
                       f"{type(e).__name__}: {e}")
             return
-        ok, log = B.git_commit_push(written, message_fn())
+        try:
+            ok, log = B.git_commit_push(written, message_fn())
+        finally:
+            for b in (btn_pub, btn_yes, btn_no):
+                b.disabled = False
         with out:
             out.clear_output()
             print("Файлы созданы:")
@@ -792,6 +828,7 @@ def _complex_ui():
 
     btn_pub, pub_confirm = _publish_controls(W, out, _write_current, _commit_msg)
     btn_push_only, push_only_confirm = _push_only_controls(W, out)
+    btn_pub.layout.margin = "0 0 0 40px"   # «Создать и запушить» — сбоку, отдельно
 
     # удаление линии насовсем (живёт в панели архива — рядом со «скрыть»)
     def _after_delete_complex():
@@ -804,8 +841,15 @@ def _complex_ui():
         "<span style='color:#888'><b>Удалить насовсем</b> (не архив): убирает фрагмент "
         "config.d, файл дага и — если не используются другими линиями — структуры и "
         "selectSql. Затем выложи «Просто запушить» или деплоем.</span>")
+    # отдельная «Просто запушить» для панели архива (один виджет-кнопку нельзя
+    # разместить в двух контейнерах) — иначе после архива/удаления её тут нет
+    arch_btn_push, arch_push_confirm = _push_only_controls(W, out)
     archive_box.children = tuple(archive_box.children) + (
-        W.HTML("<hr>"), del_help, W.HBox([del_pick, del_btn]), del_confirm)
+        W.HTML("<hr>"), del_help, W.HBox([del_pick, del_btn]), del_confirm,
+        W.HTML("<hr>"),
+        W.HTML("<b>Выложить сделанное</b> (архив/восстановление/удаление меняют "
+               "файлы на диске — их нужно запушить):"),
+        W.HBox([arch_btn_push]), arch_push_confirm)
 
     # автозаполнение парного имени таблицы с приведением регистра под БД
     btn_case = W.Button(description="⇄ имя по регистру БД", icon="magic",
@@ -874,7 +918,7 @@ def _complex_ui():
         W.HTML("<b>Колонки</b> (ведущая → ведомая; отметь PK, составной ключ — "
                "несколько галочек):"),
         period_box, W.HBox([map_title, hide_unmapped]), map_head, map_box,
-        W.HBox([btn_prev, btn_make, btn_pub, btn_push_only]),
+        W.HBox([btn_prev, btn_make, btn_push_only, btn_pub]),
         pub_confirm, push_only_confirm,
     ])
 
@@ -1367,6 +1411,7 @@ def _sp_ui():
     # один и тот же кнопка-виджет нельзя разместить в двух контейнерах)
     btn_push_only, push_only_confirm = _push_only_controls(W, out)
     tgl_btn_push, tgl_push_confirm = _push_only_controls(W, out)
+    btn_pub.layout.margin = "0 0 0 40px"   # «Создать и запушить» — сбоку, отдельно
 
     # удаление sp-линии насовсем (в панели вкл/выкл)
     def _sp_list():
@@ -1440,7 +1485,7 @@ def _sp_ui():
         W.HTML("<b>Сопоставление колонок</b> (ведущая → ведомая; порядок = порядок "
                "вставки):"),
         W.HBox([map_title, hide_unmapped]), map_head, map_box,
-        W.HBox([btn_prev, btn_make, btn_pub, btn_push_only]),
+        W.HBox([btn_prev, btn_make, btn_push_only, btn_pub]),
         pub_confirm, push_only_confirm,
     ])
 
