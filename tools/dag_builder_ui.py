@@ -32,6 +32,62 @@ _SCHED_KINDS = {
 _KIND_TO_LABEL = {v: k for k, v in _SCHED_KINDS.items()}
 
 
+def _publish_controls(W, out, do_write, message_fn):
+    """Кнопка «создать и запушить» + подтверждение (защита от мисклика).
+
+    do_write() пишет файлы линии и возвращает список абсолютных путей (может
+    бросить исключение). message_fn() даёт текст коммита. Возвращает
+    (btn_publish, confirm_box) — их размещает вызывающий UI. После подтверждения
+    файлы пишутся и делается git commit + push текущей ветки (B.git_commit_push).
+    """
+    info = W.HTML()
+    btn_yes = W.Button(description="✅ Да, выложить в git", button_style="danger",
+                       layout=W.Layout(width="240px"))
+    btn_no = W.Button(description="Отмена", layout=W.Layout(width="120px"))
+    confirm = W.VBox([info, W.HBox([btn_yes, btn_no])],
+                     layout=W.Layout(display="none", border="1px solid #e0a800",
+                                     padding="6px", margin="4px 0"))
+    btn_pub = W.Button(description="Создать и запушить", icon="cloud-upload",
+                       button_style="warning", layout=W.Layout(width="260px"))
+
+    def _show(_):
+        br = B.current_branch() or "— (detached / не git)"
+        info.value = (
+            "<b>Выложить в git?</b> Файлы будут созданы, затем "
+            f"<code>git commit</code> и <code>git push origin {br}</code>. "
+            "Это выкатывает изменения на удалёнку — сверься с предпросмотром. "
+            "Нажми «Да», только если уверен.")
+        confirm.layout.display = ""
+
+    def _hide(_):
+        confirm.layout.display = "none"
+
+    def _go(_):
+        confirm.layout.display = "none"
+        try:
+            written = do_write()
+        except Exception as e:
+            with out:
+                out.clear_output()
+                print(f"Не выложено — ошибка при создании файлов: "
+                      f"{type(e).__name__}: {e}")
+            return
+        ok, log = B.git_commit_push(written, message_fn())
+        with out:
+            out.clear_output()
+            print("Файлы созданы:")
+            for p in written:
+                print("  ", os.path.relpath(p, ROOT))
+            print("\n" + ("✅ Выложено в git:" if ok
+                          else "⚠ Файлы созданы, но НЕ выложены:"))
+            print(log)
+
+    btn_pub.on_click(_show)
+    btn_yes.on_click(_go)
+    btn_no.on_click(_hide)
+    return btn_pub, confirm
+
+
 def _complex_ui():
     """Построить виджет конструктора «сложного» ETL (ведёт себя как раньше).
     Возвращает VBox — его встраивают во вкладку в launch()."""
@@ -573,13 +629,18 @@ def _complex_ui():
         except Exception as e:
             _log(f"Ошибка предпросмотра: {type(e).__name__}: {e}")
 
+    def _write_current():
+        """Собрать и записать файлы линии. Возвращает список путей. Бросает при
+        пустом сопоставлении/конфликте имён — вызывающий показывает ошибку."""
+        if not state["rows"]:
+            raise RuntimeError("Сначала сними структуры (кнопка 1) или загрузи линию.")
+        files = B.build_all(_build_spec())
+        # в режиме правки перезаписываем существующие файлы намеренно
+        return B.write_files(files, overwrite=(work_mode.value == "edit"))
+
     def on_make(_):
         try:
-            if not state["rows"]:
-                _log("Сначала сними структуры (кнопка 1) или загрузи линию."); return
-            files = B.build_all(_build_spec())
-            # в режиме правки перезаписываем существующие файлы намеренно
-            written = B.write_files(files, overwrite=(work_mode.value == "edit"))
+            written = _write_current()
             with out:
                 out.clear_output()
                 print("Готово (и конфиг успешно собрался):")
@@ -587,11 +648,38 @@ def _complex_ui():
                     print("  ", os.path.relpath(p, ROOT))
                 print("\nДальше выкатить на тест:")
                 print("  sh deploy/deploy-test.sh \"новая линия\"")
+                print("(или кнопка «Создать и запушить» — сразу в git)")
         except FileExistsError as e:
             _log(f"{e}\nТакая линия уже есть. Чтобы изменить её — переключись в режим "
                  f"«✏️ Редактировать» и выбери её из списка.")
         except Exception as e:
             _log(f"Ошибка создания: {type(e).__name__}: {e}")
+
+    def _commit_msg():
+        ln = line.value.strip() or (B.bare(tm.value.strip()) if tm.value.strip()
+                                    else "линия")
+        return f"dagbuilder: {'правка' if work_mode.value == 'edit' else 'новая'} линия {ln}"
+
+    btn_pub, pub_confirm = _publish_controls(W, out, _write_current, _commit_msg)
+
+    # автозаполнение парного имени таблицы с приведением регистра под БД
+    btn_case = W.Button(description="⇄ имя по регистру БД", icon="magic",
+                        layout=W.Layout(width="230px"))
+    case_hint = W.HTML("<span style='color:#888'>заполнит второе имя по первому, "
+                       "приведя регистр под БД (Oracle — ВЕРХНИЙ, Postgres — нижний). "
+                       "Схему при необходимости допиши вручную.</span>")
+
+    def _fill_paired_name(_):
+        m, s = tm.value.strip(), ts.value.strip()
+        if m and not s:
+            ts.value = B.to_db_case(m, dbs.value)
+        elif s and not m:
+            tm.value = B.to_db_case(s, dbm.value)
+        elif m:
+            ts.value = B.to_db_case(m, dbs.value)   # оба заданы -> ведомая по ведущей
+        else:
+            _log("Заполни хотя бы одно имя таблицы, потом жми «⇄ имя по регистру БД».")
+    btn_case.on_click(_fill_paired_name)
 
     # ── архив: убрать в архив / восстановить ──
     def on_archive(_):
@@ -628,7 +716,8 @@ def _complex_ui():
 
     # форма сборки (new/edit) — прячется целиком в режиме архива
     build_area = W.VBox([
-        W.HBox([tm, ts]), W.HBox([dbm, dbs]), W.HBox([user_m_box, user_s_box]),
+        W.HBox([tm, ts]), W.HBox([btn_case, case_hint]),
+        W.HBox([dbm, dbs]), W.HBox([user_m_box, user_s_box]),
         W.HBox([line, dag]), dag_preview,
         W.HBox([mode, retry]), doc,
         W.HTML("<b>Расписание и ретраи</b>"), sched_kind, sched_inputs, sched_help,
@@ -640,7 +729,7 @@ def _complex_ui():
         W.HTML("<b>Колонки</b> (ведущая → ведомая; отметь PK, составной ключ — "
                "несколько галочек):"),
         period_box, W.HBox([map_title, hide_unmapped]), map_head, map_box,
-        W.HBox([btn_prev, btn_make]),
+        W.HBox([btn_prev, btn_make, btn_pub]), pub_confirm,
     ])
 
     _refresh_default_tags()   # проставить 3 тега по умолчанию
@@ -698,12 +787,28 @@ def _sp_ui():
         "ставится <code>disabled: true</code>, и регулярный даг справочников "
         "(<code>SpEtlNew</code>) её пропускает. Конфиг и SQL остаются — включить "
         "обратно можно тут же. Действует <b>после деплоя</b>.</span>")
+    # перевод линии между типами (разовый <-> регулярный) без пересборки
+    move_pick = W.Dropdown(description="Линия", options=[],
+                           layout=W.Layout(width="380px"),
+                           style={"description_width": "110px"})
+    btn_move = W.Button(description="→ Перевести", button_style="info",
+                        layout=W.Layout(width="260px"))
+    move_help = W.HTML(
+        "<span style='color:#888'><b>Перевод между типами без пересборки.</b> "
+        "Частый случай: справочник держали в <b>разовом</b> переносе ради данных "
+        "для разработки, а теперь нужен <b>регулярный</b> режим. Фрагмент переезжает "
+        "в другой каталог, SQL (queries/sp/…) остаётся на месте — заново настраивать "
+        "перенос не нужно.</span>")
     toggle_box = W.VBox([tgl_help, W.HBox([tgl_active, btn_disable]),
-                         W.HBox([tgl_disabled, btn_enable])])
+                         W.HBox([tgl_disabled, btn_enable]),
+                         W.HTML("<hr>"), move_help, W.HBox([move_pick, btn_move])])
 
     def _refresh_toggle_lists():
         tgl_active.options = SP.list_active_sp_lines(kind.value)
         tgl_disabled.options = SP.list_disabled_sp_lines(kind.value)
+        move_pick.options = SP.list_sp_lines(kind.value)
+        other = "разовый" if kind.value == "regular" else "регулярный"
+        btn_move.description = f"→ Перевести в {other}"
 
     # ── шапка-форма ──
     tm = W.Text(description="Ведущая", placeholder="SPMKB  или  KOKNAEV.SPMKB",
@@ -992,26 +1097,60 @@ def _sp_ui():
         except Exception as e:
             _log(f"Ошибка предпросмотра: {type(e).__name__}: {e}")
 
+    def _write_current():
+        """Собрать и записать файлы sp-линии. Возвращает список путей."""
+        if not state["rows"]:
+            raise RuntimeError("Сначала сними колонки (кнопка 1).")
+        files, _key = SP.build_sp_all(_build_spec())
+        validate = SP.SP_KIND_CONFIG[kind.value]
+        written = B.write_files(files, overwrite=(work_mode.value == "edit"),
+                                validate=validate)
+        edit_pick.options = SP.list_sp_lines(kind.value)
+        return written
+
     def on_make(_):
         try:
-            if not state["rows"]:
-                _log("Сначала сними колонки (кнопка 1)."); return
-            files, key = SP.build_sp_all(_build_spec())
-            validate = SP.SP_KIND_CONFIG[kind.value]
-            written = B.write_files(files, overwrite=(work_mode.value == "edit"),
-                                    validate=validate)
-            edit_pick.options = SP.list_sp_lines(kind.value)
+            written = _write_current()
             with out:
                 out.clear_output()
-                print(f"Готово (линия «{key}», конфиг {validate} собрался):")
+                print(f"Готово (конфиг {SP.SP_KIND_CONFIG[kind.value]} собрался):")
                 for p in written:
                     print("  ", os.path.relpath(p, ROOT))
                 print("\nДальше выкатить на тест:")
                 print("  sh deploy/deploy-test.sh \"справочник/разовый перенос\"")
+                print("(или кнопка «Создать и запушить» — сразу в git)")
         except FileExistsError as e:
             _log(f"{e}\nТакая линия уже есть. Переключись в «✏️ Редактировать».")
         except Exception as e:
             _log(f"Ошибка создания: {type(e).__name__}: {e}")
+
+    def _commit_msg():
+        lbl = line.value.strip() or (B.bare(tm.value.strip()) if tm.value.strip()
+                                     else "линия")
+        typ = "справочник" if kind.value == "regular" else "разовый"
+        verb = "правка" if work_mode.value == "edit" else "новая"
+        return f"dagbuilder ({typ}): {verb} {lbl}"
+
+    btn_pub, pub_confirm = _publish_controls(W, out, _write_current, _commit_msg)
+
+    # автозаполнение парного имени таблицы с приведением регистра под БД
+    btn_case = W.Button(description="⇄ имя по регистру БД", icon="magic",
+                        layout=W.Layout(width="230px"))
+    case_hint = W.HTML("<span style='color:#888'>заполни одно имя и нажми — второе "
+                       "подставится с регистром своей БД (Oracle — ВЕРХНИЙ, "
+                       "Postgres — нижний). Схему при необходимости допиши.</span>")
+
+    def _fill_paired_name(_):
+        m, s = tm.value.strip(), ts.value.strip()
+        if m and not s:
+            ts.value = B.to_db_case(m, dbs.value)
+        elif s and not m:
+            tm.value = B.to_db_case(s, dbm.value)
+        elif m:
+            ts.value = B.to_db_case(m, dbs.value)
+        else:
+            _log("Заполни хотя бы одно имя таблицы, потом жми «⇄ имя по регистру БД».")
+    btn_case.on_click(_fill_paired_name)
 
     # ── вкл/выкл ──
     def on_disable(_):
@@ -1039,12 +1178,28 @@ def _sp_ui():
         except Exception as e:
             _log(f"Ошибка включения: {type(e).__name__}: {e}")
 
+    def on_move(_):
+        try:
+            key = move_pick.value
+            if not key:
+                _log("Выбери линию для перевода."); return
+            to_kind = "once" if kind.value == "regular" else "regular"
+            SP.move_sp_line(key, kind.value, to_kind)
+            _refresh_toggle_lists()
+            edit_pick.options = SP.list_sp_lines(kind.value)
+            other = "разовый" if to_kind == "once" else "регулярный"
+            _log(f"Линия «{key}» переведена в «{other}». Файлы изменены локально — "
+                 "выложи деплоем/пушем. (SQL остались на месте.)")
+        except Exception as e:
+            _log(f"Ошибка перевода: {type(e).__name__}: {e}")
+
     btn_snap.on_click(on_snap)
     btn_prev.on_click(on_preview)
     btn_make.on_click(on_make)
     btn_load.on_click(on_load)
     btn_disable.on_click(on_disable)
     btn_enable.on_click(on_enable)
+    btn_move.on_click(on_move)
 
     # ── видимость по режимам ──
     def _on_mode(_=None):
@@ -1071,7 +1226,8 @@ def _sp_ui():
     kind.observe(_on_kind, names="value")
 
     build_area = W.VBox([
-        W.HBox([tm, ts]), W.HBox([dbm, dbs]), W.HBox([user_m_box, user_s_box]),
+        W.HBox([tm, ts]), W.HBox([btn_case, case_hint]),
+        W.HBox([dbm, dbs]), W.HBox([user_m_box, user_s_box]),
         W.HBox([line, dependence]), key_preview, doc,
         W.HTML("<b>Источник данных ведущей</b>"), src_mode, src_help, sql_box,
         btn_snap,
@@ -1079,7 +1235,7 @@ def _sp_ui():
         W.HTML("<b>Сопоставление колонок</b> (ведущая → ведомая; порядок = порядок "
                "вставки):"),
         W.HBox([map_title, hide_unmapped]), map_head, map_box,
-        W.HBox([btn_prev, btn_make]),
+        W.HBox([btn_prev, btn_make, btn_pub]), pub_confirm,
     ])
 
     _on_src_mode()

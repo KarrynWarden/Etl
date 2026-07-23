@@ -258,6 +258,41 @@ def set_sp_disabled(kind, key, value):
     return obj[key].get("disabled", False)
 
 
+def move_sp_line(key, from_kind, to_kind):
+    """Перевести линию между типами (разовый <-> регулярный) без пересборки.
+
+    Частый сценарий: справочник держали в разовом переносе (once) ради данных для
+    разработки, а потом переводят на регулярный (regular). Формат фрагмента и пути
+    к SQL одинаковы, поэтому перенос — это просто перемещение фрагмента из
+    <from>.d/ в <to>.d/; SQL-файлы (queries/sp/...) остаются на месте. Возвращает
+    путь нового фрагмента.
+    """
+    if from_kind == to_kind:
+        raise ValueError("Исходный и целевой типы совпадают.")
+    if from_kind not in SP_KIND_CONFIG or to_kind not in SP_KIND_CONFIG:
+        raise ValueError("Неизвестный тип линии.")
+    body, from_path, from_obj = _find_sp_fragment(from_kind, key)
+    if key in list_sp_lines(to_kind):
+        raise ValueError(
+            f"Линия '{key}' уже есть среди «{SP_KIND_CONFIG[to_kind]}» — "
+            "перенос создал бы дубликат ключа.")
+    to_path = os.path.join(_sp_dir(to_kind), f"{key}.json")
+    with B._group_writable():
+        os.makedirs(_sp_dir(to_kind), exist_ok=True)
+        with open(to_path, "w", encoding="utf-8") as fp:
+            json.dump({key: body}, fp, ensure_ascii=False, indent=2)
+            fp.write("\n")
+        # убрать ключ из исходного каталога (файл целиком — если в нём только он)
+        if len(from_obj) <= 1:
+            os.remove(from_path)
+        else:
+            from_obj.pop(key, None)
+            with open(from_path, "w", encoding="utf-8") as fp:
+                json.dump(from_obj, fp, ensure_ascii=False, indent=2)
+                fp.write("\n")
+    return to_path
+
+
 def load_sp_line(kind, key):
     """Собрать спецификацию существующей линии для формы (режим правки)."""
     body, _path, _obj = _find_sp_fragment(kind, key)
@@ -475,6 +510,25 @@ def _selftest():
     assert [c["column_name"] for c in mc2] == ["(колонка 1)", "(колонка 2)"]
     # нераспарсиваемый INSERT -> пусто
     assert restore_mapping("", "") == ([], [], [])
+
+    # 6) перевод линии между типами (в изолированном каталоге)
+    import tempfile
+    global ETLFOLDER
+    _saved = ETLFOLDER
+    try:
+        ETLFOLDER = tempfile.mkdtemp()
+        os.makedirs(os.path.join(ETLFOLDER, "SpOnce.d"))
+        _frag = {"FOOOrclPost": {"tableNameSlave": "foo",
+                                 "addSql": "queries/sp/FOO/Add.sql",
+                                 "selectSql": "queries/sp/FOO/Select.sql"}}
+        with open(os.path.join(ETLFOLDER, "SpOnce.d", "FOOOrclPost.json"), "w") as fp:
+            json.dump(_frag, fp)
+        move_sp_line("FOOOrclPost", "once", "regular")
+        assert list_sp_lines("once") == [] and list_sp_lines("regular") == ["FOOOrclPost"]
+        move_sp_line("FOOOrclPost", "regular", "once")
+        assert list_sp_lines("regular") == [] and list_sp_lines("once") == ["FOOOrclPost"]
+    finally:
+        ETLFOLDER = _saved
     print("sp_builder selftest OK")
 
 

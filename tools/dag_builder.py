@@ -688,6 +688,100 @@ def write_files(files, overwrite=False, validate="config"):
     return written
 
 
+# ─────────────────────── приведение имени к диалекту БД ───────────────────────
+
+def to_db_case(name, db):
+    """Привести имя таблицы к регистру диалекта: Oracle — ВЕРХНИЙ, Postgres —
+    нижний. Регистр меняется по каждой части через точку (схема и имя отдельно),
+    сами разделители и содержимое кавычек не трогаются.
+
+    'spmkb' + Orcl -> 'SPMKB';  'KOKNAEV.SPMKB' + Post -> 'koknaev.spmkb'.
+    Кавычки сохраняем как есть (в них регистр значим — не корёжим).
+    """
+    name = (name or "").strip()
+    if not name:
+        return ""
+    f = str.upper if db == "Orcl" else str.lower
+    out = []
+    for part in name.split("."):
+        if part.startswith('"') and part.endswith('"'):
+            out.append(part)          # кавычки -> регистр значим, не меняем
+        else:
+            out.append(f(part))
+    return ".".join(out)
+
+
+# ─────────────────────────── git: коммит и пуш ───────────────────────────
+
+def current_branch(root=ROOT):
+    """Текущая ветка рабочего клона (или None, если detached HEAD/не git)."""
+    import subprocess
+    try:
+        p = subprocess.run(["git", "-C", root, "rev-parse", "--abbrev-ref", "HEAD"],
+                           capture_output=True, text=True)
+    except OSError:
+        return None
+    br = (p.stdout or "").strip()
+    return br if (p.returncode == 0 and br and br != "HEAD") else None
+
+
+def git_commit_push(paths, message, root=ROOT):
+    """Закоммитить указанные пути и запушить текущую ветку в origin.
+
+    Возвращает (ok: bool, log: str). Ошибки НЕ бросаются — текст возвращается
+    для показа в UI (кнопка «создать и запушить» на сервере, где у пользователя
+    jupyter могут быть или не быть настроены креды к origin).
+    """
+    import subprocess
+
+    # GIT_TERMINAL_PROMPT=0: не зависать на интерактивном запросе логина/пароля
+    # (веб-сессия Voilà) — вместо этого git сразу падает с понятной ошибкой.
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+
+    def run(*args, timeout=120):
+        try:
+            p = subprocess.run(["git", "-C", root, *args], capture_output=True,
+                               text=True, env=env, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return 124, (f"git {args[0]}: превышен таймаут ({timeout}с) — вероятно, "
+                         "git ждёт учётные данные. Настрой креды для origin у "
+                         "пользователя сервиса или выложи обычным деплоем.")
+        return p.returncode, ((p.stdout or "") + (p.stderr or "")).strip()
+
+    log = []
+    branch = current_branch(root)
+    if not branch:
+        return False, ("git: не удалось определить ветку (detached HEAD или это не "
+                       "git-клон). Закоммить/запушь вручную.")
+
+    rel = [os.path.relpath(p, root) for p in paths]
+    rc, out = run("add", "--", *rel)
+    if rc != 0:
+        return False, f"git add не удался:\n{out}"
+
+    rc, out = run("commit", "-m", message)
+    if rc != 0:
+        # Нечего коммитить — не ошибка (наши файлы идентичны тому, что уже в истории).
+        # Коммитим только свои пути (без -a), поэтому git может сказать и
+        # "nothing to commit", и "no changes added to commit" — оба означают одно.
+        low = out.lower()
+        if any(s in low for s in ("nothing to commit", "no changes added to commit",
+                                  "nothing added to commit", "ничего для коммита")):
+            log.append("git: коммитить нечего (наши файлы уже в истории/идентичны).")
+        else:
+            return False, f"git commit не удался:\n{out}"
+    else:
+        log.append(f"git commit: {out.splitlines()[0] if out else 'ok'}")
+
+    rc, out = run("push", "origin", "HEAD")
+    if rc != 0:
+        return False, ("\n".join(log) + f"\n\ngit push НЕ удался (ветка {branch}):\n{out}"
+                       "\n\nФайлы созданы локально — выложи их обычным деплоем "
+                       "(local/dev-push.sh / deploy-test.sh).")
+    log.append(f"git push origin {branch}: ok\n{out}".rstrip())
+    return True, "\n".join(log)
+
+
 # ─────────────────────────── самопроверка (без БД) ───────────────────────────
 
 def _selftest():
@@ -733,6 +827,12 @@ def _selftest():
     dag = dict(files)["dags/DemoPostOrcl.py"]
     assert 'dag_id="DemoPostOrcl"' in dag
     assert 'tableNameMaster="demo"' in dag and 'tableNameEtlJobs="demo"' in dag
+
+    # приведение имени к диалекту БД
+    assert to_db_case("spmkb", "Orcl") == "SPMKB"
+    assert to_db_case("SPMKB", "Post") == "spmkb"
+    assert to_db_case("KOKNAEV.SPMKB", "Post") == "koknaev.spmkb"
+    assert to_db_case('sch."MixedCase"', "Orcl") == 'SCH."MixedCase"'
     print("selftest OK")
 
 
