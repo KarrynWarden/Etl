@@ -253,9 +253,12 @@ dags/                          — примеры DAG'ов под все 4 на�
 `query_section`):
 3. `04_medree_prdisp_idrw.sql` — sequence + BEFORE INSERT триггер для `idrw`.
 4. `05_medree_prdisp_initial_fill.sql` — разовое первичное заполнение (~16 млн
-   строк). НЕ один `INSERT`, а PL/SQL-цикл **батчами по месяцам** с `COMMIT`
-   после каждого (UNDO не растёт, виден прогресс через `DBMS_OUTPUT`,
-   идемпотентно — можно перезапускать). Перед запуском `SET SERVEROUTPUT ON`.
+   строк). PL/SQL-цикл **батчами по месяцам** (`INSERT /*+ APPEND */` + `COMMIT`
+   на месяц): UNDO не растёт, виден прогресс (`DBMS_OUTPUT`), идемпотентно —
+   уже залитые месяцы пропускаются. `idrw` берётся явно из sequence (монотонно
+   уникален, без повторов между месяцами). Перед запуском:
+   `SET SERVEROUTPUT ON SIZE UNLIMITED` и **удалить триггер** `medree_prdisp_bi`
+   (иначе `APPEND` не даст direct-path), после — создать его заново (скрипт 04).
 5. `06_medree_prdisp_daily_job.sql` — процедура `medree_prdisp_refresh` +
    ежедневный ночной `DBMS_SCHEDULER`-джоб (обновляет изменённые за месяц
    периоды). Имена схем/колонок в 04–06 выверить под реальную БД.
