@@ -323,6 +323,17 @@ def build_all(spec):
                           sql_text + ("" if sql_text.endswith("\n") else "\n")))
         body["selectSql"] = sql_rel
 
+    # periodsSql (режим query_section): пользователь вставляет ТЕКСТ запроса групп
+    # (year, month) — файл .sql создаём сами и прописываем путь в periodsSql.
+    periods_text = (spec.get("periods_sql_text") or "").strip()
+    if periods_text:
+        pname = re.sub(r"[^A-Za-z0-9_]", "",
+                       spec.get("periods_sql_name") or f"{line}_periods") or f"{line}_periods"
+        periods_rel = f"queries/customQueries/{pname}.sql"
+        out_files.append((f"etlFolder/{periods_rel}",
+                          periods_text + ("" if periods_text.endswith("\n") else "\n")))
+        body["periodsSql"] = periods_rel
+
     tags = spec.get("tags") or [f"{dbm}{dbs}", line, "DbSync"]
     dag_py = build_dag_py(dag_id, line, tm, dbm, dbs, tags,
                           build_schedule_expr(spec),
@@ -545,7 +556,8 @@ def load_line(key):
 
     extra = {k: body[k] for k in
              ("filterClause", "filterClauseSlave", "conflictExtra",
-              "conflictWhere", "truncatePeriod", "auditExcludeFields", "skipAudit")
+              "conflictWhere", "truncatePeriod", "auditExcludeFields", "skipAudit",
+              "periodYearColumn", "periodMonthColumn")
              if k in body}
     select_sql = body.get("selectSql")
     select_sql_text = ""
@@ -554,6 +566,13 @@ def load_line(key):
             select_sql_text = _read_text(os.path.join(ETLFOLDER, select_sql))
         except OSError:
             select_sql_text = ""
+    periods_sql = body.get("periodsSql")
+    periods_sql_text = ""
+    if periods_sql:
+        try:
+            periods_sql_text = _read_text(os.path.join(ETLFOLDER, periods_sql))
+        except OSError:
+            periods_sql_text = ""
 
     return {
         "key": key, "line_name": line, "dag_id": dag_id,
@@ -569,6 +588,7 @@ def load_line(key):
         "struct_slave_rel": body["structureSlave"],
         "extra": extra,
         "select_sql": select_sql, "select_sql_text": select_sql_text,
+        "periods_sql": periods_sql, "periods_sql_text": periods_sql_text,
         "tags": sched["tags"], "retry_mode": sched["retry_mode"],
         "schedule_kind": sched["schedule_kind"],
         "schedule_minutes": sched["schedule_minutes"],

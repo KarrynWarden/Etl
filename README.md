@@ -133,6 +133,20 @@ dags/                          — примеры DAG'ов под все 4 на�
    `periodColumn` в строке). Объединение помечается `isokaudit=0` для
    перепроверки аудитом.
 
+5. **`query_section`** — срезовый режим, где группы для перезаливки берутся из
+   **пользовательского запроса** `periodsSql` (а не из журнала/`isokaudit=4`).
+   Группа — пара `(year, month)` (в таблице нет отдельной date-колонки; внутри
+   ETL период представляется датой `year-month-01` для лога). Для каждой пары:
+   `DELETE FROM ведомой WHERE year=… AND month=…` + заливка той же группы из
+   ведущей. Ключи конфига: `periodsSql` (возвращает `year, month`),
+   `periodYearColumn` / `periodMonthColumn` (по умолч. `year`/`month`; регистр
+   имён приводится по диалекту — Oracle ВЕРХНИЙ, Postgres нижний). Режим не ведёт
+   `etl_jobs` — линию помечают `skipAudit`. Сделан под перенос `Medree_prdisp`
+   Oracle→Postgres (наполнение самой `Medree_prdisp` внутри Oracle — скрипты
+   `etlFolder/queries/oracleSetup/04..06_medree_prdisp_*.sql`: sequence+триггер
+   `idrw`, разовое первичное заполнение, ежедневный `DBMS_SCHEDULER`-джоб).
+   `idrw` (суррогатный PK) переносится значением из Oracle.
+
 ## Что учтено
 
 | Особенность | Как поддержано |
@@ -234,6 +248,15 @@ dags/                          — примеры DAG'ов под все 4 на�
 1. `01_create_etl_log_iud_row.sql` — таблица + индексы.
 2. На каждую ведущую таблицу — триггер из `02_trigger_template.sql`,
    подставив имена. Готовые примеры в `03_example_triggers.sql`.
+
+Отдельно, под `Medree_prdisp` (наполнение внутри Oracle + перенос режимом
+`query_section`):
+3. `04_medree_prdisp_idrw.sql` — sequence + BEFORE INSERT триггер для `idrw`.
+4. `05_medree_prdisp_initial_fill.sql` — разовое первичное заполнение
+   (`INSERT ... SELECT`, ~16 млн строк). Запускать один раз, вручную.
+5. `06_medree_prdisp_daily_job.sql` — процедура `medree_prdisp_refresh` +
+   ежедневный ночной `DBMS_SCHEDULER`-джоб (обновляет изменённые за месяц
+   периоды). Имена схем/колонок в 04–06 выверить под реальную БД.
 
 ## Переменные окружения
 

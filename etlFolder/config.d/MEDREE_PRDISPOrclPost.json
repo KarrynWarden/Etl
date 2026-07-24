@@ -1,0 +1,14 @@
+{
+  "MEDREE_PRDISPOrclPost": {
+    "_doc": "Oracle->Postgres Medree_prdisp. Режим query_section: группы (year, month) берутся из periodsSql, каждая обновляется полной перезаписью (DELETE группы + заливка). idrw переносится значением из Oracle. ВНИМАНИЕ: структуры-заготовки — перед первым прогоном пересними их конструктором («Снять структуры»), чтобы типы/scale ведомой совпали с реальной БД (иначе StructCheck -> FLK).",
+    "tableNameMaster": "KOKNAEV.MEDREE_PRDISP",
+    "tableNameSlave": "medree_prdisp",
+    "structureMaster": "structures/MEDREE_PRDISP/MEDREE_PRDISP.json",
+    "structureSlave": "structures/MEDREE_PRDISP/medree_prdisp.json",
+    "mode": "query_section",
+    "periodsSql": "queries/customQueries/medree_prdisp_periods.sql",
+    "periodYearColumn": "year",
+    "periodMonthColumn": "month",
+    "skipAudit": true
+  }
+}

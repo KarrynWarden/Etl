@@ -333,7 +333,8 @@ def _complex_ui():
                  layout=W.Layout(width="380px"), style={"description_width": "110px"})
     dag_preview = W.HTML("")
     mode = W.Dropdown(description="mode", value="iud",
-                      options=["iud", "section", "section_compare", "delete_insert"],
+                      options=["iud", "section", "section_compare", "delete_insert",
+                               "query_section"],
                       layout=W.Layout(width="280px"), style={"description_width": "110px"})
     doc = W.Text(description="Комментарий", placeholder="_doc: краткое описание линии",
                  layout=W.Layout(width="640px"), style={"description_width": "110px"})
@@ -438,6 +439,19 @@ def _complex_ui():
                           placeholder="через запятую: updatedate, hash",
                           layout=W.Layout(width="640px"),
                           style={"description_width": "180px"})
+    # ── поля режима query_section (группы (year, month) из своего запроса) ──
+    f_periods = W.Textarea(description="SQL периодов (query_section)",
+                           placeholder="Запрос групп для перезаливки. Возвращает две "
+                                       "колонки: year, month. Файл .sql создастся сам, "
+                                       "путь пропишется в periodsSql.",
+                           layout=W.Layout(width="760px", height="100px"),
+                           style={"description_width": "180px"})
+    f_period_year = W.Text(description="Колонка year", value="year",
+                           layout=W.Layout(width="360px"),
+                           style={"description_width": "180px"})
+    f_period_month = W.Text(description="Колонка month", value="month",
+                            layout=W.Layout(width="360px"),
+                            style={"description_width": "180px"})
     adv_help = W.HTML(
         "<span style='color:#888'>"
         "<b>Фильтр ведущей/ведомой</b> — доп. условие WHERE (например <code>doctype = 7</code>).<br>"
@@ -446,11 +460,14 @@ def _complex_ui():
         "<b>Конфликт: условие WHERE</b> — для частичного уникального индекса.<br>"
         "<b>truncatePeriod</b> — сравнивать период по дате, без времени.<br>"
         "<b>skipAudit</b> — исключить линию из общего аудита (AuditAll).<br>"
-        "<b>Не сверять поля</b> — auditExcludeFields: колонки, которые аудит игнорирует "
-        "(часто меняющиеся служебные поля).</span>")
+        "<b>Не сверять поля</b> — auditExcludeFields: колонки, которые аудит игнорирует.<br>"
+        "<b>SQL периодов / Колонка year / month</b> — только для mode=<code>query_section</code>: "
+        "запрос возвращает пары (year, month), каждая группа перезаливается целиком "
+        "(DELETE (year,month) + заливка).</span>")
     advanced = W.Accordion(children=[W.VBox(
         [adv_help, f_filter, f_filter_s, f_sql, f_sql_name, f_confl, f_confl_w,
-         f_trunc, f_skip_audit, f_audit_excl])])
+         f_trunc, f_skip_audit, f_audit_excl,
+         f_periods, W.HBox([f_period_year, f_period_month])])])
     advanced.set_title(0, "Дополнительно (необязательно)")
     advanced.selected_index = None
 
@@ -632,6 +649,9 @@ def _complex_ui():
         excl = [c.strip() for c in f_audit_excl.value.replace(";", ",").split(",") if c.strip()]
         if excl:
             extra["auditExcludeFields"] = excl
+        if mode.value == "query_section":
+            extra["periodYearColumn"] = f_period_year.value.strip() or "year"
+            extra["periodMonthColumn"] = f_period_month.value.strip() or "month"
 
         spec = {
             "table_master": tm.value.strip(), "table_slave": ts.value.strip(),
@@ -649,6 +669,7 @@ def _complex_ui():
             "extra": extra,
             "select_sql_text": f_sql.value.strip() or None,
             "select_sql_name": f_sql_name.value.strip() or None,
+            "periods_sql_text": f_periods.value.strip() or None,
             "struct_master_rel": state["struct_master_rel"],
             "struct_slave_rel": state["struct_slave_rel"],
         }
@@ -766,6 +787,9 @@ def _complex_ui():
             f_sql.value = data["select_sql_text"] or ""
             f_sql_name.value = (os.path.splitext(os.path.basename(data["select_sql"]))[0]
                                 if data.get("select_sql") else "")
+            f_periods.value = data.get("periods_sql_text") or ""
+            f_period_year.value = ex.get("periodYearColumn", "year") or "year"
+            f_period_month.value = ex.get("periodMonthColumn", "month") or "month"
 
             state["master_cols"], state["slave_cols"] = data["master_cols"], data["slave_cols"]
             state["struct_master_rel"] = data["struct_master_rel"]

@@ -369,9 +369,9 @@ def _buildUpsertSql(dbSlave, tableNameSlave, structSlave,
     if _isPost(dbSlave):
         columnsStr = ", ".join(columns)
         valuesStr = ", ".join(["%s"] * len(columns))
-        if mode in ("section", "section_compare", "delete_insert"):
-            # delete_insert тоже сначала удаляет (по idrw), поэтому конфликта
-            # нет — простой INSERT без ON CONFLICT.
+        if mode in ("section", "section_compare", "delete_insert", "query_section"):
+            # delete_insert тоже сначала удаляет (по idrw), query_section — по
+            # (year, month), поэтому конфликта нет — простой INSERT без ON CONFLICT.
             return insertPostSql.format(
                 tablename=tableNameSlave,
                 columns_str=columnsStr,
@@ -472,6 +472,43 @@ def _buildDeletePeriodSql(dbSlave, tableNameSlave, slavePeriodColumn,
         cond += f" AND ({fcs})"
     sqlTpl = _pickSql(dbSlave, deletePeriodPostSql, deletePeriodOrclSql)
     return sqlTpl.format(tablename=tableNameSlave, period_cond=cond)
+
+
+# ----------------------------------------------------------------------------
+#            query_section: группа периода = пара (year, month)
+# ----------------------------------------------------------------------------
+
+def _dialectCol(name, dbType):
+    """Имя колонки в регистре диалекта: Oracle — ВЕРХНИЙ, Postgres — нижний.
+    Таблица Medree_prdisp одинакова в обеих БД, отличается только регистр имён."""
+    return name.lower() if _isPost(dbType) else name.upper()
+
+
+def _buildDeleteYearMonthSql(dbSlave, tableNameSlave, yearCol, monthCol,
+                             filterClauseSlave):
+    """DELETE группы ведомой по паре (year, month). Плейсхолдеры :y/:m (или
+    %(y)s/%(m)s)."""
+    cond = (f"{yearCol} = " + _bindName(dbSlave, "y")
+            + f" AND {monthCol} = " + _bindName(dbSlave, "m"))
+    fcs = _asAndClause(filterClauseSlave)
+    if fcs:
+        cond += f" AND ({fcs})"
+    sqlTpl = _pickSql(dbSlave, deletePeriodPostSql, deletePeriodOrclSql)
+    return sqlTpl.format(tablename=tableNameSlave, period_cond=cond)
+
+
+def _buildRecordByYearMonthSql(dbMaster, selectSql, structMaster, yearCol,
+                               monthCol, filterClauseMaster):
+    """SELECT строк группы (year, month) из ведущего источника."""
+    fieldsStr = _buildFieldsStr(dbMaster, structMaster, None)
+    cond = (f"p.{yearCol} = " + _bindName(dbMaster, "y")
+            + f" AND p.{monthCol} = " + _bindName(dbMaster, "m"))
+    fcm = _asAndClause(filterClauseMaster)
+    if fcm:
+        cond += f" AND ({fcm})"
+    sqlTpl = _pickSql(dbMaster, recordSelectByIdPostSql, recordSelectByIdOrclSql)
+    return sqlTpl.format(fields_str=fieldsStr, select_sql=selectSql,
+                         primary_cond=cond)
 
 
 # ----------------------------------------------------------------------------
@@ -966,6 +1003,95 @@ def _bulkUpsert(cursorSlave, dbSlave, upsertSql, structSlave, records):
     for record in records:
         params = {str(i + 1): value for i, value in enumerate(record)}
         cursorSlave.execute(upsertSql, params)
+
+
+# ----------------------------------------------------------------------------
+#        query_section: перезаливка групп (year, month) из periodsSql
+# ----------------------------------------------------------------------------
+
+def _processQuerySection(cfg, ctx):
+    """Режим query_section (например, Medree_prdisp Oracle->Postgres).
+
+    Группы для обновления берутся из ПОЛЬЗОВАТЕЛЬСКОГО запроса `periodsSql`
+    (возвращает пары (year, month)), а не из etl_jobs/лога. Каждая группа
+    обновляется полной перезаписью: DELETE (year, month) в ведомой + заливка
+    той же группы из ведущей. Группа внутри представляется датой year-month-01
+    (для лога). etl_jobs режим не ведёт — аудит по (year, month) не настроен
+    (линия помечается skipAudit).
+    """
+    dbMaster = cfg["dbMaster"]
+    dbSlave = cfg["dbSlave"]
+    tableNameEtlJobs = cfg["tableNameEtlJobs"]
+    cursorMaster = ctx["cursorMaster"]
+    conMaster = ctx["conMaster"]
+    action = "ETL_QUERY_SECTION"
+
+    yCol = cfg.get("periodYearColumn", "year")
+    mCol = cfg.get("periodMonthColumn", "month")
+
+    periodsSqlPath = cfg.get("periodsSql")
+    if not periodsSqlPath:
+        raise AirflowFailException(
+            "query_section: не задан periodsSql (запрос групп (year, month))")
+    periodsSql = TakeOneQuery(_resolveEtlPath(periodsSqlPath))
+    periods = _executeQuery(cursorMaster, periodsSql)
+    if not periods:
+        logger.info("query_section: periodsSql не вернул групп — нечего обновлять")
+        raise AirflowSkipException
+    logger.info("query_section: групп к обновлению — %d", len(periods))
+
+    deleteSql = _buildDeleteYearMonthSql(
+        dbSlave, cfg["tableNameSlave"],
+        _dialectCol(yCol, dbSlave), _dialectCol(mCol, dbSlave),
+        cfg.get("filterClauseSlave"),
+    )
+    selectSql = _buildRecordByYearMonthSql(
+        dbMaster, ctx["selectSql"], ctx["structMaster"],
+        _dialectCol(yCol, dbMaster), _dialectCol(mCol, dbMaster),
+        cfg.get("filterClauseMaster"),
+    )
+
+    conSlave = _connect(dbSlave)
+    try:
+        cursorSlave = conSlave.cursor()
+        if not StructCheckDataBase(
+            ctx["structSlave"], cursorSlave,
+            _pickSql(dbSlave, structureCheckPostSql, structureCheckOrclSql),
+            cfg["tableNameSlave"],
+        ):
+            logger.error("Структуры ведомой %s не совпадают", cfg["tableNameSlave"])
+            UpdateLog(tableNameEtlJobs, dbMaster, "FLK",
+                      cursorMaster, conMaster, "ведомых")
+            raise AirflowFailException(
+                f"FLK: структура ведомой {cfg['tableNameSlave']} не совпадает")
+
+        for row in periods:
+            year, month = int(row[0]), int(row[1])
+            params = {"y": year, "m": month}
+            period = datetime.date(year, month, 1)
+            try:
+                cursorSlave.execute(deleteSql, params)
+                cursorMaster.execute(selectSql, params)
+                records = cursorMaster.fetchall()
+                _bulkUpsert(cursorSlave, dbSlave, ctx["upsertSql"],
+                            ctx["structSlave"], records)
+                conSlave.commit()
+                # audit=1: линия вне etl_jobs, статус проставляем явно (OK)
+                UpdateLog(tableNameEtlJobs, dbMaster, action,
+                          cursorMaster, conMaster, len(records), period, audit=1)
+                conMaster.commit()
+                logger.info("Группа %04d-%02d: перезалито %d строк",
+                            year, month, len(records))
+            except Exception as err:
+                conSlave.rollback()
+                conMaster.rollback()
+                UpdateLog(tableNameEtlJobs, dbMaster, action,
+                          cursorMaster, conMaster, 0, period, audit=-1)
+                conMaster.commit()
+                logger.error("Ошибка группы %04d-%02d: %s", year, month, err)
+                raise
+    finally:
+        conSlave.close()
 
 
 # ----------------------------------------------------------------------------
@@ -1708,6 +1834,11 @@ def _run(cfg):
 
         # 6. Диспатч по режиму
         mode = cfg["mode"]
+        if mode == "query_section":
+            # Группы (year, month) из пользовательского periodsSql, полная
+            # перезаливка каждой группы (Medree_prdisp Oracle->Postgres).
+            _processQuerySection(cfg, ctx)
+            return
         if mode == "section_compare":
             # Универсальный режим срезов для mocheck / medree. Ищет группы
             # сравнением master/slave, поэтому ему нужны все периоды источника
