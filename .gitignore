@@ -23,8 +23,11 @@ airflow.db
 airflow.cfg
 logs/
 
-# Офлайн-бандлы: собранные архивы — артефакты сборки (сами wheel'ы версионируются)
+# Офлайн-бандлы: собранные архивы — артефакты сборки
 voila-offline/voila-offline.tar.gz
+# .whl не версионируем — 22 МБ на каждый клон. Кладутся локально перед install.sh
+# (своя копия дистрибутива или `pip download voila -d voila-offline/wheels`).
+voila-offline/wheels/
 
 # Сгенерированные общие виды конфигов (источник — фрагменты config.d/, SpTableName.d/, ...)
 # Рантайм читает фрагменты; эти файлы — только для просмотра, их пересобирает tools/regen_config.py

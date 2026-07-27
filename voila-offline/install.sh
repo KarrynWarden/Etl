@@ -12,7 +12,20 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WHEELS_DIR="${SCRIPT_DIR}/wheels"
-[ -d "${WHEELS_DIR}" ] || { echo "Нет папки с wheel'ами: ${WHEELS_DIR}" >&2; exit 1; }
+if [ ! -d "${WHEELS_DIR}" ]; then
+  cat >&2 <<EOF
+Нет папки с wheel'ами: ${WHEELS_DIR}
+
+Сами .whl в репозитории НЕ хранятся (22 МБ на клон). Возьми их из своей копии
+дистрибутива и положи в voila-offline/wheels/, либо собери на машине с
+интернетом (Python 3.10, linux x86_64):
+
+    pip download voila -d voila-offline/wheels
+
+и перенеси папку на сервер.
+EOF
+  exit 1
+fi
 
 pick_python() {
   if [ -n "${PYTHON:-}" ]; then echo "${PYTHON}"; return; fi
