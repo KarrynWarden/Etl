@@ -1280,11 +1280,18 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords):
 def _processDeleteInsert(cfg, ctx, distinctIds, iudRecords):
     """Режим delete_insert: один логический id (idrw) = НЕСКОЛЬКО строк ведомой.
 
-    Событийный, как iud (читает etl_log_iud_row по idrw), но на каждое
-    событие idrw: удаляет ВСЕ строки этого idrw в ведомой и (для IU)
-    заливает актуальные строки ведущей. Это убирает «осиротевшие» строки
-    при смене doctype (старый doctype=2 idrw=123 остаётся, когда запись
-    переехала в doctype=3) — чего upsert в режиме iud не ловит.
+    Событийный, как iud (читает etl_log_iud_row по idrw), но на каждое событие
+    id делает ОДНО И ТО ЖЕ, независимо от типа операции: удаляет ВСЕ строки
+    этого id в ведомой и заливает то, что СЕЙЧАС отдаёт по нему ведущая. Если
+    ведущая больше ничего не отдаёт (удалили последнюю строку) — ничего не
+    вставляется. Это убирает «осиротевшие» строки при смене doctype (старый
+    doctype=2 idrw=123 остаётся, когда запись переехала в doctype=3), чего
+    upsert в режиме iud не ловит.
+
+    Почему oper (IU/D) НЕ используется: у одного id может быть несколько строк
+    ведущей. При разделении на IU/D событие 'D' по одной из них удаляло все
+    строки id и не возвращало те, что в ведущей ещё есть — то есть терялись
+    живые данные. Источник истины — текущее состояние ведущей, а не тип события.
 
     period из etl_log_iud_row здесь ДЕКОРАТИВНЫЙ (для expmed это docexpdt,
     неверный для doctype=4) и в логике НЕ участвует. Реальные затронутые
@@ -1316,11 +1323,12 @@ def _processDeleteInsert(cfg, ctx, distinctIds, iudRecords):
     idrwsByRecId = defaultdict(list)
     for rid, idrw in iudRecords:
         idrwsByRecId[rid].append(idrw)
-    # Префетч строк ведущей по ВСЕМ IU-id одним батчем (вместо SELECT на id).
-    iuIds = [e[0] for e in distinctIds if e[3] == "IU"]
-    print('before fetch ids')
-    masterById = _fetchMasterRowsById(ctx, cfg, iuIds)
-    print('after fetch ids')
+    # Префетч строк ведущей по ВСЕМ затронутым id одним батчем.
+    # ВАЖНО: берём все id, а НЕ только IU. Тип операции (IU/D) из журнала здесь
+    # не используется — источником истины является текущее состояние ведущей
+    # (см. комментарий в цикле ниже).
+    allEventIds = [e[0] for e in distinctIds]
+    masterById = _fetchMasterRowsById(ctx, cfg, allEventIds)
     mKey = lambda recId: _recIdKey(recId, ctx["pkColsMaster"])
     sKey = lambda recId: _recIdKey(recId, ctx["pkColsSlave"])
 
@@ -1347,35 +1355,37 @@ def _processDeleteInsert(cfg, ctx, distinctIds, iudRecords):
         slavePeriodsById = _fetchSlavePeriodsById(cursorSlave, cfg, ctx, allIds)
 
         for entry in distinctIds:
-            recId, _logPeriod, _timeoper, oper = entry[0], entry[1], entry[2], entry[3]
+            recId = entry[0]
             # реальные периоды удаляемых строк — из префетча ведомой (до удаления)
             affected = set(slavePeriodsById.get(sKey(recId)) or ())
             try:
                 pkParamsSlave = _splitPkValue(recId, len(ctx["pkColsSlave"]))
 
-                # удалить ВСЕ строки этого idrw в ведомой
+                # Тип операции из журнала (IU/D) НЕ используется — и это принципиально.
+                # Одному id может соответствовать НЕСКОЛЬКО строк ведущей (expmed:
+                # разные doctype). Если разделять по oper, то событие 'D' на одной из
+                # них удаляло все строки id и не возвращало те, что в ведущей ещё
+                # есть. Поэтому всегда одинаково: удалить все строки id в ведомой и
+                # залить то, что СЕЙЧАС отдаёт ведущая (её текущее состояние —
+                # источник истины). Если ведущая по этому id больше ничего не
+                # отдаёт (удалили последнюю строку) — просто не вставляем ничего.
                 cursorSlave.execute(ctx["deleteByIdSql"], pkParamsSlave)
 
-                # для IU — залить актуальные строки ведущей (из префетча)
-                if oper == "IU":
-                    rowsDb = masterById.get(mKey(recId), [])
-                    for rowDb in rowsDb:
-                        if _isPost(dbSlave):
-                            cursorSlave.execute(ctx["upsertSql"], rowDb)
-                        else:
-                            params = {str(i + 1): v for i, v in enumerate(rowDb)}
-                            cursorSlave.execute(ctx["upsertSql"], params)
-                        # реальный период вставляемой строки — из ведущей
-                        p = _periodFromRow(masterPeriodSpec, rowDb, masterColNames)
-                        if p is not None:
-                            affected.add(p)
-                            periodCount[p] += 1
-                    logger.info("idrw=%s: -%s/+%d строк, периоды %s",
-                                recId, "all", len(rowsDb),
-                                sorted(x for x in affected if x is not None))
-                else:  # 'D'
-                    logger.info("idrw=%s: удалено из ведомой, периоды %s",
-                                recId, sorted(x for x in affected if x is not None))
+                rowsDb = masterById.get(mKey(recId), [])
+                for rowDb in rowsDb:
+                    if _isPost(dbSlave):
+                        cursorSlave.execute(ctx["upsertSql"], rowDb)
+                    else:
+                        params = {str(i + 1): v for i, v in enumerate(rowDb)}
+                        cursorSlave.execute(ctx["upsertSql"], params)
+                    # реальный период вставляемой строки — из ведущей
+                    p = _periodFromRow(masterPeriodSpec, rowDb, masterColNames)
+                    if p is not None:
+                        affected.add(p)
+                        periodCount[p] += 1
+                logger.info("idrw=%s: -all/+%d строк, периоды %s",
+                            recId, len(rowsDb),
+                            sorted(x for x in affected if x is not None))
 
                 conSlave.commit()
 

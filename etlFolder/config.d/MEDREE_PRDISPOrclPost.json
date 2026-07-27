@@ -1,12 +1,11 @@
 {
   "MEDREE_PRDISPOrclPost": {
-    "_doc": "Oracle->Postgres Medree_prdisp. Режим query_section: список групп даёт periodsSql, каждая перезаливается целиком (DELETE группы + заливка), etl_jobs и etl_log ведутся как в остальных режимах. Период здесь СОСТАВНОЙ (year+month) — это свойство таблицы, а не режима. idrw переносится значением из Oracle. ВНИМАНИЕ: структуры-заготовки — перед первым прогоном пересними их конструктором, чтобы типы/scale совпали с реальной БД.",
+    "_doc": "Oracle->Postgres Medree_prdisp. Режим section: линия реагирует ТОЛЬКО на группы с isokaudit=4 в etl_jobs (их проставляет тот, кто пересчитал период — ночной Oracle-джоб medree_prdisp_refresh либо человек вручную). Каждая такая группа перезаливается целиком: DELETE группы в ведомой + заливка из ведущей. section_compare здесь неприменим — он сравнивает срезы по lastupdate, а такой колонки в таблице нет. Период СОСТАВНОЙ (year+month) — это свойство таблицы, а не режима. idrw переносится значением из Oracle. ВНИМАНИЕ: структуры-заготовки — перед первым прогоном пересними их конструктором, чтобы типы/scale совпали с реальной БД.",
     "tableNameMaster": "KOKNAEV.MEDREE_PRDISP",
     "tableNameSlave": "medree_prdisp",
     "structureMaster": "structures/MEDREE_PRDISP/MEDREE_PRDISP.json",
     "structureSlave": "structures/MEDREE_PRDISP/medree_prdisp.json",
-    "mode": "query_section",
-    "periodsSql": "queries/customQueries/medree_prdisp_periods.sql",
+    "mode": "section",
     "periodColumn": {"year": "YEAR", "month": "MONTH"},
     "slavePeriodColumn": {"year": "year", "month": "month"}
   }

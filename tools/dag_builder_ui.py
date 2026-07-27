@@ -78,8 +78,11 @@ _MODE_HELP_HTML = """
 <p style='margin:10px 0 4px'><b><code>delete_insert</code></b> — событийный, но
 «один id = несколько строк» (expmed).<br>
 Как <code>iud</code> читает <code>etl_log_iud_row</code>, но на каждое событие
-<code>idrw</code> делает DELETE всех строк этого <code>idrw</code> в ведомой и
-(для <code>IU</code>) INSERT актуальных.<br>
+<code>idrw</code> делает одно и то же <b>независимо от типа операции</b>: DELETE
+всех строк этого <code>idrw</code> в ведомой + INSERT того, что <b>сейчас</b>
+отдаёт по нему ведущая (если ничего — не вставляет). Тип события (IU/D) не
+используется: иначе <code>D</code> по одной из нескольких строк id сносил бы и
+живые.<br>
 <i>Когда:</i> одна запись-источник даёт несколько строк ведомой и при смене
 атрибута (напр. <code>doctype</code>) остаются «осиротевшие» строки, которые
 upsert не убирает.</p>
@@ -652,7 +655,10 @@ def _complex_ui():
     advanced.selected_index = None
 
     # ── зоны вывода ──
-    period_box = W.HBox([])
+    # VBox (не HBox): подсказка идёт СТРОКОЙ СВЕРХУ, а две панели периода — под
+    # ней в ряд. В HBox длинный текст подсказки съедал ширину и панели уезжали
+    # далеко вправо.
+    period_box = W.VBox([])
     map_title = W.HTML("")
     hide_unmapped = W.Checkbox(description="Скрывать непривязанные", value=False,
                                indent=False)
@@ -797,7 +803,9 @@ def _complex_ui():
                    "<code>etl_jobs</code>. Может быть одной колонкой-датой ИЛИ "
                    "собираться из year[/month[/day]] — <i>у ведущей и ведомой "
                    "независимо</i>."),
-            state["period_m_w"]["box"], state["period_s_w"]["box"],
+            # две панели рядом, слева направо, сразу под подсказкой
+            W.HBox([state["period_m_w"]["box"], state["period_s_w"]["box"]],
+                   layout=W.Layout(align_items="flex-start")),
         ]
 
     def _collect_pairs():
