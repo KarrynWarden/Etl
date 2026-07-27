@@ -13,7 +13,7 @@
 		"is_primary_key" : null
 	},
 	{
-		"column_name" : "groupcode",
+		"column_name" : "grouppcode",
 		"data_type" : "numeric",
 		"data_scale" : 0,
 		"is_primary_key" : null

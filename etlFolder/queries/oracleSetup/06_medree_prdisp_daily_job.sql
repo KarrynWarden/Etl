@@ -45,7 +45,7 @@ BEGIN
     );
 
     -- 3b. Перелить их заново
-    INSERT INTO koknaev.medree_prdisp (id, groupcode, year, month)
+    INSERT INTO koknaev.medree_prdisp (id, grouppcode, year, month)
     SELECT m.id_rz,
            r.groupcode,
            EXTRACT(YEAR  FROM m.date_2),
