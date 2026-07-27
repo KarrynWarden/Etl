@@ -1,39 +1,35 @@
 --------------------------------------------------------------------------------
--- Medree_prdisp: ПЕРВИЧНОЕ заполнение (разово, вручную, в SQL-редакторе).
+-- Medree_prdisp: ПЕРВИЧНОЕ заполнение (разово, вручную).
 --
 -- Запрос из ТЗ даёт ~16 млн строк — заливаем БАТЧАМИ ПО МЕСЯЦАМ, а не одним
 -- INSERT (иначе риск ORA-30036 по UNDO, полный откат при обрыве, не видно
 -- прогресса). На каждый месяц — своя транзакция (INSERT + COMMIT).
 --
--- ПЕРЕД запуском:
---   1) SET SERVEROUTPUT ON SIZE UNLIMITED   -- иначе не увидишь прогресс
---   2) УДАЛИ триггер, чтобы работал direct-path /*+ APPEND */ (Oracle молча
---      деградирует APPEND в обычный INSERT, если на таблице есть триггер):
---          DROP TRIGGER medree_prdisp_bi;
---      После заливки СОЗДАЙ его заново (скрипт 04_medree_prdisp_idrw.sql) —
---      он нужен регулярному джобу (06).
+-- КАК ЗАПУСКАТЬ:
+--   * Под пользователем-ВЛАДЕЛЬЦЕМ таблиц (koknaev) — тогда все объекты видны
+--     напрямую, без ролей. ORA-00942 в PL/SQL как раз означает, что объект не
+--     виден текущему пользователю (не тот юзер, либо доступ только через роль,
+--     а роли в PL/SQL ненадёжны — нужны ПРЯМЫЕ гранты). Все таблицы ниже — с
+--     явной схемой koknaev; если какая-то (spstandardgr/expmed/medcheck) лежит
+--     в другой схеме, поправь префикс.
+--   * DBMS_OUTPUT: команда `SET SERVEROUTPUT ON` — это SQL*Plus, НЕ SQL (в
+--     DBeaver/JDBC даёт ORA-00922). В SQL*Plus выполни её отдельно перед блоком;
+--     в DBeaver включи серверный вывод кнопкой. Прогресс также видно запросом
+--     `SELECT year, month, COUNT(*) FROM koknaev.medree_prdisp GROUP BY ...`
+--     из другой сессии.
+--   * ПЕРЕД заливкой удали триггер (для direct-path /*+ APPEND */):
+--        DROP TRIGGER koknaev.medree_prdisp_bi;
+--     после — создай заново (скрипт 04). idrw берём явно из sequence в SELECT —
+--     он монотонно уникален через ВСЕ месяцы, БЕЗ повторов между батчами.
+--   * Идемпотентно: залитые месяцы пропускаются (skip-if-exists), скрипт можно
+--     перезапускать; фильтр по диапазону date_2 использует индекс.
 --
--- Почему это безопасно:
---   * idrw берём ЯВНО из medree_prdisp_seq.NEXTVAL в SELECT. Sequence монотонно
---     уникальна через ВСЕ месяцы/транзакции — idrw НЕ ПОВТОРЯЕТСЯ между месяцами
---     (CACHE может дать пропуски при рестарте инстанса, но не дубли — для
---     суррогатного ключа это неважно). Триггер для заливки не нужен.
---   * INSERT /*+ APPEND */ — direct-path, быстро и с малым UNDO. БЕЗ NOLOGGING
---     (REDO пишется — безопасно для recovery/standby).
---   * Идемпотентность — через SKIP уже залитых месяцев (а не DELETE: DELETE в
---     одной транзакции с APPEND сломал бы direct-path). Скрипт можно
---     перезапускать: залитые месяцы пропускаются, оборванный (откачённый) —
---     дольётся.
---   * Фильтр по ДИАПАЗОНУ date_2 (sargable — использует индекс на medree.date_2).
---
--- ВЫВЕРИТЬ на тесте имена схем/колонок (см. также 06_*):
+-- ВЫВЕРИТЬ имена схем/колонок под реальную БД (см. также 06_*):
 --   koknaev.medree(m): id_rz, code_mes1, date_2, recid, mo, accno, accdt
---   spstandardgr(r):   medstandard, dbegin, dend, groupcode
---   expmed(f):         recid, stepexp, svodno
---   medcheck:          mo, accno, accdt, mekdt
+--   koknaev.spstandardgr(r): medstandard, dbegin, dend, groupcode
+--   koknaev.expmed(f): recid, stepexp, svodno
+--   koknaev.medcheck: mo, accno, accdt, mekdt
 --------------------------------------------------------------------------------
-
-SET SERVEROUTPUT ON SIZE UNLIMITED
 
 DECLARE
     v_month  DATE;
@@ -55,7 +51,7 @@ BEGIN
     WHILE v_month <= v_end LOOP
         -- SKIP: месяц уже залит (идемпотентность/возобновление после сбоя).
         SELECT COUNT(*) INTO v_exists
-          FROM Medree_prdisp
+          FROM koknaev.medree_prdisp
          WHERE year  = EXTRACT(YEAR  FROM v_month)
            AND month = EXTRACT(MONTH FROM v_month)
            AND ROWNUM = 1;
@@ -63,24 +59,24 @@ BEGIN
         IF v_exists > 0 THEN
             DBMS_OUTPUT.PUT_LINE(TO_CHAR(v_month, 'YYYY-MM') || ' -> уже залит, пропуск');
         ELSE
-            INSERT /*+ APPEND */ INTO Medree_prdisp (idrw, id, groupcode, year, month)
-            SELECT medree_prdisp_seq.NEXTVAL,
+            INSERT /*+ APPEND */ INTO koknaev.medree_prdisp (idrw, id, groupcode, year, month)
+            SELECT koknaev.medree_prdisp_seq.NEXTVAL,
                    m.id_rz,
                    r.groupcode,
                    EXTRACT(YEAR  FROM m.date_2),
                    EXTRACT(MONTH FROM m.date_2)
             FROM   koknaev.medree m
-            JOIN   spstandardgr r
+            JOIN   koknaev.spstandardgr r
                    ON  m.code_mes1 = r.medstandard
                    AND m.date_2 BETWEEN r.dbegin AND r.dend
                    AND r.groupcode IN (1, 2, 3)
             WHERE  m.date_2 >= v_month
               AND  m.date_2 <  ADD_MONTHS(v_month, 1)
-              AND  NOT EXISTS (SELECT 1 FROM expmed f
+              AND  NOT EXISTS (SELECT 1 FROM koknaev.expmed f
                                WHERE f.recid = m.recid
                                  AND f.stepexp = 1
                                  AND f.svodno IS NOT NULL)
-              AND  EXISTS     (SELECT 1 FROM medcheck c
+              AND  EXISTS     (SELECT 1 FROM koknaev.medcheck c
                                WHERE c.mo = m.mo
                                  AND c.accno = m.accno
                                  AND c.accdt = m.accdt

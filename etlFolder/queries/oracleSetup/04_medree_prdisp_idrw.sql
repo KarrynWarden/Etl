@@ -14,15 +14,25 @@
 -- чтобы ETL мог класть idrw из Oracle, а ручные вставки — брать из sequence.
 --------------------------------------------------------------------------------
 
+-- Запускать под ВЛАДЕЛЬЦЕМ таблиц (koknaev) — схема указана явно, чтобы объекты
+-- не искались в схеме текущего пользователя (иначе ORA-00942).
+--
 -- CACHE ускоряет массовую вставку (первичное заполнение ~16 млн строк). Пропуски
 -- в idrw допустимы — это суррогат, не смысловой номер.
-CREATE SEQUENCE medree_prdisp_seq START WITH 1 INCREMENT BY 1 CACHE 1000;
+CREATE SEQUENCE koknaev.medree_prdisp_seq START WITH 1 INCREMENT BY 1 CACHE 1000;
 
-CREATE OR REPLACE TRIGGER medree_prdisp_bi
-BEFORE INSERT ON Medree_prdisp
+CREATE OR REPLACE TRIGGER koknaev.medree_prdisp_bi
+BEFORE INSERT ON koknaev.medree_prdisp
 FOR EACH ROW
 WHEN (NEW.idrw IS NULL)
 BEGIN
-    SELECT medree_prdisp_seq.NEXTVAL INTO :NEW.idrw FROM DUAL;
+    SELECT koknaev.medree_prdisp_seq.NEXTVAL INTO :NEW.idrw FROM DUAL;
 END;
 /
+
+-- ВАЖНО (11g): если первичное заполнение (05_*) уже проставило idrw из sequence,
+-- то после создания триггера последовательность продолжит с того же места —
+-- пересинхронизация не нужна. Но если idrw когда-то вставлялись мимо sequence,
+-- сверь: SELECT MAX(idrw) FROM koknaev.medree_prdisp; и текущее значение
+-- koknaev.medree_prdisp_seq.CURRVAL — при отставании пересоздай sequence со
+-- START WITH (MAX(idrw)+1), иначе будет ORA-00001 по PK.
