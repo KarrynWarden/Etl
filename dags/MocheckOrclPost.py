@@ -18,7 +18,8 @@ import datetime as dt
 
 from airflow.models import DAG
 
-from Functions._dagHelpers import DEFAULT_ARGS, buildOperator, configureLogger, runEtl, makeEtlOperator, addFreezeWatcher
+from Functions._dagHelpers import (DEFAULT_ARGS, buildOperator, configureLogger, runEtl,
+                                   makeEtlOperator, addFreezeWatcher, lineEnabled)
 
 
 # (tableNameEtlJobs, doctype) — порядок соответствует CASE-выражению в SQL.
@@ -44,6 +45,8 @@ with DAG(
     configureLogger()
 
     previous = None
+    # Линии, убранные из работы через конструктор (флаг `disabled` в конфиге),
+    # пропускаем: своего файла дага у них нет, поэтому «архив» = этот флаг.
     tasks = [
         makeEtlOperator(
             f"do_etl_{group}",
@@ -51,8 +54,10 @@ with DAG(
             tableNameEtlJobs=group, retryMode="frequent",
         )
         for group, _doctype in MOCHECK_LOGICAL_GROUPS
+        if lineEnabled(group, "Orcl", "Post")
     ]
-    addFreezeWatcher(tasks, retryMode="frequent")
+    if tasks:
+        addFreezeWatcher(tasks, retryMode="frequent")
     #addPauseWatcher(tasks)
     #for groupName, _doctype in MOCHECK_LOGICAL_GROUPS:
     #    task = buildOperator(

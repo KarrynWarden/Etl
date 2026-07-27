@@ -447,6 +447,24 @@ def buildOperator(taskId, callable_, triggerRule=None):
     return PythonOperator(**kwargs)
 
 
+def lineEnabled(tableNameEtlJobs, dbMaster, dbSlave):
+    """Включена ли линия (нет флага `disabled` в её конфиге).
+
+    Нужна дагам-ИТЕРАТОРАМ (MocheckOrclPost и т.п.), которые перечисляют
+    несколько линий в одном файле: у таких линий нет своего файла дага, поэтому
+    «архивировать» их переносом файла нельзя — конструктор ставит `disabled`, а
+    даг обязан такую линию пропустить. Ошибка чтения конфига НЕ должна ронять
+    парсинг дага, поэтому при любой проблеме считаем линию включённой.
+    """
+    try:
+        from Functions.functionsFile.loadConfig import loadFullConfig
+        body = loadFullConfig()["data"].get(
+            f"{tableNameEtlJobs}{dbMaster}{dbSlave}", {})
+        return not body.get("disabled")
+    except Exception:
+        return True
+
+
 def makeEtlOperator(taskId, tableNameMaster, dbMaster, dbSlave,
                     tableNameEtlJobs=None, retryMode="frequent",
                     triggerRule=None, pool="Etl", **opts):

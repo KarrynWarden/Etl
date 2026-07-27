@@ -86,14 +86,21 @@ upsert не убирает.</p>
 
 <p style='margin:10px 0 4px'><b><code>query_section</code></b> — группы из
 своего запроса (Medree_prdisp).<br>
-Список групп берётся из пользовательского <code>periodsSql</code> (возвращает
-пары <code>year, month</code>), каждая группа обновляется полной перезаписью:
-DELETE <code>(year, month)</code> в ведомой + заливка той же группы из ведущей.
-Задаётся ещё <code>periodYearColumn</code>/<code>periodMonthColumn</code>
-(по умолч. <code>year</code>/<code>month</code>).<br>
-<i>Когда:</i> периода-даты нет (только year+month), а какие периоды пересчитаны —
-знает ваш SQL. <code>etl_jobs</code> режим не ведёт → ставьте
-<code>skipAudit</code>. <i>Не требует</i> триггера на ведущей.</p>
+Отличается от других режимов ТОЛЬКО источником списка групп: его даёт
+пользовательский <code>periodsSql</code> (а не журнал и не сравнение срезов).
+Каждая группа перезаливается целиком (DELETE группы + заливка), при этом
+<code>etl_jobs</code> и <code>etl_log</code> ведутся так же, как в остальных
+режимах. Колонки <code>periodsSql</code> должны соответствовать периоду ведущей:
+одна колонка-дата либо <code>year[, month[, day]]</code>.<br>
+<i>Когда:</i> какие периоды пересчитаны — знает ваш SQL (например, их посчитал
+джоб внутри Oracle), а триггера на ведущей нет.</p>
+
+<p style='margin:12px 0 4px;padding-top:6px;border-top:1px solid #ddd'>
+<b>Период группы — свойство таблицы, а не режима.</b> В ЛЮБОМ режиме период
+может быть одной колонкой-датой (<code>createdate</code>, <code>dcalc</code>…)
+либо собираться из нескольких колонок (<code>year</code>,
+<code>year+month</code>, <code>year+month+day</code>) — причём у ведущей и
+ведомой независимо. Настраивается в блоке «Период группы» под таблицей колонок.</p>
 </div>
 """
 
@@ -153,6 +160,69 @@ def _help_toggle(W, html, width="820px"):
         box.layout.display = "none" if box.layout.display == "" else ""
     btn.on_click(_toggle)
     return btn, box
+
+
+def _period_picker(W, title, names, cols, current=None):
+    """Виджет выбора периода стороны: одна колонка-дата ИЛИ составная (year/month/day).
+
+    Период — свойство ТАБЛИЦЫ, а не режима переноса, и у ведущей с ведомой он
+    может быть устроен по-разному (у одной cоставной year+month, у другой цельный
+    createdate). Поэтому такой выбор есть у каждой стороны отдельно.
+
+    current — текущее значение из конфига: строка (одна колонка) либо dict
+    {"year":..., "month":..., "day":...}. Возвращает dict с ключом "box" (виджет)
+    и "value" (функция, отдающая строку или dict для конфига).
+    """
+    parts = current if isinstance(current, dict) else None
+    kind = W.ToggleButtons(
+        options=[("Одна колонка-дата", "single"), ("Составная (год/месяц/день)", "parts")],
+        value="parts" if parts else "single",
+        style={"button_width": "210px"})
+
+    single_default = (current if isinstance(current, str) and current in names
+                      else B.default_period_column(cols))
+    single = W.Dropdown(description="колонка", options=names or [""],
+                        value=single_default if single_default in names else
+                        (names[0] if names else ""),
+                        style={"description_width": "90px"},
+                        layout=W.Layout(width="330px"))
+
+    def _dd(label, key, required=False):
+        opts = names if required else [_NONE] + names
+        val = (parts or {}).get(key)
+        return W.Dropdown(description=label, options=opts or [_NONE],
+                          value=val if val in opts else (opts[0] if opts else _NONE),
+                          style={"description_width": "70px"},
+                          layout=W.Layout(width="300px"))
+
+    year = _dd("год", "year", required=True)
+    month = _dd("месяц", "month")
+    day = _dd("день", "day")
+    parts_box = W.VBox([year, month, day])
+    hint = W.HTML("<span style='color:#888'>Недостающие месяц/день считаются "
+                  "равными 1: год → ГГГГ-01-01, год+месяц → ГГГГ-ММ-01.</span>")
+
+    def _on_kind(_=None):
+        single.layout.display = "" if kind.value == "single" else "none"
+        parts_box.layout.display = "" if kind.value == "parts" else "none"
+        hint.layout.display = "" if kind.value == "parts" else "none"
+    kind.observe(_on_kind, names="value")
+    _on_kind()
+
+    def value():
+        if kind.value == "single":
+            return single.value
+        out = {"year": year.value}
+        if month.value != _NONE:
+            out["month"] = month.value
+        if day.value != _NONE:
+            out["day"] = day.value
+        return out
+
+    box = W.VBox([W.HTML(f"<b>{title}</b>"), kind, single, parts_box, hint],
+                 layout=W.Layout(border="1px solid #ddd", padding="6px",
+                                 margin="4px 0", width="600px"))
+    return {"box": box, "value": value}
 
 
 def _spinner_html(text):
@@ -368,7 +438,7 @@ def _complex_ui():
     import ipywidgets as W
 
     state = {"master_cols": [], "slave_cols": [], "rows": [], "row_widgets": [],
-             "period_w": None, "slave_period_w": None,
+             "period_m_w": None, "period_s_w": None,
              "struct_master_rel": None, "struct_slave_rel": None,
              "tags_auto": True, "_tags_guard": False, "_opts_guard": False}
 
@@ -554,19 +624,14 @@ def _complex_ui():
                           placeholder="через запятую: updatedate, hash",
                           layout=W.Layout(width="640px"),
                           style={"description_width": "180px"})
-    # ── поля режима query_section (группы (year, month) из своего запроса) ──
+    # ── поле режима query_section (список групп задаёт свой запрос) ──
     f_periods = W.Textarea(description="SQL периодов (query_section)",
-                           placeholder="Запрос групп для перезаливки. Возвращает две "
-                                       "колонки: year, month. Файл .sql создастся сам, "
+                           placeholder="Запрос групп для перезаливки. Колонки должны "
+                                       "соответствовать периоду ведущей: одна колонка-дата "
+                                       "либо year[, month[, day]]. Файл .sql создастся сам, "
                                        "путь пропишется в periodsSql.",
                            layout=W.Layout(width="760px", height="100px"),
                            style={"description_width": "180px"})
-    f_period_year = W.Text(description="Колонка year", value="year",
-                           layout=W.Layout(width="360px"),
-                           style={"description_width": "180px"})
-    f_period_month = W.Text(description="Колонка month", value="month",
-                            layout=W.Layout(width="360px"),
-                            style={"description_width": "180px"})
     adv_help = W.HTML(
         "<span style='color:#888'>"
         "<b>Фильтр ведущей/ведомой</b> — доп. условие WHERE (например <code>doctype = 7</code>).<br>"
@@ -576,13 +641,13 @@ def _complex_ui():
         "<b>truncatePeriod</b> — сравнивать период по дате, без времени.<br>"
         "<b>skipAudit</b> — исключить линию из общего аудита (AuditAll).<br>"
         "<b>Не сверять поля</b> — auditExcludeFields: колонки, которые аудит игнорирует.<br>"
-        "<b>SQL периодов / Колонка year / month</b> — только для mode=<code>query_section</code>: "
-        "запрос возвращает пары (year, month), каждая группа перезаливается целиком "
-        "(DELETE (year,month) + заливка).</span>")
+        "<b>SQL периодов</b> — только для mode=<code>query_section</code>: запрос "
+        "возвращает список групп для перезаливки. Колонки должны соответствовать "
+        "периоду ведущей (см. блок «Период группы» ниже): одна колонка-дата либо "
+        "year[, month[, day]].</span>")
     advanced = W.Accordion(children=[W.VBox(
         [adv_help, f_filter, f_filter_s, f_sql, f_sql_name, f_confl, f_confl_w,
-         f_trunc, f_skip_audit, f_audit_excl,
-         f_periods, W.HBox([f_period_year, f_period_month])])])
+         f_trunc, f_skip_audit, f_audit_excl, f_periods])])
     advanced.set_title(0, "Дополнительно (необязательно)")
     advanced.selected_index = None
 
@@ -725,17 +790,15 @@ def _complex_ui():
 
         m_names = [c["column_name"] for c in mcols]
         s_names = [c["column_name"] for c in scols]
-        # дефолт колонки-периода: createdate без учёта регистра (Oracle отдаёт
-        # CREATEDATE), иначе колонка с типом дата/время — а не первая по алфавиту
-        pm = period_m if period_m in m_names else B.default_period_column(mcols)
-        ps = period_s if period_s in s_names else B.default_period_column(scols)
-        state["period_w"] = W.Dropdown(description="periodColumn", options=m_names, value=pm,
-                                        style={"description_width": "130px"},
-                                        layout=W.Layout(width="330px"))
-        state["slave_period_w"] = W.Dropdown(description="slavePeriodColumn", options=s_names,
-                                              value=ps, style={"description_width": "150px"},
-                                              layout=W.Layout(width="360px"))
-        period_box.children = [state["period_w"], state["slave_period_w"]]
+        state["period_m_w"] = _period_picker(W, "Период ВЕДУЩЕЙ", m_names, mcols, period_m)
+        state["period_s_w"] = _period_picker(W, "Период ВЕДОМОЙ", s_names, scols, period_s)
+        period_box.children = [
+            W.HTML("<b>Период группы</b> — по нему идёт перезаливка и учёт в "
+                   "<code>etl_jobs</code>. Может быть одной колонкой-датой ИЛИ "
+                   "собираться из year[/month[/day]] — <i>у ведущей и ведомой "
+                   "независимо</i>."),
+            state["period_m_w"]["box"], state["period_s_w"]["box"],
+        ]
 
     def _collect_pairs():
         pairs = []
@@ -764,10 +827,6 @@ def _complex_ui():
         excl = [c.strip() for c in f_audit_excl.value.replace(";", ",").split(",") if c.strip()]
         if excl:
             extra["auditExcludeFields"] = excl
-        if mode.value == "query_section":
-            extra["periodYearColumn"] = f_period_year.value.strip() or "year"
-            extra["periodMonthColumn"] = f_period_month.value.strip() or "month"
-
         spec = {
             "table_master": tm.value.strip(), "table_slave": ts.value.strip(),
             "db_master": dbm.value, "db_slave": dbs.value,
@@ -776,8 +835,8 @@ def _complex_ui():
             "mode": mode.value,
             "master_cols": state["master_cols"], "slave_cols": state["slave_cols"],
             "pairs": _collect_pairs(),
-            "period_column": state["period_w"].value if state["period_w"] else None,
-            "slave_period_column": state["slave_period_w"].value if state["slave_period_w"] else None,
+            "period_column": state["period_m_w"]["value"]() if state["period_m_w"] else None,
+            "slave_period_column": state["period_s_w"]["value"]() if state["period_s_w"] else None,
             "tags": list(tags_input.value) or None,
             "retry_mode": retry.value,
             "doc": doc.value.strip() or None,
@@ -821,8 +880,9 @@ def _complex_ui():
             # в правке сохраняем текущие связки/PK/период, чтобы пересъём не снёс их
             prev_pairs, prev_pk = (_current_mapping() if edit and state["rows"]
                                    else ({}, None))
-            prev_pm = state["period_w"].value if (edit and state["period_w"]) else None
-            prev_ps = state["slave_period_w"].value if (edit and state["slave_period_w"]) else None
+            # период сохраняем при пересъёме структур (строка либо dict)
+            prev_pm = state["period_m_w"]["value"]() if (edit and state["period_m_w"]) else None
+            prev_ps = state["period_s_w"]["value"]() if (edit and state["period_s_w"]) else None
 
             _log("Снимаю структуры из БД…")
             mcols = B.snap_structure(dbm.value, tm.value.strip(), user_m_get())
@@ -903,8 +963,6 @@ def _complex_ui():
             f_sql_name.value = (os.path.splitext(os.path.basename(data["select_sql"]))[0]
                                 if data.get("select_sql") else "")
             f_periods.value = data.get("periods_sql_text") or ""
-            f_period_year.value = ex.get("periodYearColumn", "year") or "year"
-            f_period_month.value = ex.get("periodMonthColumn", "month") or "month"
 
             state["master_cols"], state["slave_cols"] = data["master_cols"], data["slave_cols"]
             state["struct_master_rel"] = data["struct_master_rel"]

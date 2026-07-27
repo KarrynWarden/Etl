@@ -258,6 +258,118 @@ def _normalizePeriod(value):
     return value
 
 
+# ----------------------------------------------------------------------------
+#     Период группы: одна колонка-дата ЛИБО составная (year[, month[, day]])
+# ----------------------------------------------------------------------------
+# Период — свойство ТАБЛИЦЫ, а не режима переноса: он может лежать в одной
+# date-колонке (createdate, dcalc, ...) либо быть собран из нескольких числовых
+# (year / year+month / year+month+day), причём у ведущей и ведомой — независимо
+# (у одной составной, у другой цельный). Внутри Python период ВСЕГДА
+# datetime.date; разложение на части происходит только на границе с SQL.
+#
+# Формат в конфиге (periodColumn / slavePeriodColumn):
+#     "createdate"                                  — одна колонка (как раньше)
+#     {"year": "god"}                               — только год  -> god-01-01
+#     {"year": "year", "month": "month"}            — год+месяц   -> year-month-01
+#     {"year": "y", "month": "m", "day": "d"}       — год+месяц+день
+
+def _periodSpec(value):
+    """Нормализовать значение periodColumn в описание периода.
+
+    Возвращает {"kind": "single", "column": ...} либо
+    {"kind": "parts", "year": ..., "month": ... | None, "day": ... | None}.
+    """
+    if isinstance(value, dict):
+        year = value.get("year") or value.get("YEAR")
+        if not year:
+            raise ValueError(
+                "Составной период: обязателен ключ 'year' в periodColumn.")
+        return {"kind": "parts", "year": year,
+                "month": value.get("month") or value.get("MONTH"),
+                "day": value.get("day") or value.get("DAY")}
+    return {"kind": "single", "column": value}
+
+
+def _qual(alias, column):
+    return f"{alias}.{column}" if alias else column
+
+
+def _periodExpr(dbType, spec, alias=None, truncate=False):
+    """SQL-выражение, дающее ДАТУ периода (для SELECT/GROUP BY/JOIN).
+
+    single: колонка как есть (или DATE()/TRUNC() при truncatePeriod — прежнее
+    поведение). parts: сборка даты из частей (недостающие месяц/день = 1).
+    """
+    if spec["kind"] == "single":
+        col = _qual(alias, spec["column"])
+        if truncate:
+            return f"DATE({col})" if _isPost(dbType) else f"TRUNC({col})"
+        return col
+    y = _qual(alias, spec["year"])
+    m = _qual(alias, spec["month"]) if spec["month"] else "1"
+    d = _qual(alias, spec["day"]) if spec["day"] else "1"
+    if _isPost(dbType):
+        return f"make_date({y}::int, {m}::int, {d}::int)"
+    # Oracle: собираем через строку — надёжнее, чем арифметика по датам
+    return (f"TO_DATE(TO_CHAR({y}) || '-' || LPAD(TO_CHAR({m}), 2, '0')"
+            f" || '-' || LPAD(TO_CHAR({d}), 2, '0'), 'YYYY-MM-DD')")
+
+
+def _periodCond(dbType, spec, alias=None, bind="createdate", truncate=False):
+    """Условие WHERE «период = заданный».
+
+    parts сравнивается ПО ЧАСТЯМ (year = :y AND month = :m) — это sargable и
+    использует индексы, в отличие от сборки даты вокруг колонок.
+    """
+    if spec["kind"] == "single":
+        return _periodExpr(dbType, spec, alias, truncate) + " = " + _bindName(dbType, bind)
+    parts = [f"{_qual(alias, spec['year'])} = " + _bindName(dbType, f"{bind}_y")]
+    if spec["month"]:
+        parts.append(f"{_qual(alias, spec['month'])} = " + _bindName(dbType, f"{bind}_m"))
+    if spec["day"]:
+        parts.append(f"{_qual(alias, spec['day'])} = " + _bindName(dbType, f"{bind}_d"))
+    return " AND ".join(parts)
+
+
+def _periodBinds(spec, period, bind="createdate"):
+    """Параметры для _periodCond по значению периода (date)."""
+    if spec["kind"] == "single":
+        return {bind: period}
+    period = _normalizePeriod(period)
+    out = {f"{bind}_y": period.year}
+    if spec["month"]:
+        out[f"{bind}_m"] = period.month
+    if spec["day"]:
+        out[f"{bind}_d"] = period.day
+    return out
+
+
+def _periodColumns(spec):
+    """Имена колонок периода (одна или несколько) — для поиска их в строке."""
+    if spec["kind"] == "single":
+        return [spec["column"]]
+    return [c for c in (spec["year"], spec["month"], spec["day"]) if c]
+
+
+def _periodFromRow(spec, row, columnNames):
+    """Собрать период (date) из строки выборки ведущей по именам колонок.
+
+    Регистронезависимо: Oracle отдаёт имена в ВЕРХНЕМ регистре, Postgres — в
+    нижнем, а в конфиге они обычно записаны как в своей БД.
+    """
+    lower = [c.lower() for c in columnNames]
+
+    def _val(name):
+        return row[lower.index(name.lower())]
+
+    if spec["kind"] == "single":
+        return _normalizePeriod(_val(spec["column"]))
+    year = int(_val(spec["year"]))
+    month = int(_val(spec["month"])) if spec["month"] else 1
+    day = int(_val(spec["day"])) if spec["day"] else 1
+    return datetime.date(year, month, day)
+
+
 def _normalizeCompareValue(value, truncate):
     """Нормализовать значение lastupdate для сравнения master/slave в section_compare.
 
@@ -438,11 +550,8 @@ def _buildSlavePeriodsByIdSql(dbSlave, tableNameSlave, pkColsSlave,
     etl_jobs затронуты на стороне ведомой (period в etl_log_iud_row для
     expmed декоративный и в логике не участвует).
     """
-    if truncatePeriod:
-        periodExpr = (f"DATE({slavePeriodColumn})" if _isPost(dbSlave)
-                      else f"TRUNC({slavePeriodColumn})")
-    else:
-        periodExpr = slavePeriodColumn
+    periodExpr = _periodExpr(dbSlave, _periodSpec(slavePeriodColumn),
+                             None, truncatePeriod)
     primaryCond = " AND ".join(
         f"{c} = " + _bindName(dbSlave, f"id{i}")
         for i, c in enumerate(pkColsSlave)
@@ -457,58 +566,14 @@ def _buildSlavePeriodsByIdSql(dbSlave, tableNameSlave, pkColsSlave,
 
 def _buildDeletePeriodSql(dbSlave, tableNameSlave, slavePeriodColumn,
                           filterClauseSlave, truncatePeriod=False):
-    """SQL для удаления записей группы по периоду."""
-    if truncatePeriod:
-        if _isPost(dbSlave):
-            periodExpr = f"DATE({slavePeriodColumn})"
-        else:
-            periodExpr = f"TRUNC({slavePeriodColumn})"
-    else:
-        periodExpr = slavePeriodColumn
-
-    cond = f"{periodExpr} = " + _bindName(dbSlave, "createdate")
+    """SQL для удаления записей группы по периоду (одиночному или составному)."""
+    spec = _periodSpec(slavePeriodColumn)
+    cond = _periodCond(dbSlave, spec, None, "createdate", truncatePeriod)
     fcs = _asAndClause(filterClauseSlave)
     if fcs:
         cond += f" AND ({fcs})"
     sqlTpl = _pickSql(dbSlave, deletePeriodPostSql, deletePeriodOrclSql)
     return sqlTpl.format(tablename=tableNameSlave, period_cond=cond)
-
-
-# ----------------------------------------------------------------------------
-#            query_section: группа периода = пара (year, month)
-# ----------------------------------------------------------------------------
-
-def _dialectCol(name, dbType):
-    """Имя колонки в регистре диалекта: Oracle — ВЕРХНИЙ, Postgres — нижний.
-    Таблица Medree_prdisp одинакова в обеих БД, отличается только регистр имён."""
-    return name.lower() if _isPost(dbType) else name.upper()
-
-
-def _buildDeleteYearMonthSql(dbSlave, tableNameSlave, yearCol, monthCol,
-                             filterClauseSlave):
-    """DELETE группы ведомой по паре (year, month). Плейсхолдеры :y/:m (или
-    %(y)s/%(m)s)."""
-    cond = (f"{yearCol} = " + _bindName(dbSlave, "y")
-            + f" AND {monthCol} = " + _bindName(dbSlave, "m"))
-    fcs = _asAndClause(filterClauseSlave)
-    if fcs:
-        cond += f" AND ({fcs})"
-    sqlTpl = _pickSql(dbSlave, deletePeriodPostSql, deletePeriodOrclSql)
-    return sqlTpl.format(tablename=tableNameSlave, period_cond=cond)
-
-
-def _buildRecordByYearMonthSql(dbMaster, selectSql, structMaster, yearCol,
-                               monthCol, filterClauseMaster):
-    """SELECT строк группы (year, month) из ведущего источника."""
-    fieldsStr = _buildFieldsStr(dbMaster, structMaster, None)
-    cond = (f"p.{yearCol} = " + _bindName(dbMaster, "y")
-            + f" AND p.{monthCol} = " + _bindName(dbMaster, "m"))
-    fcm = _asAndClause(filterClauseMaster)
-    if fcm:
-        cond += f" AND ({fcm})"
-    sqlTpl = _pickSql(dbMaster, recordSelectByIdPostSql, recordSelectByIdOrclSql)
-    return sqlTpl.format(fields_str=fieldsStr, select_sql=selectSql,
-                         primary_cond=cond)
 
 
 # ----------------------------------------------------------------------------
@@ -560,17 +625,8 @@ def _buildRecordGroupSql(dbMaster, selectSql, structMaster, periodColumn,
                     а в ETL процесс передается только дата.
     """
     fieldsStr = _buildFieldsStr(dbMaster, structMaster, periodColumn)
-
-    # Формируем выражение для периода с учетом truncatePeriod
-    if truncatePeriod:
-        if _isPost(dbMaster):
-            periodExpr = f"DATE(p.{periodColumn})"
-        else:
-            periodExpr = f"TRUNC(p.{periodColumn})"
-    else:
-        periodExpr = f"p.{periodColumn}"
-
-    cond = f"{periodExpr} = " + _bindName(dbMaster, "createdate")
+    spec = _periodSpec(periodColumn)
+    cond = _periodCond(dbMaster, spec, "p", "createdate", truncatePeriod)
     fcm = _asAndClause(filterClauseMaster)
     if fcm:
         cond += f" AND ({fcm})"
@@ -578,7 +634,8 @@ def _buildRecordGroupSql(dbMaster, selectSql, structMaster, periodColumn,
     return sqlTpl.format(
         fields_str=fieldsStr,
         select_sql=selectSql,
-        period_col=periodColumn,
+        # выражение периода для JOIN etl_jobs (составной период собирается в дату)
+        period_expr=_periodExpr(dbMaster, spec, "p", truncatePeriod),
         period_cond=cond,
     )
 
@@ -777,11 +834,8 @@ def _fetchSlavePeriodsById(cursorSlave, cfg, ctx, ids):
     pkCols = ctx["pkColsSlave"]
     tableNameSlave = cfg["tableNameSlave"]
     fcs = _asAndClause(cfg.get("filterClauseSlave"))
-    if cfg.get("truncatePeriod"):
-        periodExpr = (f"DATE({cfg['slavePeriodColumn']})" if _isPost(dbSlave)
-                      else f"TRUNC({cfg['slavePeriodColumn']})")
-    else:
-        periodExpr = cfg["slavePeriodColumn"]
+    periodExpr = _periodExpr(dbSlave, _periodSpec(cfg["slavePeriodColumn"]),
+                             None, cfg.get("truncatePeriod"))
     grouped = defaultdict(set)
 
     def _run(idChunk):
@@ -946,14 +1000,17 @@ def _processGroupUpdate(cfg, ctx, dateGroup):
             {"tablename": tableNameEtlJobs, "createdate": createdate},
         )
 
-        # 1) удалить все записи группы из ведомой
-        cursorSlave.execute(ctx["deletePeriodSql"], {"createdate": createdate})
-        print('here is select ', ctx["recordGroupSql"], tableNameEtlJobs, createdate, **(cfg.get("filterParams") or {}))
+        # 1) удалить все записи группы из ведомой. Параметры периода зависят от
+        # того, одиночная колонка-дата или составная (year/month/day).
+        cursorSlave.execute(
+            ctx["deletePeriodSql"],
+            _periodBinds(_periodSpec(cfg["slavePeriodColumn"]), createdate))
         # 2) выбрать актуальные записи из ведущей и залить
-        cursorMaster.execute(ctx["recordGroupSql"],
-                             {"tablename": tableNameEtlJobs,
-                              "createdate": createdate,
-                              **(cfg.get("filterParams") or {})})
+        cursorMaster.execute(
+            ctx["recordGroupSql"],
+            {"tablename": tableNameEtlJobs,
+             **_periodBinds(_periodSpec(cfg["periodColumn"]), createdate),
+             **(cfg.get("filterParams") or {})})
         records = cursorMaster.fetchall()
         logger.info("Найдено %d записей для группы %s", len(records), createdate)
 
@@ -1006,92 +1063,58 @@ def _bulkUpsert(cursorSlave, dbSlave, upsertSql, structSlave, records):
 
 
 # ----------------------------------------------------------------------------
-#        query_section: перезаливка групп (year, month) из periodsSql
+#     query_section: группы для перезаливки берутся из своего SQL (periodsSql)
 # ----------------------------------------------------------------------------
 
 def _processQuerySection(cfg, ctx):
     """Режим query_section (например, Medree_prdisp Oracle->Postgres).
 
-    Группы для обновления берутся из ПОЛЬЗОВАТЕЛЬСКОГО запроса `periodsSql`
-    (возвращает пары (year, month)), а не из etl_jobs/лога. Каждая группа
-    обновляется полной перезаписью: DELETE (year, month) в ведомой + заливка
-    той же группы из ведущей. Группа внутри представляется датой year-month-01
-    (для лога). etl_jobs режим не ведёт — аудит по (year, month) не настроен
-    (линия помечается skipAudit).
+    Отличие от других режимов ТОЛЬКО в источнике списка групп: их даёт
+    пользовательский `periodsSql`, а не журнал etl_log_iud_row и не сравнение
+    срезов. Дальше всё как везде: группа регистрируется в etl_jobs и
+    перезаливается общим _processGroupUpdate (DELETE группы + заливка), который
+    сам обновляет etl_jobs.last_success_ts/isokaudit и пишет etl_log.
+
+    Форма строк periodsSql должна соответствовать periodColumn ведущей:
+      * одиночная колонка-дата -> одна колонка с датой периода;
+      * составной период       -> колонки year[, month[, day]] в этом порядке.
     """
-    dbMaster = cfg["dbMaster"]
-    dbSlave = cfg["dbSlave"]
-    tableNameEtlJobs = cfg["tableNameEtlJobs"]
     cursorMaster = ctx["cursorMaster"]
     conMaster = ctx["conMaster"]
-    action = "ETL_QUERY_SECTION"
-
-    yCol = cfg.get("periodYearColumn", "year")
-    mCol = cfg.get("periodMonthColumn", "month")
+    dbMaster = cfg["dbMaster"]
+    tableNameEtlJobs = cfg["tableNameEtlJobs"]
 
     periodsSqlPath = cfg.get("periodsSql")
     if not periodsSqlPath:
         raise AirflowFailException(
-            "query_section: не задан periodsSql (запрос групп (year, month))")
+            "query_section: не задан periodsSql (запрос, возвращающий группы)")
     periodsSql = TakeOneQuery(_resolveEtlPath(periodsSqlPath))
-    periods = _executeQuery(cursorMaster, periodsSql)
-    if not periods:
+    rows = _executeQuery(cursorMaster, periodsSql)
+    if not rows:
         logger.info("query_section: periodsSql не вернул групп — нечего обновлять")
         raise AirflowSkipException
+
+    spec = _periodSpec(cfg["periodColumn"])
+    periods = sorted({_periodFromParts(spec, row) for row in rows})
     logger.info("query_section: групп к обновлению — %d", len(periods))
 
-    deleteSql = _buildDeleteYearMonthSql(
-        dbSlave, cfg["tableNameSlave"],
-        _dialectCol(yCol, dbSlave), _dialectCol(mCol, dbSlave),
-        cfg.get("filterClauseSlave"),
-    )
-    selectSql = _buildRecordByYearMonthSql(
-        dbMaster, ctx["selectSql"], ctx["structMaster"],
-        _dialectCol(yCol, dbMaster), _dialectCol(mCol, dbMaster),
-        cfg.get("filterClauseMaster"),
-    )
+    # Группы должны быть в etl_jobs — тогда их видит аудит и общий механизм
+    # статусов (isokaudit), как у остальных режимов.
+    _registerAffectedPeriods(cursorMaster, dbMaster, periods, tableNameEtlJobs)
+    conMaster.commit()
 
-    conSlave = _connect(dbSlave)
-    try:
-        cursorSlave = conSlave.cursor()
-        if not StructCheckDataBase(
-            ctx["structSlave"], cursorSlave,
-            _pickSql(dbSlave, structureCheckPostSql, structureCheckOrclSql),
-            cfg["tableNameSlave"],
-        ):
-            logger.error("Структуры ведомой %s не совпадают", cfg["tableNameSlave"])
-            UpdateLog(tableNameEtlJobs, dbMaster, "FLK",
-                      cursorMaster, conMaster, "ведомых")
-            raise AirflowFailException(
-                f"FLK: структура ведомой {cfg['tableNameSlave']} не совпадает")
+    for period in periods:
+        _processGroupUpdate(cfg, ctx, (period,))
 
-        for row in periods:
-            year, month = int(row[0]), int(row[1])
-            params = {"y": year, "m": month}
-            period = datetime.date(year, month, 1)
-            try:
-                cursorSlave.execute(deleteSql, params)
-                cursorMaster.execute(selectSql, params)
-                records = cursorMaster.fetchall()
-                _bulkUpsert(cursorSlave, dbSlave, ctx["upsertSql"],
-                            ctx["structSlave"], records)
-                conSlave.commit()
-                # audit=1: линия вне etl_jobs, статус проставляем явно (OK)
-                UpdateLog(tableNameEtlJobs, dbMaster, action,
-                          cursorMaster, conMaster, len(records), period, audit=1)
-                conMaster.commit()
-                logger.info("Группа %04d-%02d: перезалито %d строк",
-                            year, month, len(records))
-            except Exception as err:
-                conSlave.rollback()
-                conMaster.rollback()
-                UpdateLog(tableNameEtlJobs, dbMaster, action,
-                          cursorMaster, conMaster, 0, period, audit=-1)
-                conMaster.commit()
-                logger.error("Ошибка группы %04d-%02d: %s", year, month, err)
-                raise
-    finally:
-        conSlave.close()
+
+def _periodFromParts(spec, row):
+    """Период (date) из строки periodsSql: либо готовая дата, либо year/month/day."""
+    if spec["kind"] == "single":
+        return _normalizePeriod(row[0])
+    year = int(row[0])
+    month = int(row[1]) if spec["month"] and len(row) > 1 else 1
+    day = int(row[2]) if spec["day"] and len(row) > 2 else 1
+    return datetime.date(year, month, day)
 
 
 # ----------------------------------------------------------------------------
@@ -1278,11 +1301,11 @@ def _processDeleteInsert(cfg, ctx, distinctIds, iudRecords):
     cursorMaster = ctx["cursorMaster"]
     conMaster = ctx["conMaster"]
     action = "ETL_DELETE_INSERT"
-    # позиция колонки периода в строках ведущей (для periodColumn=createdate).
-    # Сравнение регистронезависимое: Oracle отдаёт имена колонок в ВЕРХНЕМ
-    # регистре, Postgres — в нижнем, а periodColumn в конфиге — в нижнем.
-    masterColsLower = [c.lower() for c in _columnNames(ctx["structMaster"])]
-    periodIdx = masterColsLower.index(cfg["periodColumn"].lower())
+    # Период строки ведущей: одна колонка-дата либо составной (year/month/day) —
+    # собирается из строки по именам колонок (регистронезависимо: Oracle отдаёт
+    # ВЕРХНИЙ регистр, Postgres — нижний).
+    masterPeriodSpec = _periodSpec(cfg["periodColumn"])
+    masterColNames = _columnNames(ctx["structMaster"])
 
     logger.info("Старт delete_insert: %d событий", len(distinctIds))
     okPeriods, failPeriods = set(), set()
@@ -1343,7 +1366,7 @@ def _processDeleteInsert(cfg, ctx, distinctIds, iudRecords):
                             params = {str(i + 1): v for i, v in enumerate(rowDb)}
                             cursorSlave.execute(ctx["upsertSql"], params)
                         # реальный период вставляемой строки — из ведущей
-                        p = _normalizePeriod(rowDb[periodIdx])
+                        p = _periodFromRow(masterPeriodSpec, rowDb, masterColNames)
                         if p is not None:
                             affected.add(p)
                             periodCount[p] += 1
@@ -1474,7 +1497,10 @@ def _selectMasterPeriods(cursor, dbMaster, selectSql, periodColumn):
     reqdt и т.п.).
     """
     sqlTpl = _pickSql(dbMaster, dateSelectMasterPostSql, dateSelectMasterOrclSql)
-    sql = sqlTpl.format(select_sql=selectSql, period_col=periodColumn)
+    sql = sqlTpl.format(
+        select_sql=selectSql,
+        period_expr=_periodExpr(dbMaster, _periodSpec(periodColumn), "p"),
+    )
     return _executeQuery(cursor, sql)
 
 
@@ -1485,7 +1511,7 @@ def _selectSlavePeriods(cursor, dbSlave, tableNameSlave,
     filterSql = _asAndClause(filterClauseSlave) or "1=1"
     sql = sqlTpl.format(
         tablename=tableNameSlave,
-        period_col=slavePeriodColumn,
+        period_expr=_periodExpr(dbSlave, _periodSpec(slavePeriodColumn)),
         filter=filterSql,
     )
     return _executeQuery(cursor, sql)
@@ -1559,13 +1585,15 @@ def _processSectionGroup(cfg, ctx, period, idrwBefore):
         cursorSlave = conSlave.cursor()
 
         # 1) удалить группу на стороне ведомой
-        cursorSlave.execute(ctx["deletePeriodSql"], {"createdate": period})
+        cursorSlave.execute(
+            ctx["deletePeriodSql"],
+            _periodBinds(_periodSpec(cfg["slavePeriodColumn"]), period))
 
         # 2) выбрать актуальные записи из ведущей и залить
-        print('error 2 ', ctx["recordGroupSql"], tableNameEtlJobs, period, **(cfg.get("filterParams") or {}))
         cursorMaster.execute(
             ctx["recordGroupSql"],
-            {"tablename": tableNameEtlJobs, "createdate": period,
+            {"tablename": tableNameEtlJobs,
+             **_periodBinds(_periodSpec(cfg["periodColumn"]), period),
              **(cfg.get("filterParams") or {})},
         )
         records = cursorMaster.fetchall()
@@ -1834,11 +1862,6 @@ def _run(cfg):
 
         # 6. Диспатч по режиму
         mode = cfg["mode"]
-        if mode == "query_section":
-            # Группы (year, month) из пользовательского periodsSql, полная
-            # перезаливка каждой группы (Medree_prdisp Oracle->Postgres).
-            _processQuerySection(cfg, ctx)
-            return
         if mode == "section_compare":
             # Универсальный режим срезов для mocheck / medree. Ищет группы
             # сравнением master/slave, поэтому ему нужны все периоды источника
@@ -1863,6 +1886,12 @@ def _run(cfg):
 
         if mode == "section":
             # Срезовый режим без сравнения с ведомой: только isokaudit=4.
+            return
+
+        if mode == "query_section":
+            # Группы задаёт пользовательский periodsSql; перезаливаются тем же
+            # _processGroupUpdate, что и isokaudit=4 (etl_jobs/etl_log ведутся).
+            _processQuerySection(cfg, ctx)
             return
 
         # 7. Точечные обновления через etl_log_iud_row (mode='iud')

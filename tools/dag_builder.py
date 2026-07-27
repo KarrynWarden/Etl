@@ -556,8 +556,7 @@ def load_line(key):
 
     extra = {k: body[k] for k in
              ("filterClause", "filterClauseSlave", "conflictExtra",
-              "conflictWhere", "truncatePeriod", "auditExcludeFields", "skipAudit",
-              "periodYearColumn", "periodMonthColumn")
+              "conflictWhere", "truncatePeriod", "auditExcludeFields", "skipAudit")
              if k in body}
     select_sql = body.get("selectSql")
     select_sql_text = ""
@@ -631,6 +630,27 @@ def _set_skip_audit(key, value):
         fp.write("\n")
 
 
+def _set_line_flag(key, name, value):
+    """Проставить (True) или снять (False) булев флаг у линии в config.d."""
+    body, path = _find_config_body(key)
+    obj = _read_json(path)
+    if value:
+        obj[key][name] = True
+    else:
+        obj[key].pop(name, None)
+    with _group_writable():
+        with open(path, "w", encoding="utf-8") as fp:
+            json.dump(obj, fp, ensure_ascii=False, indent=2)
+            fp.write("\n")
+
+
+def line_disabled(key):
+    """Линия отключена флагом disabled (для линий без собственного файла дага —
+    их обслуживает общий даг-итератор, например MocheckOrclPost)."""
+    body, _ = _find_config_body(key)
+    return bool(body.get("disabled"))
+
+
 def _line_dag_info(key):
     body, _ = _find_config_body(key)
     line, dbm, dbs = split_key(key)
@@ -638,23 +658,49 @@ def _line_dag_info(key):
     return _resolve_dag_path(line, tm, dbm, dbs)  # (path, dag_id, archived)
 
 
+def line_has_own_dag(key):
+    """Есть ли у линии СВОЙ файл дага. У линий mocheck-семейства (PODCHECK3 и
+    т.п.) его нет — они перечислены внутри общего дага-итератора, поэтому
+    архивируются флагом disabled, а не переносом файла."""
+    path, _dag_id, archived = _line_dag_info(key)
+    return os.path.exists(path) or archived
+
+
 def list_archived_lines():
-    """Линии (ключи), чей даг сейчас в архиве."""
-    return [k for k in existing_lines() if _line_dag_info(k)[2]]
+    """Линии, убранные из работы: даг в архиве ЛИБО стоит disabled."""
+    out = []
+    for k in existing_lines():
+        try:
+            if _line_dag_info(k)[2] or line_disabled(k):
+                out.append(k)
+        except Exception:
+            continue
+    return out
 
 
 def list_active_lines():
-    """Линии (ключи), чей даг активен (не в архиве)."""
-    return [k for k in existing_lines() if not _line_dag_info(k)[2]]
+    """Линии в работе: даг не в архиве и нет disabled."""
+    archived = set(list_archived_lines())
+    return [k for k in existing_lines() if k not in archived]
 
 
 def archive_line(key):
-    """Убрать даг линии из Airflow (в архив) + skipAudit. Возвращает dag_id."""
+    """Убрать линию из работы БЕЗ удаления. Возвращает описание того, что сделано.
+
+    Если у линии есть свой файл дага — он уезжает в dags/_archived/ (Airflow его
+    не парсит). Если своего дага нет (линия перечислена в общем даге-итераторе,
+    как PODCHECK3 в MocheckOrclPost) — ставится флаг `disabled`, и даг-итератор
+    такую линию пропускает. В обоих случаях дополнительно ставится skipAudit.
+    """
     path, dag_id, archived = _line_dag_info(key)
-    if archived:
-        raise ValueError(f"Линия '{key}' уже в архиве.")
+    if archived or line_disabled(key):
+        raise ValueError(f"Линия '{key}' уже убрана из работы.")
     if not os.path.exists(path):
-        raise FileNotFoundError(f"Файл дага для '{key}' не найден ({path}).")
+        # своего дага нет — отключаем флагом (иначе линию нельзя было убрать)
+        with _group_writable():
+            _set_line_flag(key, "disabled", True)
+            _set_skip_audit(key, True)
+        return f"{key} (disabled; свой даг отсутствует — линия в общем даге)"
     with _group_writable():
         os.makedirs(_archive_dir(), exist_ok=True)
         ensure_airflowignore()
@@ -664,8 +710,13 @@ def archive_line(key):
 
 
 def restore_line(key):
-    """Вернуть даг линии из архива в Airflow + снять skipAudit. Возвращает dag_id."""
+    """Вернуть линию в работу (из архива / снять disabled) + снять skipAudit."""
     path, dag_id, archived = _line_dag_info(key)
+    if line_disabled(key):
+        with _group_writable():
+            _set_line_flag(key, "disabled", False)
+            _set_skip_audit(key, False)
+        return f"{key} (снят disabled)"
     if not archived:
         raise ValueError(f"Линия '{key}' не в архиве.")
     dst = os.path.join(_dags_dir(), f"{dag_id}.py")
