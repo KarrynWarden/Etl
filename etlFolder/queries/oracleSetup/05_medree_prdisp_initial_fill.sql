@@ -12,11 +12,15 @@
 --     а роли в PL/SQL ненадёжны — нужны ПРЯМЫЕ гранты). Все таблицы ниже — с
 --     явной схемой koknaev; если какая-то (spstandardgr/expmed/medcheck) лежит
 --     в другой схеме, поправь префикс.
---   * DBMS_OUTPUT: команда `SET SERVEROUTPUT ON` — это SQL*Plus, НЕ SQL (в
---     DBeaver/JDBC даёт ORA-00922). В SQL*Plus выполни её отдельно перед блоком;
---     в DBeaver включи серверный вывод кнопкой. Прогресс также видно запросом
---     `SELECT year, month, COUNT(*) FROM koknaev.medree_prdisp GROUP BY ...`
---     из другой сессии.
+--   * ПРОГРЕСС смотри в таблице-логе koknaev.medree_prdisp_log (пишется
+--     автономной транзакцией — виден СРАЗУ, из другой сессии):
+--        SELECT * FROM koknaev.medree_prdisp_log ORDER BY ts DESC;
+--     DBMS_OUTPUT для этого НЕ годится: его буфер отдаётся только после
+--     завершения ВСЕГО блока (а `SET SERVEROUTPUT ON` — команда SQL*Plus, не SQL,
+--     в DBeaver/JDBC даёт ORA-00922).
+--     Внимание: месяцы, где по фильтрам 0 строк, коммитятся с 0 — в самой
+--     medree_prdisp их не видно, поэтому GROUP BY-запрос по таблице может долго
+--     показывать пусто. В логе такие месяцы видны явно (0 строк).
 --   * ПЕРЕД заливкой удали триггер (для direct-path /*+ APPEND */):
 --        DROP TRIGGER koknaev.medree_prdisp_bi;
 --     после — создай заново (скрипт 04). idrw берём явно из sequence в SELECT —
@@ -30,6 +34,36 @@
 --   koknaev.expmed(f): recid, stepexp, svodno
 --   koknaev.medcheck: mo, accno, accdt, mekdt
 --------------------------------------------------------------------------------
+
+-- Таблица-лог прогресса (создать один раз; безопасно перезапускать скрипт —
+-- ошибку «уже существует» глушим).
+DECLARE
+    e_exists EXCEPTION;
+    PRAGMA EXCEPTION_INIT(e_exists, -955);   -- ORA-00955: имя уже занято
+BEGIN
+    EXECUTE IMMEDIATE '
+        CREATE TABLE koknaev.medree_prdisp_log (
+            ts    TIMESTAMP DEFAULT SYSTIMESTAMP,
+            ym    VARCHAR2(7),
+            rows_inserted NUMBER,
+            total NUMBER,
+            note  VARCHAR2(200)
+        )';
+EXCEPTION WHEN e_exists THEN NULL;
+END;
+/
+
+-- Процедура записи прогресса: АВТОНОМНАЯ транзакция — строка лога коммитится
+-- сразу и видна из другой сессии, независимо от основной транзакции заливки.
+CREATE OR REPLACE PROCEDURE koknaev.medree_prdisp_log_p(
+    p_ym VARCHAR2, p_rows NUMBER, p_total NUMBER, p_note VARCHAR2 DEFAULT NULL) AS
+    PRAGMA AUTONOMOUS_TRANSACTION;
+BEGIN
+    INSERT INTO koknaev.medree_prdisp_log (ym, rows_inserted, total, note)
+    VALUES (p_ym, p_rows, p_total, p_note);
+    COMMIT;
+END;
+/
 
 DECLARE
     v_month  DATE;
@@ -48,6 +82,11 @@ BEGIN
         RETURN;
     END IF;
 
+    koknaev.medree_prdisp_log_p(NULL, NULL, 0,
+        'СТАРТ: месяцы ' || TO_CHAR(v_month, 'YYYY-MM') || ' .. '
+        || TO_CHAR(v_end, 'YYYY-MM') || ', всего '
+        || (MONTHS_BETWEEN(v_end, v_month) + 1) || ' шт.');
+
     WHILE v_month <= v_end LOOP
         -- SKIP: месяц уже залит (идемпотентность/возобновление после сбоя).
         SELECT COUNT(*) INTO v_exists
@@ -57,8 +96,13 @@ BEGIN
            AND ROWNUM = 1;
 
         IF v_exists > 0 THEN
+            koknaev.medree_prdisp_log_p(TO_CHAR(v_month, 'YYYY-MM'), NULL, v_total,
+                                        'уже залит, пропуск');
             DBMS_OUTPUT.PUT_LINE(TO_CHAR(v_month, 'YYYY-MM') || ' -> уже залит, пропуск');
         ELSE
+            -- отметка «начал месяц» — видно, что идёт именно этот период
+            koknaev.medree_prdisp_log_p(TO_CHAR(v_month, 'YYYY-MM'), NULL, v_total,
+                                        'начал');
             INSERT /*+ APPEND */ INTO koknaev.medree_prdisp (idrw, id, groupcode, year, month)
             SELECT koknaev.medree_prdisp_seq.NEXTVAL,
                    m.id_rz,
@@ -86,6 +130,8 @@ BEGIN
             v_total := v_total + v_cnt;
             COMMIT;   -- direct-path требует COMMIT перед чтением таблицы на след. итерации
 
+            koknaev.medree_prdisp_log_p(TO_CHAR(v_month, 'YYYY-MM'), v_cnt, v_total,
+                                        'готов');
             DBMS_OUTPUT.PUT_LINE(TO_CHAR(v_month, 'YYYY-MM')
                                  || ' -> ' || v_cnt
                                  || ' строк (итого ' || v_total || ')');
@@ -94,6 +140,7 @@ BEGIN
         v_month := ADD_MONTHS(v_month, 1);
     END LOOP;
 
+    koknaev.medree_prdisp_log_p(NULL, NULL, v_total, 'ФИНИШ');
     DBMS_OUTPUT.PUT_LINE('Готово. Всего залито за этот прогон: ' || v_total);
 END;
 /

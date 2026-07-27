@@ -46,6 +46,115 @@ def _esc(s):
     return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+_MODE_HELP_HTML = """
+<div style='max-height:420px;overflow:auto;padding:8px;line-height:1.45'>
+<b>Режимы переноса (ключ <code>mode</code> в конфиге линии)</b>
+
+<p style='margin:10px 0 4px'><b><code>iud</code></b> — точечные обновления
+(по умолчанию).<br>
+Триггер на ведущей пишет каждое изменение в <code>etl_log_iud_row</code>
+(<code>oper IN ('IU','D')</code>, <code>isetl=0</code>). Процесс читает
+необработанные строки и точечно переносит их в ведомую через UPSERT/MERGE,
+затем ставит <code>isetl=1</code>.<br>
+<i>Когда:</i> обычная таблица с триггером, изменений немного, нужен быстрый
+перенос по факту события. <i>Требует:</i> триггер на ведущей.</p>
+
+<p style='margin:10px 0 4px'><b><code>section</code></b> — срез только по
+требованию.<br>
+Обрабатываются ТОЛЬКО группы, у которых в <code>etl_jobs</code> проставлен
+<code>isokaudit=4</code>. Группа перезаливается целиком (DELETE периода +
+заливка).<br>
+<i>Когда:</i> нужен ручной триггер массового переобновления периода, автоматика
+не нужна.</p>
+
+<p style='margin:10px 0 4px'><b><code>section_compare</code></b> — срез со
+сравнением (mocheck, medree).<br>
+Сравнивает пары <code>(period, MAX(lastupdate))</code> на ведущей и ведомой,
+добавляет группы из <code>etl_log_iud_row</code> и с <code>isokaudit=4</code>;
+каждую расходящуюся группу перезаливает целиком.<br>
+<i>Когда:</i> данные меняются пачками задним числом, и надёжнее сверять срез,
+чем ловить каждое событие. <i>Дорого:</i> сканирует источник.</p>
+
+<p style='margin:10px 0 4px'><b><code>delete_insert</code></b> — событийный, но
+«один id = несколько строк» (expmed).<br>
+Как <code>iud</code> читает <code>etl_log_iud_row</code>, но на каждое событие
+<code>idrw</code> делает DELETE всех строк этого <code>idrw</code> в ведомой и
+(для <code>IU</code>) INSERT актуальных.<br>
+<i>Когда:</i> одна запись-источник даёт несколько строк ведомой и при смене
+атрибута (напр. <code>doctype</code>) остаются «осиротевшие» строки, которые
+upsert не убирает.</p>
+
+<p style='margin:10px 0 4px'><b><code>query_section</code></b> — группы из
+своего запроса (Medree_prdisp).<br>
+Список групп берётся из пользовательского <code>periodsSql</code> (возвращает
+пары <code>year, month</code>), каждая группа обновляется полной перезаписью:
+DELETE <code>(year, month)</code> в ведомой + заливка той же группы из ведущей.
+Задаётся ещё <code>periodYearColumn</code>/<code>periodMonthColumn</code>
+(по умолч. <code>year</code>/<code>month</code>).<br>
+<i>Когда:</i> периода-даты нет (только year+month), а какие периоды пересчитаны —
+знает ваш SQL. <code>etl_jobs</code> режим не ведёт → ставьте
+<code>skipAudit</code>. <i>Не требует</i> триггера на ведущей.</p>
+</div>
+"""
+
+_CRON_HELP_HTML = """
+<div style='max-height:420px;overflow:auto;padding:8px;line-height:1.45'>
+<b>Как заполнять cron</b>
+
+<p style='margin:8px 0 4px'>Пять полей через пробел:</p>
+<pre style='margin:4px 0'>┌ минута (0-59)
+│ ┌ час (0-23)
+│ │ ┌ день месяца (1-31)
+│ │ │ ┌ месяц (1-12)
+│ │ │ │ ┌ день недели (0-6, 0 = воскресенье)
+│ │ │ │ │
+*  *  *  *  *</pre>
+
+<p style='margin:8px 0 4px'><b>Символы:</b>
+<code>*</code> — любое значение;
+<code>,</code> — перечисление (<code>11,13,20</code>);
+<code>-</code> — диапазон (<code>9-18</code>);
+<code>/</code> — шаг (<code>*/15</code> — каждые 15).</p>
+
+<p style='margin:8px 0 4px'><b>Примеры:</b></p>
+<table style='border-collapse:collapse'>
+<tr><td style='padding:2px 10px 2px 0'><code>*/5 * * * *</code></td><td>каждые 5 минут</td></tr>
+<tr><td style='padding:2px 10px 2px 0'><code>0 * * * *</code></td><td>каждый час в :00</td></tr>
+<tr><td style='padding:2px 10px 2px 0'><code>50 11,13,20 * * *</code></td><td>в 11:50, 13:50 и 20:50</td></tr>
+<tr><td style='padding:2px 10px 2px 0'><code>0 3 * * *</code></td><td>каждый день в 03:00</td></tr>
+<tr><td style='padding:2px 10px 2px 0'><code>30 2 * * 1-5</code></td><td>по будням в 02:30</td></tr>
+<tr><td style='padding:2px 10px 2px 0'><code>0 0 1 * *</code></td><td>1-го числа каждого месяца в 00:00</td></tr>
+<tr><td style='padding:2px 10px 2px 0'><code>0 8-18/2 * * *</code></td><td>с 8 до 18 каждые 2 часа</td></tr>
+</table>
+
+<p style='margin:10px 0 4px'><b>Важно:</b> одно поле = ОДНО выражение. Нельзя
+задать «11:20 и 13:50» одной строкой (разные минуты) — для этого либо режим
+«В заданные часы» (одинаковая минута), либо два DAG'а.</p>
+
+<p style='margin:8px 0 4px'><b>Часовой пояс</b> — как настроен Airflow
+(<code>timezone</code> в конфиге/DAG'ах проекта — Asia/Yekaterinburg).
+Проверить, что вы имели в виду, удобно на crontab.guru.</p>
+</div>
+"""
+
+
+def _help_toggle(W, html, width="820px"):
+    """Кнопка «ℹ» + сворачиваемая панель со справкой.
+
+    Настоящего модального окна в ipywidgets нет (и в Voilà оно бы не всплыло),
+    поэтому справка раскрывается прямо под полем — работает одинаково в Jupyter
+    и Voilà. Возвращает (btn, box)."""
+    btn = W.Button(description="", icon="info-circle", tooltip="Подробнее",
+                   layout=W.Layout(width="42px"))
+    box = W.HTML(html, layout=W.Layout(display="none", width=width,
+                                       border="1px solid #17a2b8", margin="4px 0"))
+
+    def _toggle(_):
+        box.layout.display = "none" if box.layout.display == "" else ""
+    btn.on_click(_toggle)
+    return btn, box
+
+
 def _spinner_html(text):
     """HTML с CSS-спиннером. Анимация чисто клиентская (@keyframes), поэтому
     крутится даже пока ядро занято синхронным git push — мгновенный фидбек, что
@@ -336,6 +445,7 @@ def _complex_ui():
                       options=["iud", "section", "section_compare", "delete_insert",
                                "query_section"],
                       layout=W.Layout(width="280px"), style={"description_width": "110px"})
+    mode_info_btn, mode_info_box = _help_toggle(W, _MODE_HELP_HTML)
     doc = W.Text(description="Комментарий", placeholder="_doc: краткое описание линии",
                  layout=W.Layout(width="640px"), style={"description_width": "110px"})
 
@@ -361,15 +471,20 @@ def _complex_ui():
     sched_cron = W.Text(description="cron", placeholder="50 11,13,20 * * *",
                         layout=W.Layout(width="420px"),
                         style={"description_width": "110px"})
+    cron_info_btn, cron_info_box = _help_toggle(W, _CRON_HELP_HTML)
     sched_help = W.HTML("<span style='color:#888'>Интервал — для frequent. "
                         "«Часы:мин» — несколько запусков в день с одинаковой минутой "
-                        "(напр. 11:50, 13:50, 20:50). Cron — для сложных случаев.</span>")
+                        "(напр. 11:50, 13:50, 20:50). Cron — для сложных случаев "
+                        "(жми ℹ рядом с полем cron).</span>")
     sched_inputs = W.VBox([sched_minutes])
 
     def _on_sched_kind(_=None):
         kind = _SCHED_KINDS[sched_kind.value]
         sched_inputs.children = {
-            "interval": [sched_minutes], "times": [sched_times], "cron": [sched_cron],
+            "interval": [sched_minutes],
+            "times": [sched_times],
+            # у cron — кнопка ℹ со шпаргалкой по формату
+            "cron": [W.HBox([sched_cron, cron_info_btn]), cron_info_box],
         }[kind]
     sched_kind.observe(_on_sched_kind, names="value")
 
@@ -932,7 +1047,7 @@ def _complex_ui():
         W.HBox([tm, ts]), W.HBox([btn_case, case_hint]),
         W.HBox([dbm, dbs]), W.HBox([user_m_box, user_s_box]),
         W.HBox([line, dag]), dag_preview,
-        W.HBox([mode, retry]), doc,
+        W.HBox([mode, mode_info_btn, retry]), mode_info_box, doc,
         W.HTML("<b>Расписание и ретраи</b>"), sched_kind, sched_inputs, sched_help,
         W.HTML("<b>Теги</b> (несколько). Новый тег впиши прямо в поле ниже и нажми "
                "Enter. Существующий — выбери из списка и «+ выбранный»:"),
