@@ -325,6 +325,16 @@ def runEtl(tableNameMaster, dbMaster, dbSlave, tableNameEtlJobs=None,
 
     Заморозка отдаёт 🟪 (AirflowSkipException), но с XCom-меткой frozen=True —
     watcher по этой метке решает, удерживать DAG-run или нет.
+
+    РЕТРАИТСЯ ТОЛЬКО КЛАСС retryable (мёртвое соединение). Итоговая раскладка:
+
+    | что случилось              | error_class | ретраи | квадрат | заморозка |
+    |----------------------------|-------------|--------|---------|-----------|
+    | нечего переносить          | —           | нет    | ⬜      | нет       |
+    | SIGTERM (рестарт airflow)  | —           | нет    | ⬜      | нет       |
+    | соединение умерло          | retryable   | ДА     | 🟡→🟥   | да        |
+    | плохая запись / констрейнт | record      | нет    | 🟥      | нет       |
+    | битый SQL / структура (FLK)| fatal       | нет    | 🟥      | да        |
     """
     line = tableNameEtlJobs or tableNameMaster
 
@@ -341,10 +351,20 @@ def runEtl(tableNameMaster, dbMaster, dbSlave, tableNameEtlJobs=None,
             # БЕЗ frozen-маркера → watcher видит «линия жива».
             raise
         except RecordScopeError as err:
-            # часть записей не перенесена — линию НЕ морозим, квадрат 🟥
+            # Часть записей не перенесена (плохие данные / констрейнт). Линию НЕ
+            # морозим (error_class='record' прозрачен для FSM и watcher'а), но
+            # ретраить НЕЛЬЗЯ: припаркованные записи уже помечены isetl=-1 и
+            # повторный запуск их не выбирает — он находит пустой журнал и
+            # завершается skip'ом. Красный квадрат при этом перекрашивался в
+            # ⬜, и в общем списке дагов ошибка становилась не видна.
+            # AirflowFailException пропускает оставшиеся retries: запуск
+            # остаётся 🟥 ровно там, где произошла ошибка. Так же поступает
+            # аудит с AuditScopeError.
             ti.xcom_push(key="error_class", value="record")
-            logging.error("RECORD-ошибки в запуске линии %s: %s", line, err)
-            raise AirflowException(f"Линия {line}: {err}")
+            logging.error("RECORD-ошибки в запуске линии %s: %s. Авто-ретрая "
+                          "не будет — записи припаркованы (isetl=-1), нужен "
+                          "разбор человеком.", line, err)
+            raise AirflowFailException(f"Линия {line}: {err}")
         except AirflowFailException as err:
             # FLK или иное мгновенно-фатальное (raise из Do_etl)
             ti.xcom_push(key="error_class", value="fatal")
@@ -363,9 +383,15 @@ def runEtl(tableNameMaster, dbMaster, dbSlave, tableNameEtlJobs=None,
             cls = classifyError(err) or "fatal"
             ti.xcom_push(key="error_class", value=cls)
             logging.error("Линия %s (класс=%s): %s", line, cls, err)
-            if cls == "fatal":
-                raise AirflowFailException(f"Линия {line}: {err}")
-            raise AirflowException(f"Линия {line}: {err}")
+            # Ретраи имеют смысл ТОЛЬКО для retryable (мёртвое соединение) —
+            # там повтор действительно может пройти. record (плохая запись) и
+            # fatal (битый SQL/структура) повтором не чинятся: record ещё и
+            # перекрашивал 🟥 в ⬜, потому что припаркованные записи на второй
+            # попытке уже не выбираются. Поэтому всё, кроме retryable, —
+            # AirflowFailException: терминальный 🟥 без ретраев.
+            if cls == "retryable":
+                raise AirflowException(f"Линия {line}: {err}")
+            raise AirflowFailException(f"Линия {line}: {err}")
 
     return _task
 

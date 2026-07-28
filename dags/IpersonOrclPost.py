@@ -19,4 +19,4 @@ with DAG(
         tableNameMaster="iperson", dbMaster="Post", dbSlave="Orcl",
         retryMode="rare",
     )
-    addFreezeWatcher([task])
+    addFreezeWatcher([task], retryMode="rare")
