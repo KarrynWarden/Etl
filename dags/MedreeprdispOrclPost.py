@@ -1,9 +1,18 @@
-"""DAG: Orcl→Post для MEDREE_PRDISP (режим query_section).
+"""DAG: Orcl→Post для MEDREE_PRDISP — ЧАСТЬ 2 процесса (режим section).
 
-Перенос Medree_prdisp Oracle→Postgres: группы (year, month) из periodsSql,
-каждая группа обновляется полной перезаписью. Идёт ночью ПОСЛЕ Oracle-джоба
-medree_prdisp_refresh (02:00), поэтому в 03:00 — переносим уже пересчитанные
-группы. retryMode='rare' (редкий ночной запуск, ретраи делает airflow).
+Часть 1 (внутри Oracle, 02:00, koknaev.medree_prdisp_refresh) пересчитывает
+Medree_prdisp за последние 18 месяцев и ставит ETL_JOBS.ISOKAUDIT = 4 тем
+периодам (year, month), которые реально изменились.
+
+Этот даг забирает из ETL_JOBS группы своей линии с ISOKAUDIT = 4 и переносит
+каждую в Postgres полной перезаписью: DELETE группы в ведомой + заливка из
+ведущей, затем LAST_SUCCESS_TS/ISOKAUDIT = 0 и запись в ETL_LOG. Групп с
+ISOKAUDIT = 4 нет — задача завершается пропуском (⬜), ничего не трогая.
+
+Расписание 05:00 и 07:00 — из постановки 827 (п. 8.3.1); оба запуска идут
+после ночного джоба. Второй нужен как страховка: если в 05:00 часть групп не
+успела или упала, они остаются с ISOKAUDIT = 4 и уезжают в 07:00.
+retryMode='rare' — редкий запуск, ретраи делает airflow.
 """
 import datetime as dt
 
@@ -15,8 +24,8 @@ with DAG(
     dag_id="MedreeprdispOrclPost",
     default_args=DEFAULT_ARGS,
     max_active_runs=1,
-    tags=["OrclPost", "medree_prdisp", "DbSync"],
-    schedule_interval="0 3 * * *",
+    tags=["OrclPost", "medree_prdisp", "DbSync", "section"],
+    schedule_interval="0 5,7 * * *",
     catchup=False,
 ) as dag:
     configureLogger()

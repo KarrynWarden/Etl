@@ -46,6 +46,7 @@ from collections import defaultdict
 from decimal import Decimal
 
 import psycopg2
+import psycopg2.extras
 import cx_Oracle
 from airflow.exceptions import (
     AirflowSkipException, AirflowException, AirflowFailException,
@@ -1050,11 +1051,23 @@ def _processGroupUpdate(cfg, ctx, dateGroup):
             conSlave.close()
 
 
+# Сколько строк psycopg2 склеивает в один запрос к серверу (execute_batch).
+_PG_BATCH_PAGE = 1000
+
+
 def _bulkUpsert(cursorSlave, dbSlave, upsertSql, structSlave, records):
-    """Вставка/обновление пачки записей в ведомой."""
+    """Вставка/обновление пачки записей в ведомой.
+
+    Postgres: execute_batch вместо executemany. psycopg2.executemany гоняет
+    ОТДЕЛЬНЫЙ round-trip на каждую строку — на группах в ~90 тыс. строк
+    (medree_prdisp) это часы вместо минут. execute_batch склеивает по
+    _PG_BATCH_PAGE операторов в один запрос; SQL и параметры те же, поэтому
+    работает одинаково и с INSERT, и с INSERT ... ON CONFLICT.
+    """
     if _isPost(dbSlave):
         if records:
-            cursorSlave.executemany(upsertSql, records)
+            psycopg2.extras.execute_batch(cursorSlave, upsertSql, records,
+                                          page_size=_PG_BATCH_PAGE)
         return
     # Oracle: позиционные параметры :1 .. :N
     for record in records:
@@ -1896,6 +1909,11 @@ def _run(cfg):
 
         if mode == "section":
             # Срезовый режим без сравнения с ведомой: только isokaudit=4.
+            # Групп не было — работы нет, помечаем прогон пропуском (⬜), как
+            # это делает iud с пустым журналом. Иначе холостые ночные запуски
+            # (а их большинство) неотличимы от реальных переносов.
+            if not groups:
+                raise AirflowSkipException
             return
 
         if mode == "query_section":

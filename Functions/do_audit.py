@@ -55,6 +55,8 @@ from Functions.do_etl import (
     _resolveEtlPath,
     _appendFilter, _filterEtlFields, _bindName, _buildFieldsStr,
     _executeQuery, _configKey, classifyError, _asAndClause,
+    _periodSpec, _periodBinds,
+    _periodCond as _etlPeriodCond,
 )
 from Src.generalQueries import (
     structureCheckOrclSql,
@@ -129,13 +131,22 @@ def _auditFields(jsonStructFull, etlFields, auditExcludeFields):
 def _periodCond(dbType, periodColumn, truncatePeriod):
     """Условие WHERE по периоду с плейсхолдером :createdate / %(createdate)s.
 
-    truncatePeriod=True (medree: dcalc содержит время) — сравниваем по дате.
-    COALESCE с сентинелом обрабатывает группы с period IS NULL.
+    Период — свойство таблицы, а не режима (см. README): одна колонка-дата
+    ЛИБО составной {"year": ..., "month": ...}. Составной отдаём в общую
+    сборку из do_etl — сравнение по частям (year = :createdate_y AND
+    month = :createdate_m), те же бинды, что и при переносе.
+
+    Одиночная колонка: truncatePeriod=True (medree: dcalc содержит время) —
+    сравниваем по дате; COALESCE с сентинелом обрабатывает группы с
+    period IS NULL (у составного периода NULL-группы быть не может).
     """
+    spec = _periodSpec(periodColumn)
+    if spec["kind"] != "single":
+        return _etlPeriodCond(dbType, spec, "p", "createdate", truncatePeriod)
     if truncatePeriod:
-        expr = f"DATE(p.{periodColumn})" if _isPost(dbType) else f"TRUNC(p.{periodColumn})"
+        expr = f"DATE(p.{spec['column']})" if _isPost(dbType) else f"TRUNC(p.{spec['column']})"
     else:
-        expr = f"p.{periodColumn}"
+        expr = f"p.{spec['column']}"
     bind = _bindName(dbType, "createdate")
     return (f"COALESCE({expr}, {_SENTINEL}) = COALESCE({bind}, {_SENTINEL})")
 
@@ -298,12 +309,19 @@ def _auditGroup(cfg, ctx, origPeriod, report):
     period = _normalizePeriod(origPeriod)
 
     try:
+        # Бинды периода строятся отдельно для каждой стороны: у ведущей и
+        # ведомой период может быть устроен по-разному (у одной составной
+        # year+month, у другой одна колонка-дата).
         # filterParams нужны только ведущему источнику (selectSql); у ведомой
         # срез задан литеральным filterClauseSlave, лишние бинды Oracle не любит.
-        cursorMaster.execute(ctx["masterSql"],
-                             {"createdate": period, **filterParams})
+        cursorMaster.execute(
+            ctx["masterSql"],
+            {**_periodBinds(_periodSpec(cfg["periodColumn"]), period),
+             **filterParams})
         masterRows = cursorMaster.fetchall()
-        cursorSlave.execute(ctx["slaveSql"], {"createdate": period})
+        cursorSlave.execute(
+            ctx["slaveSql"],
+            _periodBinds(_periodSpec(cfg["slavePeriodColumn"]), period))
         slaveRows = cursorSlave.fetchall()
 
         set1, set2 = _toComparable(dbMaster, cfg["dbSlave"], masterRows,

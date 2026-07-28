@@ -2,31 +2,31 @@
 "data": [
 	{
 		"column_name" : "idrw",
-		"data_type" : "numeric",
+		"data_type" : "integer",
 		"data_scale" : 0,
 		"is_primary_key" : "Primary Key"
 	},
 	{
 		"column_name" : "id",
-		"data_type" : "numeric",
+		"data_type" : "bigint",
 		"data_scale" : 0,
 		"is_primary_key" : null
 	},
 	{
-		"column_name" : "grouppcode",
-		"data_type" : "numeric",
+		"column_name" : "groupcode",
+		"data_type" : "smallint",
 		"data_scale" : 0,
 		"is_primary_key" : null
 	},
 	{
 		"column_name" : "year",
-		"data_type" : "numeric",
+		"data_type" : "integer",
 		"data_scale" : 0,
 		"is_primary_key" : null
 	},
 	{
 		"column_name" : "month",
-		"data_type" : "numeric",
+		"data_type" : "integer",
 		"data_scale" : 0,
 		"is_primary_key" : null
 	}
