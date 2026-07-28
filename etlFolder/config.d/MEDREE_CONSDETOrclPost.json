@@ -1,5 +1,5 @@
 {
-  "medree_consdetOrclPost": {
+  "MEDREE_CONSDETOrclPost": {
     "_doc": "oracle->postgres, medree_consdet. Аналогично medree_cons.",
     "tableNameMaster": "MEDREE_CONSDET",
     "tableNameSlave": "medree_consdet",

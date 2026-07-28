@@ -263,7 +263,8 @@ def build_all(spec):
       pairs (список (master_name, slave_name)),
       period_column, slave_period_column.
     Необязательные:
-      line_name (по умолч. bare(table_master).lower()),
+      line_name (по умолч. bare(table_master) в регистре ведущей БД:
+                 Oracle — ВЕРХНИЙ, Postgres — нижний, см. to_db_case),
       dag_id    (по умолч. CamelCase(line_name)+db_master+db_slave),
       mode ('iud' по умолч.), tags, schedule_minutes, retry_mode,
       doc (строка _doc), extra (dict доп. ключей конфига: filterClause,
@@ -273,7 +274,15 @@ def build_all(spec):
     tm, ts = spec["table_master"], spec["table_slave"]
     dbm, dbs = spec["db_master"], spec["db_slave"]
     m_bare, s_bare = bare(tm), bare(ts)
-    line = spec.get("line_name") or m_bare.lower()
+    # Имя линии = tableNameEtlJobs = значение tablename в etl_jobs /
+    # etl_log_iud_row, и оно же префикс ключа конфига. Сравнение с этой колонкой
+    # в SQL РЕГИСТРОЗАВИСИМОЕ, а пишет её триггер ведущей — то есть регистр
+    # должен быть регистром ВЕДУЩЕЙ БД (Oracle — ВЕРХНИЙ, Postgres — нижний).
+    # Безусловный .lower() здесь давал для oracle-ведущих ключ вида
+    # 'medree_consOrclPost' при том, что даг спрашивает 'MEDREE_CONSOrclPost':
+    # перенос падал с «Конфиг для ключа ... не найден», а аудит (он берёт имя
+    # из ключа) молча не находил ни одной группы в etl_jobs.
+    line = spec.get("line_name") or to_db_case(m_bare, dbm)
     dag_id = spec.get("dag_id") or default_dag_id(line, dbm, dbs)
     key = f"{line}{dbm}{dbs}"
 

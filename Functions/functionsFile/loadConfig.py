@@ -68,8 +68,26 @@ def loadFullConfig():
 
 
 def LoadConfig(configKey):
-    """Параметры одной линии по ключу tableNameEtlJobs+dbMaster+dbSlave."""
+    """Параметры одной линии по ключу tableNameEtlJobs+dbMaster+dbSlave.
+
+    Ключ РЕГИСТРОЗАВИСИМЫЙ и подобран так не случайно: его префикс —
+    tableNameEtlJobs, то есть значение колонки tablename в etl_jobs /
+    etl_log_iud_row, а сравнение с ней в SQL тоже регистрозависимое. Регистр
+    задаёт триггер ведущей: Oracle пишет имена ВЕРХНИМ регистром, Postgres —
+    нижним. Поэтому «подобрать» ключ без учёта регистра нельзя — линия бы
+    стартовала, но не нашла бы в журнале ни одной своей записи.
+    Зато про такое расхождение полезно сказать прямо.
+    """
     config = loadFullConfig()
-    if configKey not in config["data"]:
-        raise KeyError(f"Конфиг для ключа {configKey} не найден")
-    return config["data"][configKey]
+    data = config["data"]
+    if configKey not in data:
+        similar = [k for k in data if k.lower() == configKey.lower()]
+        hint = ""
+        if similar:
+            hint = (f" Есть ключ {similar[0]!r} — различие только в РЕГИСТРЕ. "
+                    f"Регистр имени линии должен совпадать с тем, что пишет в "
+                    f"etl_log_iud_row/etl_jobs триггер ведущей БД (Oracle — "
+                    f"ВЕРХНИЙ, Postgres — нижний); переименуй фрагмент в "
+                    f"config.d, а не подгоняй даг.")
+        raise KeyError(f"Конфиг для ключа {configKey} не найден.{hint}")
+    return data[configKey]

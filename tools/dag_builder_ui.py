@@ -512,7 +512,8 @@ def _complex_ui():
 
     user_m_box, user_m_get = _user_field("Пользователь ведущей")
     user_s_box, user_s_get = _user_field("Пользователь ведомой")
-    line = W.Text(description="Имя линии", placeholder="по умолч. = имя ведущей",
+    line = W.Text(description="Имя линии",
+                  placeholder="по умолч. = имя ведущей в регистре её БД",
                   layout=W.Layout(width="380px"), style={"description_width": "110px"})
     dag = W.Text(description="dag_id", placeholder="по умолч. авто (см. ниже)",
                  layout=W.Layout(width="380px"), style={"description_width": "110px"})
@@ -585,7 +586,8 @@ def _complex_ui():
     btn_add_tag.on_click(_add_tag)
 
     def _default_tags():
-        ln = line.value.strip() or (B.bare(tm.value.strip()).lower() if tm.value.strip() else "")
+        ln = line.value.strip() or (B.to_db_case(B.bare(tm.value.strip()), dbm.value)
+                                    if tm.value.strip() else "")
         t = [f"{dbm.value}{dbs.value}"]
         if ln:
             t.append(ln)
@@ -688,8 +690,9 @@ def _complex_ui():
 
     # ── живой предпросмотр dag_id ──
     def _update_dag_preview(_=None):
-        ln = (line.value.strip() or B.bare(tm.value.strip()).lower()) if tm.value.strip() \
-            or line.value.strip() else ""
+        ln = (line.value.strip()
+              or B.to_db_case(B.bare(tm.value.strip()), dbm.value)) \
+            if tm.value.strip() or line.value.strip() else ""
         if dag.value.strip():
             dag_preview.value = (f"<span style='color:#888'>dag_id (задан вручную): "
                                  f"<code>{dag.value.strip()}</code></span>")
