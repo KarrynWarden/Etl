@@ -27,7 +27,11 @@ SERVER=${SERVER_REMOTE:-server}
 JUPYTER_CLONE=${JUPYTER_CLONE:-/opt/jupyter/workdir/konkin/etl}
 # «Файлы процессов»: правки тут могли сделать коллеги — их стоит изучить, а не
 # затирать вслепую. Остальное (README, tools и т.п.) — локальная версия новее.
-PROTECTED_RE='(^|/)dags/|(^|/)structures/|(^|/)customQueries/'
+# Сюда же линии справочников/разового переноса: SpTableName.d/, SpOnce.d/ и
+# queries/sp/ — это тоже файлы процессов, собранные конструктором. Без них
+# новые sp-линии попадали в раздел «прочее, локальная версия новее» и скрипт
+# предлагал их затереть, хотя это свежая работа, а не устаревшая правка.
+PROTECTED_RE='(^|/)dags/|(^|/)structures/|(^|/)customQueries/|(^|/)config\.d/|(^|/)SpTableName\.d/|(^|/)SpOnce\.d/|(^|/)queries/sp/'
 
 cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 

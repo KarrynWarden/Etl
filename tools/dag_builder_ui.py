@@ -396,9 +396,20 @@ def _publish_controls(W, out, do_write, message_fn, on_pushed=None):
 
     def _show(_):
         br = B.current_branch() or "— (detached / не git)"
+        # Коммит забирает и уже сохранённые изменения (см. B.git_commit_push):
+        # показываем их СПИСКОМ до нажатия «Да», чтобы прихватить чужую работу
+        # в общем клоне можно было только осознанно.
+        changed = B.git_status_short()
+        extra = (
+            "Вместе с текущей линией уедут уже сохранённые изменения "
+            f"(кнопка «Создать файлы» без пуша):<pre style='max-height:200px;"
+            f"overflow:auto'>{_esc(changed)}</pre>"
+            if changed.strip() else
+            "Других сохранённых изменений нет — уедет только текущая линия.")
         info.value = (
             "<b>Выложить в git?</b> Файлы будут созданы, затем "
             f"<code>git commit</code> и <code>git push origin {br}</code>. "
+            f"{extra}"
             "Это выкатывает изменения на удалёнку — сверься с предпросмотром. "
             "Нажми «Да», только если уверен.")
         confirm.layout.display = ""
