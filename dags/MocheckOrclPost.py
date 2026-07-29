@@ -1,8 +1,9 @@
 """DAG: oracle -> postgres для mocheck.
 
-mocheck на postgres — сводная таблица с 9 типами doctype (1..9), куда
-переносятся данные из 6 разных Oracle-таблиц (MEDCHECK, EXPMED [3 ветки],
-PODCHECK [2 ветки], REQPREPMO+REQPREPSMO, TFOUTSCHET, TFINSCHET).
+mocheck на postgres — сводная таблица с 9 типами doctype (1..9). Этот даг
+переносит в неё данные из Oracle: MEDCHECK (1), EXPMED (2,3,4), PODCHECK и
+SPPODNORM (5,6), TFOUTSCHET (8), TFINSCHET (9). doctype=7 сюда не входит —
+он приезжает из Postgres (см. даг ReqprepmoMocheckPostPost).
 
 Источник для всех 9 — общий MOCHECK.sql (UNION ALL, в каждой ветке свой
 doctype). Логические группы различаются filterClause/filterClauseSlave
@@ -33,6 +34,10 @@ MOCHECK_LOGICAL_GROUPS = [
     ("MEDCHECK", 1),
     ("EXPMED", "2,3,4"),
     ("PODCHECK", "5,6"),
+    # doctype=7 здесь НЕ переносится: у REQPREPMO ведущей стала сторона
+    # Postgres, и mocheck doctype=7 наполняет линия reqprepmomocheckPostPost
+    # (даг ReqprepmoMocheckPostPost). Линия REQPREPMOOrclPost — в архиве
+    # (disabled + skipAudit), её конфиг оставлен на случай возврата.
     #("REQPREPMO", 7),
     ("TFOUTSCHET", 8),
     ("TFINSCHET", 9),
