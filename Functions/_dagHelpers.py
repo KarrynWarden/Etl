@@ -5,6 +5,9 @@ FSM-ретраев по тикам расписания, watcher с авто-у�
 Классы ошибок (записываются в XCom 'error_class' на упавшей задаче):
   - 'record'    — ошибка по конкретной записи: запись припаркована
                    (isetl=-1), линия НЕ морозится, квадрат 🟥 для видимости;
+  - 'shutdown'  — SIGTERM (деплой / перезапуск airflow): НЕ ошибка. Ничего не
+                   паркуется, недоделанное остаётся в журнале (isetl=0) и
+                   уезжает следующим запуском, прогон ⬜;
   - 'retryable' — соединение умерло — FSM считает в backoff-серию;
   - 'fatal'     — структурная (Programming, FLK, битый JSON конфига) —
                    FSM сразу frozen, ретраи бессмысленны.
@@ -14,7 +17,11 @@ FSM-ретраев по тикам расписания, watcher с авто-у�
 удерживать DAG-run или нет.
 
 SIGTERM при перезапуске airflow конвертируется в SkipException (🟪) —
-не загрязняет историю ложными красными квадратами при деплое.
+не загрязняет историю ложными красными квадратами при деплое. Ловится он не
+только снаружи: обработчики отдельной записи и отдельной группы внутри do_etl
+тоже отличают SIGTERM от ошибки данных (do_etl.isShutdown) и НЕ помечают
+записи isetl=-1, а группы isokaudit=-1 — иначе после каждого деплоя пришлось
+бы руками возвращать статусы в БД.
 """
 import datetime as dt
 import json
@@ -33,7 +40,8 @@ from airflow.utils.session import create_session
 from airflow.utils.state import State
 from airflow.utils.timezone import utcnow
 
-from Functions.do_etl import Do_etl, RecordScopeError, classifyError
+from Functions.do_etl import (Do_etl, RecordScopeError, ShutdownRequested,
+                             classifyError, isShutdown)
 from Functions.do_audit import Do_audit, AuditScopeError
 from Src.fullPath import FULL_PATH, WEB_BASE_URL
 
@@ -261,7 +269,9 @@ def _previousRunFailed(context):
 # ----------------------------------------------------------------------------
 
 def _isSigterm(err):
-    return "SIGTERM" in str(err)
+    """Совместимость: единый детектор живёт в do_etl.isShutdown (он же
+    разматывает __cause__/__context__ и знает про ShutdownRequested)."""
+    return isShutdown(err)
 
 
 def _markFrozen(ti, errorClass):
@@ -350,6 +360,13 @@ def runEtl(tableNameMaster, dbMaster, dbSlave, tableNameEtlJobs=None,
             # «нет записей для обновления» — пробрасываем как обычный skip,
             # БЕЗ frozen-маркера → watcher видит «линия жива».
             raise
+        except ShutdownRequested as err:
+            # Деплой/перезапуск airflow прервал перенос. Не ошибка: ничего не
+            # припарковано, недоделанное осталось в журнале и уедет следующим
+            # запуском. ⬜ без frozen-метки — линия жива, ретрай не нужен.
+            # Ловим ДО RecordScopeError: оба класса — AirflowException.
+            logging.warning("Линия %s: %s", line, err)
+            raise AirflowSkipException(str(err))
         except RecordScopeError as err:
             # Часть записей не перенесена (плохие данные / констрейнт). Линию НЕ
             # морозим (error_class='record' прозрачен для FSM и watcher'а), но
@@ -422,6 +439,9 @@ def runAudit(tableNameMaster, dbMaster, dbSlave, tableNameEtlJobs=None,
         except AirflowSkipException:
             # «нет групп для проверки» — обычный skip без frozen-метки.
             raise
+        except ShutdownRequested as err:
+            logging.warning("Аудит %s: %s", line, err)
+            raise AirflowSkipException(str(err))
         except AuditScopeError as err:
             # не все группы идентичны (-4/-2): красим 🟥 для видимости, но
             # БЕЗ авто-ретраев и БЕЗ заморозки. Ретрай аудита почти никогда не

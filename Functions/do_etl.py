@@ -124,6 +124,48 @@ logger = logging.getLogger(__name__)
 #                       Классификация ошибок по типу
 # ----------------------------------------------------------------------------
 
+class ShutdownRequested(AirflowException):
+    """Процесс остановили извне (SIGTERM при деплое / перезапуске airflow), а не
+    наткнулись на плохие данные.
+
+    Ключевое отличие от RecordScopeError: НИЧЕГО не паркуем. Необработанные
+    записи остаются в журнале с isetl=0 и уедут следующим запуском, поэтому
+    после деплоя не нужно руками возвращать -1 в 0. runEtl превращает это
+    в AirflowSkipException — прогон ⬜, линия не морозится и не краснеет.
+    """
+    pass
+
+
+def isShutdown(err):
+    """SIGTERM / остановка задачи, а не ошибка данных.
+
+    Своего класса у этого исключения нет: airflow бросает
+    AirflowException('Task received SIGTERM signal') прямо из обработчика
+    сигнала, поэтому оно может прилететь в ЛЮБОЙ точке — в том числе внутри
+    except-блока, который разбирает предыдущую ошибку. Отличаем по тексту и
+    разматываем цепочку __cause__/__context__ (страховка от зацикливания —
+    множество уже виденных).
+    """
+    seen = set()
+    while err is not None and id(err) not in seen:
+        seen.add(id(err))
+        if isinstance(err, ShutdownRequested):
+            return True
+        if "sigterm" in str(err).lower():
+            return True
+        err = err.__cause__ or err.__context__
+    return False
+
+
+def _safeRollback(con):
+    """Откат без шума: во время SIGTERM соединение уже может быть нерабочим."""
+    try:
+        if con is not None:
+            con.rollback()
+    except Exception:
+        pass
+
+
 class RecordScopeError(AirflowException):
     """Часть записей не перенесена из-за ошибок per-record (плохие данные,
     констрейнт и т.п.). Эти записи припаркованы (isetl=-1), линия НЕ
@@ -165,6 +207,10 @@ def classifyError(err):
     засигналит чередой 🟥 и счётчиком провальных в общем списке,
     но не заморозит линию из-за одной странной записи).
     """
+    # SIGTERM — не ошибка данных и не поломка соединения: это внешняя
+    # остановка, повторять/парковать нечего.
+    if isShutdown(err):
+        return "shutdown"
     # AirflowException обычно обёрнут вокруг настоящей причины через
     # `raise ... from err` — раскручиваем до корня.
     while isinstance(err, AirflowException) and err.__cause__ is not None:
@@ -1032,6 +1078,18 @@ def _processGroupUpdate(cfg, ctx, dateGroup):
                   cursorMaster, conMaster, len(records), createdate)
         logger.info("Группа %s успешно обработана", createdate)
     except Exception as err:
+        if isShutdown(err):
+            # SIGTERM — не ошибка группы. Статус НЕ трогаем: группа остаётся
+            # с isokaudit=4 и будет перезалита следующим запуском. Пометили бы
+            # -1 — пришлось бы руками возвращать 4.
+            _safeRollback(conMaster)
+            _safeRollback(conSlave)
+            logger.warning("SIGTERM на группе %s — останавливаюсь, статус "
+                           "группы не меняю (останется в очереди).", createdate)
+            raise ShutdownRequested(
+                f"Линия {tableNameEtlJobs}: SIGTERM на группе {createdate}, "
+                f"группа осталась в очереди — чинить руками ничего не нужно."
+            ) from err
         if conMaster:
             conMaster.rollback()
         if conSlave:
@@ -1182,6 +1240,7 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords):
             )
 
         recordErrors = []  # [(recId, period, errStr), ...]
+        shutdown = False   # получен SIGTERM -> выходим, ничего не паркуя
 
         for entry in distinctIds:
             recId, period, _timeoper, oper = entry[0], entry[1], entry[2], entry[3]
@@ -1225,6 +1284,21 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords):
                 conMaster.commit()
 
             except Exception as err:
+                if isShutdown(err):
+                    # SIGTERM (деплой / перезапуск airflow) — НЕ ошибка данных.
+                    # Не паркуем: запись остаётся isetl=0 и уедет следующим
+                    # запуском. Выходим сразу и минимумом действий: airflow шлёт
+                    # SIGTERM повторно, и любая лишняя работа здесь ловит его
+                    # снова (в проде это давало каскад ложных -1 и даже
+                    # RecursionError внутри логирования).
+                    _safeRollback(conSlave)
+                    logger.warning(
+                        "SIGTERM на id=%s — останавливаюсь. Запись НЕ "
+                        "припаркована: останется в журнале (isetl=0) и уедет "
+                        "следующим запуском.", recId)
+                    shutdown = True
+                    break
+
                 cls = classifyError(err) or "record"
 
                 if conSlave:
@@ -1248,6 +1322,25 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords):
                 conMaster.commit()
                 recordErrors.append((recId, period, str(err)))
                 _markFailGroup(groupsData, period)
+
+        if shutdown:
+            # Хвостовую бухгалтерию (регистрация периодов, etl_jobs, etl_log)
+            # НЕ трогаем: соединения уже под сигналом, а любой лишний запрос
+            # рискует упасть и превратить чистый ⬜ в 🟥. Записи, успевшие
+            # переехать, помечены isetl=1 покомандно и не потеряются;
+            # last_success_ts обновит следующий запуск.
+            if recordErrors:
+                logger.error(
+                    "До SIGTERM припарковано %d записей (isetl=-1): %s. "
+                    "Повторить: UPDATE etl_log_iud_row SET isetl=0 "
+                    "WHERE tablename='%s' AND isetl=-1;",
+                    len(recordErrors),
+                    ", ".join(str(r[0]) for r in recordErrors[:5]),
+                    tableNameEtlJobs)
+            raise ShutdownRequested(
+                f"Линия {tableNameEtlJobs}: получен SIGTERM, перенос прерван. "
+                f"Необработанные записи остались в журнале (isetl=0) и уедут "
+                f"следующим запуском — чинить руками ничего не нужно.")
 
         # Зарегистрировать затронутые периоды (из лога) — без полного скана
         # источника: новые createdate приходят только вместе с событиями iud.
@@ -1331,6 +1424,7 @@ def _processDeleteInsert(cfg, ctx, distinctIds, iudRecords):
     okPeriods, failPeriods = set(), set()
     periodCount = defaultdict(int)
     recordErrors = []  # [(recId, errStr), ...]
+    shutdown = False   # получен SIGTERM -> выходим, ничего не паркуя
 
     # idrw по recId (для пометки isetl) — O(1).
     idrwsByRecId = defaultdict(list)
@@ -1409,6 +1503,17 @@ def _processDeleteInsert(cfg, ctx, distinctIds, iudRecords):
                 okPeriods |= affected
 
             except Exception as err:
+                if isShutdown(err):
+                    # SIGTERM (деплой / перезапуск airflow) — не ошибка данных,
+                    # см. одноимённую ветку в _processIndividualUpdates.
+                    _safeRollback(conSlave)
+                    logger.warning(
+                        "SIGTERM на idrw=%s — останавливаюсь. Запись НЕ "
+                        "припаркована: останется в журнале (isetl=0) и уедет "
+                        "следующим запуском.", recId)
+                    shutdown = True
+                    break
+
                 cls = classifyError(err) or "record"
                 if conSlave:
                     conSlave.rollback()
@@ -1424,6 +1529,21 @@ def _processDeleteInsert(cfg, ctx, distinctIds, iudRecords):
                 recordErrors.append((recId, str(err)))
                 # затронутые этой записью периоды — под подозрение (-1)
                 failPeriods |= affected
+
+        if shutdown:
+            # Хвостовую бухгалтерию не трогаем — см. _processIndividualUpdates.
+            if recordErrors:
+                logger.error(
+                    "До SIGTERM припарковано %d idrw (isetl=-1): %s. "
+                    "Повторить: UPDATE etl_log_iud_row SET isetl=0 "
+                    "WHERE tablename='%s' AND isetl=-1;",
+                    len(recordErrors),
+                    ", ".join(str(r[0]) for r in recordErrors[:5]),
+                    tableNameEtlJobs)
+            raise ShutdownRequested(
+                f"Линия {tableNameEtlJobs}: получен SIGTERM, перенос прерван. "
+                f"Необработанные записи остались в журнале (isetl=0) и уедут "
+                f"следующим запуском — чинить руками ничего не нужно.")
 
         # зарегистрировать реально затронутые периоды (из данных, без скана
         # источника) — затем обновить статус
@@ -1647,6 +1767,17 @@ def _processSectionGroup(cfg, ctx, period, idrwBefore):
                   cursorMaster, conMaster, len(records), period)
         logger.info("Группа %s обработана (section_compare)", period)
     except Exception as err:
+        if isShutdown(err):
+            # SIGTERM — не ошибка группы, статус не трогаем: расхождение
+            # никуда не денется и группу подберёт следующее сравнение срезов.
+            _safeRollback(conMaster)
+            _safeRollback(conSlave)
+            logger.warning("SIGTERM на группе %s — останавливаюсь, статус "
+                           "группы не меняю.", period)
+            raise ShutdownRequested(
+                f"Линия {tableNameEtlJobs}: SIGTERM на группе {period} — "
+                f"чинить руками ничего не нужно."
+            ) from err
         if conMaster:
             conMaster.rollback()
         if conSlave:
@@ -1935,7 +2066,8 @@ def _run(cfg):
             _processDeleteInsert(cfg, ctx, distinctIds, iudRecords)
         else:
             _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords)
-    except (AirflowSkipException, AirflowFailException, RecordScopeError):
+    except (AirflowSkipException, AirflowFailException, RecordScopeError,
+            ShutdownRequested):
         # пропускаем через — это специальные классы, runEtl их различает
         # (skip / fatal / record) и проставляет XCom error_class
         raise

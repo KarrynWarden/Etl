@@ -52,7 +52,7 @@ from Functions.updateLog import UpdateLog
 # одинаково подключались, фильтровали поля и строили списки колонок.
 from Functions.do_etl import (
     _connect, _isPost, _pickSql, _loadStructure, _normalizePeriod,
-    _resolveEtlPath,
+    _resolveEtlPath, ShutdownRequested, isShutdown,
     _appendFilter, _filterEtlFields, _bindName, _buildFieldsStr,
     _executeQuery, _configKey, classifyError, _asAndClause,
     _periodSpec, _periodBinds,
@@ -340,6 +340,17 @@ def _auditGroup(cfg, ctx, origPeriod, report):
     except Exception as err:
         _safeRollback(conMaster)
         _safeRollback(conSlave)
+        if isShutdown(err):
+            # SIGTERM (деплой/перезапуск airflow) — не порча данных. Статус
+            # группы НЕ трогаем: пометили бы -2, и человек потом разбирался бы
+            # с несуществующей проблемой. Группа осталась непроверенной
+            # (isokaudit != 1) и её доберёт следующий запуск.
+            logging.warning("Аудит %s: SIGTERM на группе %s — останавливаюсь, "
+                            "статус группы не меняю.", tableNameEtlJobs, origPeriod)
+            raise ShutdownRequested(
+                f"Аудит {tableNameEtlJobs}: SIGTERM на группе {origPeriod}, "
+                f"проверенные группы сохранены."
+            ) from err
         # Системная ошибка — прерываем весь прогон, не плодим -2 по всем группам.
         if classifyError(err) in ("retryable", "fatal"):
             logger.error("Системная ошибка аудита на группе %s (%s) — "
@@ -496,7 +507,8 @@ def _run(cfg):
                 f"не проверено {len(errored)} (см. etl_jobs.isokaudit)"
             )
         logger.info("Аудит %s: все %d групп идентичны", tableNameEtlJobs, len(groups))
-    except (AirflowSkipException, AirflowFailException, AuditScopeError):
+    except (AirflowSkipException, AirflowFailException, AuditScopeError,
+            ShutdownRequested):
         raise
     except Exception as err:
         raise AirflowException(f"Аудит остановлен, ошибка: {err}") from err
