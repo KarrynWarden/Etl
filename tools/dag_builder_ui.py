@@ -243,10 +243,13 @@ def _spinner_html(text):
             "<style>@keyframes ccspin{to{transform:rotate(360deg)}}</style></div>")
 
 
-def _push_only_controls(W, out, message_fn=None):
+def _push_only_controls(W, out, message_fn=None, on_pushed=None):
     """Кнопка «Просто запушить» + подтверждение: коммит+push УЖЕ сохранённых на
     диске изменений (etlFolder/, dags/), без генерации файлов из текущей формы.
-    Показывает список изменений перед выкладкой."""
+    Показывает список изменений перед выкладкой.
+
+    on_pushed() дёргается ТОЛЬКО после успешного push — им очищают поле
+    сообщения коммита, чтобы следующая выкладка не уехала под чужим текстом."""
     message_fn = message_fn or (lambda: "dagbuilder: выложить сохранённые изменения")
     info = W.HTML()
     btn_yes = W.Button(description="✅ Да, запушить сохранённое", button_style="danger",
@@ -291,6 +294,8 @@ def _push_only_controls(W, out, message_fn=None):
         finally:
             for b in (btn, btn_yes, btn_no):
                 b.disabled = False
+        if ok and on_pushed:
+            on_pushed()
         with out:
             out.clear_output()
             print("✅ Запушено:" if ok else "⚠ Не запушено:")
@@ -370,13 +375,14 @@ def _delete_controls(W, out, list_fn, targets_fn, delete_fn, after_fn, label="л
     return pick, btn, confirm, _refresh
 
 
-def _publish_controls(W, out, do_write, message_fn):
+def _publish_controls(W, out, do_write, message_fn, on_pushed=None):
     """Кнопка «создать и запушить» + подтверждение (защита от мисклика).
 
     do_write() пишет файлы линии и возвращает список абсолютных путей (может
     бросить исключение). message_fn() даёт текст коммита. Возвращает
     (btn_publish, confirm_box) — их размещает вызывающий UI. После подтверждения
     файлы пишутся и делается git commit + push текущей ветки (B.git_commit_push).
+    on_pushed() дёргается ТОЛЬКО после успешного push (см. _push_only_controls).
     """
     info = W.HTML()
     btn_yes = W.Button(description="✅ Да, выложить в git", button_style="danger",
@@ -423,6 +429,8 @@ def _publish_controls(W, out, do_write, message_fn):
         finally:
             for b in (btn_pub, btn_yes, btn_no):
                 b.disabled = False
+        if ok and on_pushed:
+            on_pushed()
         with out:
             out.clear_output()
             print("Файлы созданы:")
@@ -453,7 +461,9 @@ def _complex_ui():
         options=[("➕ Создать новый", "new"), ("✏️ Редактировать", "edit"),
                  ("🗄 Архив", "archive")],
         value="new", style={"button_width": "170px"})
-    edit_pick = W.Dropdown(description="Линия", options=B.existing_lines(),
+    # Только линии В РАБОТЕ: убранные в архив править незачем — правка всё равно
+    # не доедет до Airflow, пока линию не восстановишь (см. _refresh_edit_list).
+    edit_pick = W.Dropdown(description="Линия", options=B.list_active_lines(),
                            layout=W.Layout(width="380px"),
                            style={"description_width": "90px"})
     btn_load = W.Button(description="Загрузить линию", icon="upload",
@@ -482,6 +492,22 @@ def _complex_ui():
     def _refresh_archive_lists():
         arch_active.options = B.list_active_lines()
         arch_archived.options = B.list_archived_lines()
+
+    def _refresh_edit_list():
+        """Пересобрать список линий для правки — ТОЛЬКО линии в работе.
+
+        Архивная линия (даг в dags/_archived/ либо флаг `disabled`) в списке
+        править нечего: Airflow её не парсит, и правка доедет только после
+        «Восстановить». Раньше здесь стоял existing_lines(), поэтому убранная в
+        архив линия оставалась вариантом выбора и выглядела как живая.
+        Выбор сохраняем, если линия ещё в списке (иначе Dropdown сбрасывает
+        value на первый вариант при любой перезаписи options).
+        """
+        cur = edit_pick.value
+        opts = B.list_active_lines()
+        edit_pick.options = opts
+        if cur in opts:
+            edit_pick.value = cur
 
     # ── шапка-форма ──
     tm = W.Text(description="Ведущая", placeholder="prbdir  или  KOKNAEV.PRBDIR",
@@ -721,6 +747,10 @@ def _complex_ui():
             state["struct_master_rel"] = state["struct_slave_rel"] = None
             state["tags_auto"] = True
             _refresh_default_tags()
+        elif m == "edit":
+            # перечитываем на входе в правку: линию могли заархивировать
+            # (или восстановить) в этой же сессии либо правкой файлов на диске
+            _refresh_edit_list()
         elif m == "archive":
             _refresh_archive_lists()
             del_refresh()
@@ -1032,18 +1062,34 @@ def _complex_ui():
         except Exception as e:
             _log(f"Ошибка создания: {type(e).__name__}: {e}")
 
+    # Своё сообщение коммита. Пусто — подставляется автоописание (как было).
+    commit_msg = W.Text(
+        description="Коммит", placeholder="по умолчанию — автоописание правки",
+        layout=W.Layout(width="560px"), style={"description_width": "90px"})
+    commit_hint = W.HTML(
+        "<span style='color:#888'>Текст коммита для обеих кнопок ниже. Пусто — "
+        "подставится автоматическое описание.</span>")
+
     def _commit_msg():
+        typed = commit_msg.value.strip()
+        if typed:
+            return typed
         ln = line.value.strip() or (B.bare(tm.value.strip()) if tm.value.strip()
                                     else "линия")
         return f"dagbuilder: {'правка' if work_mode.value == 'edit' else 'новая'} линия {ln}"
 
-    btn_pub, pub_confirm = _publish_controls(W, out, _write_current, _commit_msg)
-    btn_push_only, push_only_confirm = _push_only_controls(W, out)
+    def _clear_commit_msg():
+        commit_msg.value = ""
+
+    btn_pub, pub_confirm = _publish_controls(W, out, _write_current, _commit_msg,
+                                             _clear_commit_msg)
+    btn_push_only, push_only_confirm = _push_only_controls(W, out, _commit_msg,
+                                                           _clear_commit_msg)
     btn_pub.layout.margin = "0 0 0 40px"   # «Создать и запушить» — сбоку, отдельно
 
     # удаление линии насовсем (живёт в панели архива — рядом со «скрыть»)
     def _after_delete_complex():
-        edit_pick.options = B.existing_lines()
+        _refresh_edit_list()
         _refresh_archive_lists()
     del_pick, del_btn, del_confirm, del_refresh = _delete_controls(
         W, out, B.existing_lines, B.line_delete_targets, B.delete_line,
@@ -1053,14 +1099,25 @@ def _complex_ui():
         "config.d, файл дага и — если не используются другими линиями — структуры и "
         "selectSql. Затем выложи «Просто запушить» или деплоем.</span>")
     # отдельная «Просто запушить» для панели архива (один виджет-кнопку нельзя
-    # разместить в двух контейнерах) — иначе после архива/удаления её тут нет
-    arch_btn_push, arch_push_confirm = _push_only_controls(W, out)
+    # разместить в двух контейнерах) — иначе после архива/удаления её тут нет.
+    # Поле коммита здесь тоже своё: форма сборки в режиме архива скрыта целиком,
+    # поэтому её поле было бы не видно.
+    arch_commit_msg = W.Text(
+        description="Коммит", placeholder="по умолчанию — автоописание",
+        layout=W.Layout(width="560px"), style={"description_width": "90px"})
+
+    def _arch_commit_msg():
+        return (arch_commit_msg.value.strip()
+                or "dagbuilder: архив / восстановление / удаление линий")
+
+    arch_btn_push, arch_push_confirm = _push_only_controls(
+        W, out, _arch_commit_msg, lambda: setattr(arch_commit_msg, "value", ""))
     archive_box.children = tuple(archive_box.children) + (
         W.HTML("<hr>"), del_help, W.HBox([del_pick, del_btn]), del_confirm,
         W.HTML("<hr>"),
         W.HTML("<b>Выложить сделанное</b> (архив/восстановление/удаление меняют "
                "файлы на диске — их нужно запушить):"),
-        W.HBox([arch_btn_push]), arch_push_confirm)
+        arch_commit_msg, W.HBox([arch_btn_push]), arch_push_confirm)
 
     # автозаполнение парного имени таблицы с приведением регистра под БД
     btn_case = W.Button(description="⇄ имя по регистру БД", icon="magic",
@@ -1089,7 +1146,7 @@ def _complex_ui():
                 _log("Выбери активную линию."); return
             did = B.archive_line(key)
             _refresh_archive_lists()
-            edit_pick.options = B.existing_lines()
+            _refresh_edit_list()
             _log(f"Линия «{key}» (даг {did}) убрана в архив: файл в dags/_archived/, "
                  "выставлен skipAudit. Вступит в силу после деплоя. Восстановить — тут же.")
         except Exception as e:
@@ -1102,7 +1159,7 @@ def _complex_ui():
                 _log("Выбери линию из архива."); return
             did = B.restore_line(key)
             _refresh_archive_lists()
-            edit_pick.options = B.existing_lines()
+            _refresh_edit_list()
             _log(f"Линия «{key}» (даг {did}) восстановлена. Вступит в силу после деплоя.")
         except Exception as e:
             _log(f"Ошибка восстановления: {type(e).__name__}: {e}")
@@ -1129,6 +1186,7 @@ def _complex_ui():
         W.HTML("<b>Колонки</b> (ведущая → ведомая; отметь PK, составной ключ — "
                "несколько галочек):"),
         period_box, W.HBox([map_title, hide_unmapped]), map_head, map_box,
+        W.HTML("<hr>"), commit_hint, commit_msg,
         W.HBox([btn_prev, btn_make, btn_push_only, btn_pub]),
         pub_confirm, push_only_confirm,
     ])
@@ -1541,14 +1599,29 @@ def _sp_ui():
         except Exception as e:
             _log(f"Ошибка создания: {type(e).__name__}: {e}")
 
+    # Своё сообщение коммита. Пусто — подставляется автоописание (как было).
+    commit_msg = W.Text(
+        description="Коммит", placeholder="по умолчанию — автоописание правки",
+        layout=W.Layout(width="560px"), style={"description_width": "90px"})
+    commit_hint = W.HTML(
+        "<span style='color:#888'>Текст коммита для обеих кнопок ниже. Пусто — "
+        "подставится автоматическое описание.</span>")
+
     def _commit_msg():
+        typed = commit_msg.value.strip()
+        if typed:
+            return typed
         lbl = line.value.strip() or (B.bare(tm.value.strip()) if tm.value.strip()
                                      else "линия")
         typ = "справочник" if kind.value == "regular" else "разовый"
         verb = "правка" if work_mode.value == "edit" else "новая"
         return f"dagbuilder ({typ}): {verb} {lbl}"
 
-    btn_pub, pub_confirm = _publish_controls(W, out, _write_current, _commit_msg)
+    def _clear_commit_msg():
+        commit_msg.value = ""
+
+    btn_pub, pub_confirm = _publish_controls(W, out, _write_current, _commit_msg,
+                                             _clear_commit_msg)
 
     # автозаполнение парного имени таблицы с приведением регистра под БД
     btn_case = W.Button(description="⇄ имя по регистру БД", icon="magic",
@@ -1619,9 +1692,21 @@ def _sp_ui():
     btn_move.on_click(on_move)
 
     # push-only для формы сборки и отдельный — для панели вкл/выкл (свой виджет:
-    # один и тот же кнопка-виджет нельзя разместить в двух контейнерах)
-    btn_push_only, push_only_confirm = _push_only_controls(W, out)
-    tgl_btn_push, tgl_push_confirm = _push_only_controls(W, out)
+    # один и тот же кнопка-виджет нельзя разместить в двух контейнерах).
+    # У панели вкл/выкл своё поле коммита: форма сборки там скрыта, её поле
+    # было бы не видно.
+    tgl_commit_msg = W.Text(
+        description="Коммит", placeholder="по умолчанию — автоописание",
+        layout=W.Layout(width="560px"), style={"description_width": "90px"})
+
+    def _tgl_commit_msg():
+        return (tgl_commit_msg.value.strip()
+                or "dagbuilder: вкл/выкл, перевод, удаление линий")
+
+    btn_push_only, push_only_confirm = _push_only_controls(W, out, _commit_msg,
+                                                           _clear_commit_msg)
+    tgl_btn_push, tgl_push_confirm = _push_only_controls(
+        W, out, _tgl_commit_msg, lambda: setattr(tgl_commit_msg, "value", ""))
     btn_pub.layout.margin = "0 0 0 40px"   # «Создать и запушить» — сбоку, отдельно
 
     # удаление sp-линии насовсем (в панели вкл/выкл)
@@ -1656,7 +1741,7 @@ def _sp_ui():
         W.HTML("<hr>"),
         W.HTML("<b>Выложить сделанное</b> (вкл/выкл, перевод, удаление меняют файлы "
                "на диске — их нужно запушить):"),
-        W.HBox([tgl_btn_push]), tgl_push_confirm)
+        tgl_commit_msg, W.HBox([tgl_btn_push]), tgl_push_confirm)
 
     # ── видимость по режимам ──
     def _on_mode(_=None):
@@ -1696,6 +1781,7 @@ def _sp_ui():
         W.HTML("<b>Сопоставление колонок</b> (ведущая → ведомая; порядок = порядок "
                "вставки):"),
         W.HBox([map_title, hide_unmapped]), map_head, map_box,
+        W.HTML("<hr>"), commit_hint, commit_msg,
         W.HBox([btn_prev, btn_make, btn_push_only, btn_pub]),
         pub_confirm, push_only_confirm,
     ])
