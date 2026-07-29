@@ -1523,10 +1523,13 @@ def _sp_ui():
             line.value = data["master_label"]
             dependence.value = data["dependence"] or ""
             doc.value = data["doc"] or ""
-            # если Select.sql — простой SELECT ... FROM t, это режим «из таблицы»
-            src_mode.value = "table" if SP._master_from_select(data["select_sql_text"]) \
-                else "custom"
-            f_sql.value = data["select_sql_text"] if src_mode.value == "custom" else ""
+            # Режим источника берём из конфига (load_sp_line сам откатывается
+            # на эвристику для фрагментов, сохранённых до появления флага).
+            src_mode.value = data.get("src_mode") or "table"
+            # Текст SELECT показываем ВСЕГДА, даже в режиме «из таблицы»:
+            # переключение тумблера не должно терять сохранённый запрос, а
+            # видеть, что реально лежит в Select.sql, полезно в любом режиме.
+            f_sql.value = data["select_sql_text"] or ""
             once_mode.value = "append" if data.get("append") else "replace"
             _on_src_mode()
 

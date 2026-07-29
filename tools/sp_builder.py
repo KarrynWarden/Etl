@@ -236,6 +236,15 @@ def build_sp_all(spec):
     add_rel = f"queries/sp/{sql_name}/Add.sql"
 
     body = {"tableNameSlave": slave_table, "addSql": add_rel, "selectSql": select_rel}
+    if select_mode == "custom":
+        # Режим источника ОБЯЗАН лежать в конфиге: по одному тексту Select.sql
+        # его не восстановить. Режим «из таблицы» генерирует ровно такой же
+        # `SELECT c1, c2 FROM t`, какой человек пишет руками, когда ему нужен
+        # тот же набор колонок, — тексты неотличимы. Без этого флага правка
+        # такой линии открывалась как «из таблицы», своё SELECT не показывалось,
+        # а «Снять колонки» подтягивало ВСЕ столбцы ведущей, затирая
+        # сознательно суженный список.
+        body["srcMode"] = "custom"
     if spec.get("dependence"):
         body["dependence"] = str(spec["dependence"]).strip()
     if spec.get("doc"):
@@ -448,6 +457,11 @@ def load_sp_line(kind, key):
     add_text = _text(body.get("addSql"))
     # если Select.sql — это простой `SELECT ... FROM <master>`, режим 'table'
     master_from = _master_from_select(select_text)
+    # Режим источника: сохранённый флаг — источник истины. У фрагментов,
+    # созданных до его появления, флага нет — там остаётся прежняя эвристика
+    # «простой SELECT ... FROM t => из таблицы» (она может ошибиться на своём
+    # запросе без WHERE; такую линию достаточно один раз пересохранить).
+    src_mode = body.get("srcMode") or ("table" if master_from else "custom")
     # текущее сопоставление колонок — прямо из сохранённых SQL (без обращения к БД)
     master_cols, slave_cols, pairs = restore_mapping(select_text, add_text)
     return {
@@ -459,6 +473,7 @@ def load_sp_line(kind, key):
         "disabled": bool(body.get("disabled")),
         "append": bool(body.get("append")),
         "doc": body.get("_doc", ""),
+        "src_mode": src_mode,
         "select_sql": select_rel, "select_sql_text": select_text,
         "add_sql": body.get("addSql"), "add_sql_text": add_text,
         "master_cols": master_cols, "slave_cols": slave_cols, "pairs": pairs,
