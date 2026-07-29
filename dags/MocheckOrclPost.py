@@ -6,13 +6,15 @@ PODCHECK [2 ветки], REQPREPMO+REQPREPSMO, TFOUTSCHET, TFINSCHET).
 
 Источник для всех 9 — общий MOCHECK.sql (UNION ALL, в каждой ветке свой
 doctype). Логические группы различаются filterClause/filterClauseSlave
-по doctype и собственным tableNameEtlJobs (MEDCHECK, EXPMED2, ...,
-TFINSCHET) для отслеживания в etl_jobs.
+по doctype и собственным tableNameEtlJobs (MEDCHECK, EXPMED, PODCHECK,
+TFOUTSCHET, TFINSCHET) для отслеживания в etl_jobs.
 
-Режим — section_compare: сравниваем (createdate, MAX(lastupdate)) на
-ведущей и ведомой сторонах в пределах одного doctype, плюс учитываем
-сигналы из etl_log_iud_row. Каждая группа, нуждающаяся в обновлении,
-полностью удаляется и перезаливается.
+Режимы заданы в config.d по линиям, а не здесь:
+  * EXPMED (2,3,4) и PODCHECK (5,6) — delete_insert: строка источника
+    переезжает между doctype, поэтому на событие по idrw удаляются ВСЕ его
+    строки в пределах своего среза и заливается то, что ведущая отдаёт
+    сейчас. Иначе в mocheck остаётся осиротевшая строка в прежнем doctype;
+  * остальные — iud (точечный upsert по журналу).
 """
 import datetime as dt
 
@@ -23,11 +25,14 @@ from Functions._dagHelpers import (DEFAULT_ARGS, buildOperator, configureLogger,
 
 
 # (tableNameEtlJobs, doctype) — порядок соответствует CASE-выражению в SQL.
+# EXPMED и PODCHECK — по одной линии на несколько doctype: их строки переезжают
+# между doctype (expmed 2<->3<->4, podcheck 5<->6 при смене typehelp), и линия,
+# видящая только свой doctype, оставляет в mocheck осиротевшую строку в чужом.
+# Обе идут в режиме delete_insert.
 MOCHECK_LOGICAL_GROUPS = [
     ("MEDCHECK", 1),
     ("EXPMED", "2,3,4"),
-    ("PODCHECK3", 5),
-    ("PODCHECK4", 6),
+    ("PODCHECK", "5,6"),
     #("REQPREPMO", 7),
     ("TFOUTSCHET", 8),
     ("TFINSCHET", 9),

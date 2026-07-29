@@ -1,0 +1,13 @@
+{
+  "PODCHECKOrclPost": {
+    "_doc": "oracle->postgres, mocheck doctype=5,6 (PODCHECK+SPMUMAIN при typehelp=3, PODCHECK при typehelp=4, SPPODNORM за период до 2024-08). ОДНА линия на оба doctype вместо прежних PODCHECK3/PODCHECK4: строка PODCHECK переезжает между typehelp=3 и 4, то есть между doctype 5 и 6, а раздельные линии видели только свой doctype и оставляли в mocheck осиротевшую строку в чужом. mode=delete_insert: на событие по idrw удаляются ВСЕ строки этого idrw в пределах doctype IN (5,6) и заливается то, что ведущая отдаёт по нему сейчас. conflictExtra/conflictWhere не заданы намеренно — в этом режиме заливка идёт простым INSERT без ON CONFLICT (строки группы уже удалены), поэтому уникальный индекс под ON CONFLICT не требуется. Один idrw может дать НЕСКОЛЬКО строк ведомой: у PODCHECK.id и SPPODNORM.idrw независимая нумерация, и оба источника пишут в doctype=6 — delete_insert это обрабатывает штатно (удаляет обе, вставляет обе заново).",
+    "tableNameMaster": "PODCHECK",
+    "tableNameSlave": "mocheck",
+    "structureMaster": "structures/MOCHECK/MOCHECK.json",
+    "structureSlave": "structures/MOCHECK/mocheck.json",
+    "selectSql": "queries/customQueries/MOCHECK.sql",
+    "filterClause": "doctype IN (5, 6)",
+    "filterClauseSlave": "doctype IN (5, 6)",
+    "mode": "delete_insert"
+  }
+}

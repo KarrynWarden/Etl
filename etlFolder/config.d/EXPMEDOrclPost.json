@@ -1,16 +1,13 @@
 {
   "EXPMEDOrclPost": {
-    "_doc": "oracle->postgres, mocheck doctype=2,3,4 (EXPMED). Один idrw = несколько строк ведомой; mode=delete_insert удаляет все строки idrw и заливает актуальные (ловит смену doctype). period в etl_log_iud_row декоративный (docexpdt, неверен для doctype=4) — реальный берётся из данных.",
+    "_doc": "oracle->postgres, mocheck doctype=2,3,4 (EXPMED). Один idrw = несколько строк ведомой; mode=delete_insert удаляет все строки idrw в пределах doctype IN (2,3,4) и заливает актуальные (ловит смену doctype). conflictExtra/conflictWhere не заданы намеренно — в этом режиме заливка идёт простым INSERT без ON CONFLICT (строки уже удалены), уникальный индекс под ON CONFLICT не требуется. period в etl_log_iud_row декоративный (docexpdt, неверен для doctype=4) — реальный берётся из данных.",
     "tableNameMaster": "EXPMED",
     "tableNameSlave": "mocheck",
-    "tableNameEtlJobs": "expmed",
     "structureMaster": "structures/MOCHECK/MOCHECK.json",
     "structureSlave": "structures/MOCHECK/mocheck.json",
     "selectSql": "queries/customQueries/MOCHECK.sql",
     "filterClause": "doctype IN (2, 3, 4)",
     "filterClauseSlave": "doctype IN (2, 3, 4)",
-    "conflictExtra": "doctype",
-    "conflictWhere": "doctype IN (2, 3, 4)",
     "mode": "delete_insert"
   }
 }
