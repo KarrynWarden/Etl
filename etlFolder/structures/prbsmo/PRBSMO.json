@@ -97,6 +97,12 @@
         "IS_PRIMARY_KEY" : null  
 	},
 	{
+		"COLUMN_NAME" : "LASTUPDATE",
+		"DATA_TYPE" : "DATE",
+		"DATA_SCALE" : null,
+		"IS_PRIMARY_KEY" : null
+	},
+	{
 		"COLUMN_NAME" : "MONTH",
 		"DATA_TYPE" : "NUMBER",
 		"DATA_SCALE" : 0,

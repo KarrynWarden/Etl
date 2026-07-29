@@ -97,6 +97,12 @@
 		"is_primary_key" : null
 	},
 	{
+		"column_name" : "lastupdate",
+		"data_type" : "timestamp without time zone",
+		"data_scale" : null,
+		"is_primary_key" : null
+	},
+	{
 		"column_name" : "month",
 		"data_type" : "numeric",
 		"data_scale" : 0,
