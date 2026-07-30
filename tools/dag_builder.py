@@ -4,7 +4,9 @@
 
 Делает три вещи, на которые раньше уходила ручная работа:
   1. snap_structure() — снимает структуру таблицы прямо из БД (тем же
-     StructureCheck-запросом, что и рантайм-проверка), в формате json-структур.
+     StructureCheck-запросом, что и рантайм-проверка), в формате json-структур;
+     snap_query_structure() — то же по СВОЕМУ SELECT-запросу (приоритетнее
+     таблицы: рантайм тоже проверяет структуру по запросу, а не по таблице).
   2. auto_match()     — предлагает сопоставление колонок master->slave по имени
      (имена в двух БД могут отличаться — остальное поправит человек в UI).
   3. build_all()/write_files() — генерит из спецификации три артефакта линии:
@@ -111,6 +113,155 @@ def snap_structure(db, table, cred="MAIN"):
             # нормализуем PK: 'Primary Key' либо null (Oracle отдаёт '' для не-PK)
             "is_primary_key": "Primary Key" if pk == "Primary Key" else None,
         })
+    return out
+
+
+# ─────────────────── снятие структуры по своему SELECT ───────────────────
+# Невидимые/типографские символы, которые приезжают вместе с текстом, если SELECT
+# копировали из мессенджера, Word, Confluence и т.п. Для СУБД это мусор в теле
+# запроса: Oracle отвечает ORA-00911 «invalid character», Postgres — syntax error.
+# Глазами в поле ввода они неотличимы от обычного пробела/дефиса/кавычки, поэтому
+# ищем их сами и говорим, где именно.
+_BAD_CHARS = {
+    " ": "неразрывный пробел",
+    " ": "неразрывный пробел (figure space)",
+    " ": "узкий неразрывный пробел",
+    "​": "нулевой пробел",
+    "‌": "нулевой несоединитель",
+    "﻿": "BOM / неразрывный нулевой пробел",
+    "–": "короткое тире (вместо дефиса)",
+    "—": "длинное тире (вместо дефиса)",
+    "‘": "типографская кавычка ‘",
+    "’": "типографская кавычка ’",
+    "“": "типографская кавычка “",
+    "”": "типографская кавычка ”",
+}
+
+
+def _check_sql_chars(stmt):
+    """Найти в тексте запроса символы, которые СУБД не переварит.
+
+    Возвращает None, если всё чисто, иначе — готовое человекочитаемое описание
+    с номером строки и позицией (СУБД в таких случаях говорит только «invalid
+    character», не показывая где).
+    """
+    for lineno, line in enumerate(stmt.splitlines(), 1):
+        for pos, ch in enumerate(line, 1):
+            name = _BAD_CHARS.get(ch)
+            if name is None and ord(ch) < 32 and ch != "\t":
+                name = f"управляющий символ U+{ord(ch):04X}"
+            if name:
+                return (f"строка {lineno}, позиция {pos}: {name} "
+                        f"(U+{ord(ch):04X}). Похоже, запрос копировали из "
+                        f"документа/мессенджера — перенаберите этот символ "
+                        f"вручную.")
+    return None
+
+
+def _strip_terminators(sql):
+    """Убрать хвостовые ';' и пробелы (в т.ч. вперемешку: ';\\n;')."""
+    stmt = sql.strip()
+    while stmt.endswith(";"):
+        stmt = stmt[:-1].strip()
+    return stmt
+
+
+def _probe_sql(db, stmt):
+    """Обёртка «дай только описание колонок, строк не надо».
+
+    ВНИМАНИЕ к алиасу подзапроса: он НЕ должен начинаться с подчёркивания.
+    Oracle требует, чтобы неквотированный идентификатор начинался с буквы, и на
+    '_sp_probe' отвечал ORA-00911 «invalid character». 'sp_probe' валиден и в
+    Oracle, и в Postgres.
+    """
+    if db == "Post":
+        return f"SELECT * FROM (\n{stmt}\n) AS sp_probe LIMIT 0"
+    return f"SELECT * FROM (\n{stmt}\n) sp_probe WHERE ROWNUM < 1"
+
+
+def _query_description(db, sql, cred="MAIN"):
+    """[(имя колонки, тип)] по своему SELECT — без выборки строк.
+
+    Тип приводится к тому же виду, в котором его вычисляет рантайм-проверка
+    структуры источника, чтобы снятая структура проходила её как есть."""
+    from Connect import connectPostgres, connectOracle  # noqa: E402
+    from Functions.functionsFile.structCheck import ORACLE_CURSOR_TYPES  # noqa: E402
+
+    stmt = _strip_terminators(sql)
+    if not stmt:
+        raise ValueError("Пустой SELECT-запрос.")
+    bad = _check_sql_chars(stmt)
+    if bad:
+        raise ValueError(f"В тексте запроса недопустимый символ — {bad}")
+
+    conn = connectPostgres(cred) if db == "Post" else connectOracle(cred)
+    try:
+        cur = conn.cursor()
+        if db == "Post":
+            # Имена типов Postgres берём так же, как рантайм-проверка структуры
+            # (StructCheckPostgresQuery): typname из pg_type по oid из описания.
+            cur.execute("SELECT oid, typname FROM pg_type")
+            types = {oid: name for oid, name in cur.fetchall()}
+            cur.execute(_probe_sql(db, stmt))
+            desc = [(d[0], types.get(d[1], "unknown")) for d in (cur.description or [])]
+        else:
+            cur.execute(_probe_sql(db, stmt))
+            desc = [(d[0], ORACLE_CURSOR_TYPES.get(str(d[1]), "UNKNOWN"))
+                    for d in (cur.description or [])]
+    finally:
+        conn.close()
+
+    if not desc:
+        raise ValueError("Запрос не вернул ни одной колонки (проверь SELECT).")
+    return desc
+
+
+def snap_query_columns(db, sql, cred="MAIN"):
+    """Список колонок своего SELECT-запроса — только имена (типы пустые).
+    Используется конструктором справочников: там json-структуры не пишутся."""
+    return [{"column_name": name, "data_type": "", "data_scale": None,
+             "is_primary_key": None} for name, _t in _query_description(db, sql, cred)]
+
+
+def snap_query_structure(db, sql, cred="MAIN"):
+    """Структура своего SELECT-запроса с ТИПАМИ — для json-структуры ведущей.
+
+    Типы снимаются по тому же словарю, каким рантайм сверяет структуру источника
+    (StructCheckOracleQuery / StructCheckPostgresQuery), поэтому снятая структура
+    проходит проверку как есть. Тип константы (`null CHECKDIR`, `2 CHECKDIR`)
+    драйвер определить не может — там оказывается 'UNKNOWN' / 'unknown'; такие
+    колонки рантайм сверяет только по имени, а тип можно дописать руками в UI.
+    PK из описания курсора не виден — его подмешивает merge_table_pk().
+    """
+    return [{"column_name": name, "data_type": dtype, "data_scale": None,
+             "is_primary_key": None} for name, dtype in _query_description(db, sql, cred)]
+
+
+def unknown_type(dtype):
+    """Тип, который драйвер не смог определить (константа в запросе)."""
+    return str(dtype or "").strip().lower() in ("", "unknown")
+
+
+def merge_table_pk(query_cols, table_cols):
+    """Подмешать в колонки запроса признак PK (и scale) из структуры таблицы.
+
+    Запрос знает имена и типы, но не знает первичный ключ — а он нужен и для
+    переноса, и для триггера. Сопоставляем по имени без учёта регистра; типы НЕ
+    трогаем: рантайм сверяет структуру источника по описанию курсора, поэтому
+    тип таблицы там был бы неверным ориентиром.
+    """
+    by_norm = {}
+    for c in table_cols or []:
+        by_norm.setdefault(str(c["column_name"]).lower(), c)
+    out = []
+    for c in query_cols:
+        src = by_norm.get(str(c["column_name"]).lower())
+        merged = dict(c)
+        if src:
+            merged["is_primary_key"] = src.get("is_primary_key")
+            if merged.get("data_scale") is None:
+                merged["data_scale"] = src.get("data_scale")
+        out.append(merged)
     return out
 
 
@@ -332,16 +483,31 @@ def build_all(spec):
                           sql_text + ("" if sql_text.endswith("\n") else "\n")))
         body["selectSql"] = sql_rel
 
-    # periodsSql (режим query_section): пользователь вставляет ТЕКСТ запроса групп
-    # (year, month) — файл .sql создаём сами и прописываем путь в periodsSql.
+    # periodsSql — ТОЛЬКО для режима query_section: список групп для перезаливки
+    # берёт из него один этот режим (см. do_etl._runQuerySection), остальные
+    # читают журнал/сравнивают срезы. Поэтому в других режимах ключ не пишется и
+    # файл не создаётся, даже если текст в форме остался от предыдущего режима.
     periods_text = (spec.get("periods_sql_text") or "").strip()
-    if periods_text:
+    if body["mode"] == "query_section":
+        if not periods_text:
+            raise ValueError(
+                "Режим query_section: не заполнен «SQL периодов» — без него линии "
+                "неоткуда взять список групп для перезаливки.")
         pname = re.sub(r"[^A-Za-z0-9_]", "",
                        spec.get("periods_sql_name") or f"{line}_periods") or f"{line}_periods"
         periods_rel = f"queries/customQueries/{pname}.sql"
         out_files.append((f"etlFolder/{periods_rel}",
                           periods_text + ("" if periods_text.endswith("\n") else "\n")))
         body["periodsSql"] = periods_rel
+
+    # DDL триггера ведущей. Сам триггер живёт в БД (его ставит кнопка «Создать
+    # триггер»), а файл — версионируемая копия: видно, что именно поставлено, и
+    # можно открыть в DBeaver. Текст готовит UI (tools/trigger_builder), ядро
+    # только пишет его рядом с линией.
+    trigger_text = (spec.get("trigger_sql_text") or "").strip()
+    if trigger_text:
+        out_files.append((f"etlFolder/{trigger_sql_rel(key)}",
+                          trigger_text + ("" if trigger_text.endswith("\n") else "\n")))
 
     tags = spec.get("tags") or [f"{dbm}{dbs}", line, "DbSync"]
     dag_py = build_dag_py(dag_id, line, tm, dbm, dbs, tags,
@@ -356,6 +522,11 @@ def build_all(spec):
         (f"dags/{dag_id}.py", dag_py),
     ]
     return out_files
+
+
+def trigger_sql_rel(key):
+    """Путь (относительно etlFolder) к версионируемой копии DDL триггера линии."""
+    return f"queries/triggers/{key}.sql"
 
 
 def default_dag_id(line, dbm, dbs):
@@ -946,7 +1117,7 @@ def _ref_shared(rel, exclude_key):
         if k == exclude_key:
             continue
         if rel in (body.get("structureMaster"), body.get("structureSlave"),
-                   body.get("selectSql")):
+                   body.get("selectSql"), body.get("periodsSql")):
             return True
     return False
 
@@ -961,8 +1132,9 @@ def line_delete_targets(key):
     targets = [path if len(obj) <= 1 else f"{path} (ключ {key})"]
     if os.path.exists(dagpath):
         targets.append(dagpath)
-    for rel in (body.get("selectSql"), body.get("structureMaster"),
-                body.get("structureSlave")):
+    for rel in (body.get("selectSql"), body.get("periodsSql"),
+                trigger_sql_rel(key),
+                body.get("structureMaster"), body.get("structureSlave")):
         if rel and not _ref_shared(rel, key):
             p = os.path.join(ETLFOLDER, rel)
             if os.path.exists(p):
@@ -993,7 +1165,9 @@ def delete_line(key, remove_struct=True):
         if os.path.exists(dagpath):
             os.remove(dagpath)
             removed.append(dagpath)
-        refs = [body.get("selectSql")]
+        # periodsSql и DDL триггера принадлежат линии (имя файла = ключ линии),
+        # но _ref_shared всё равно спросим — вдруг на них ссылается ещё кто-то.
+        refs = [body.get("selectSql"), body.get("periodsSql"), trigger_sql_rel(key)]
         if remove_struct:
             refs += [body.get("structureMaster"), body.get("structureSlave")]
         for rel in refs:
@@ -1057,6 +1231,40 @@ def _selftest():
     dag = dict(files)["dags/DemoPostOrcl.py"]
     assert 'dag_id="DemoPostOrcl"' in dag
     assert 'tableNameMaster="demo"' in dag and 'tableNameEtlJobs="demo"' in dag
+
+    # periodsSql пишется ТОЛЬКО в режиме query_section
+    spec_iud = dict(spec, periods_sql_text="SELECT year, month FROM t")
+    assert not [rel for rel, _ in build_all(spec_iud) if "periods" in rel]
+    assert "periodsSql" not in json.loads(
+        dict(build_all(spec_iud))["etlFolder/config.d/demoPostOrcl.json"])["demoPostOrcl"]
+    spec_qs = dict(spec_iud, mode="query_section")
+    files_qs = dict(build_all(spec_qs))
+    assert "etlFolder/queries/customQueries/demo_periods.sql" in files_qs, files_qs.keys()
+    assert json.loads(files_qs["etlFolder/config.d/demoPostOrcl.json"]) \
+        ["demoPostOrcl"]["periodsSql"] == "queries/customQueries/demo_periods.sql"
+    # query_section без SQL периодов — понятная ошибка, а не молча битая линия
+    try:
+        build_all(dict(spec, mode="query_section"))
+        raise AssertionError("ожидалась ошибка про пустой SQL периодов")
+    except ValueError as e:
+        assert "query_section" in str(e)
+
+    # DDL триггера кладётся рядом с линией
+    files_trg = dict(build_all(dict(spec, trigger_sql_text="CREATE OR REPLACE TRIGGER x")))
+    assert files_trg["etlFolder/queries/triggers/demoPostOrcl.sql"] == \
+        "CREATE OR REPLACE TRIGGER x\n"
+
+    # структура по запросу: тип-константа помечается как неопределённый,
+    # PK подмешивается из структуры таблицы
+    qcols = [{"column_name": "id", "data_type": "numeric", "data_scale": None,
+              "is_primary_key": None},
+             {"column_name": "checkdir", "data_type": "unknown", "data_scale": None,
+              "is_primary_key": None}]
+    assert not unknown_type("numeric") and unknown_type("unknown") and unknown_type("")
+    merged = merge_table_pk(qcols, master_cols)
+    assert merged[0]["is_primary_key"] == "Primary Key"   # id — PK таблицы
+    assert merged[1]["is_primary_key"] is None            # checkdir'а в таблице нет
+    assert merged[0]["data_type"] == "numeric"             # тип запроса не подменён
 
     # приведение имени к диалекту БД
     assert to_db_case("spmkb", "Orcl") == "SPMKB"

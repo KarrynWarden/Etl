@@ -42,6 +42,11 @@
 import json
 import os
 import re
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:                 # чтобы работал прямой запуск --selftest
+    sys.path.insert(0, ROOT)
 
 from tools import dag_builder as B  # noqa: E402
 
@@ -63,97 +68,13 @@ def sp_key(master_label, db_master, db_slave):
 
 
 # ─────────────────────────── снятие колонок ───────────────────────────
-
-# Невидимые/типографские символы, которые приезжают вместе с текстом, если SELECT
-# копировали из мессенджера, Word, Confluence и т.п. Для СУБД это мусор в теле
-# запроса: Oracle отвечает ORA-00911 «invalid character», Postgres — syntax error.
-# Глазами в поле ввода они неотличимы от обычного пробела/дефиса/кавычки, поэтому
-# ищем их сами и говорим, где именно.
-_BAD_CHARS = {
-    " ": "неразрывный пробел",
-    " ": "неразрывный пробел (figure space)",
-    " ": "узкий неразрывный пробел",
-    "​": "нулевой пробел",
-    "‌": "нулевой несоединитель",
-    "﻿": "BOM / неразрывный нулевой пробел",
-    "–": "короткое тире (вместо дефиса)",
-    "—": "длинное тире (вместо дефиса)",
-    "‘": "типографская кавычка ‘",
-    "’": "типографская кавычка ’",
-    "“": "типографская кавычка “",
-    "”": "типографская кавычка ”",
-}
-
-
-def _check_sql_chars(stmt):
-    """Найти в тексте запроса символы, которые СУБД не переварит.
-
-    Возвращает None, если всё чисто, иначе — готовое человекочитаемое описание
-    с номером строки и позицией (СУБД в таких случаях says только «invalid
-    character», не показывая где).
-    """
-    for lineno, line in enumerate(stmt.splitlines(), 1):
-        for pos, ch in enumerate(line, 1):
-            name = _BAD_CHARS.get(ch)
-            if name is None and ord(ch) < 32 and ch != "\t":
-                name = f"управляющий символ U+{ord(ch):04X}"
-            if name:
-                return (f"строка {lineno}, позиция {pos}: {name} "
-                        f"(U+{ord(ch):04X}). Похоже, запрос копировали из "
-                        f"документа/мессенджера — перенаберите этот символ "
-                        f"вручную.")
-    return None
-
-
-def _strip_terminators(sql):
-    """Убрать хвостовые ';' и пробелы (в т.ч. вперемешку: ';\\n;')."""
-    stmt = sql.strip()
-    while stmt.endswith(";"):
-        stmt = stmt[:-1].strip()
-    return stmt
-
-
-def snap_query_columns(db, sql, cred="MAIN"):
-    """Снять список колонок, которые вернёт SELECT-запрос (без выборки строк).
-
-    Оборачивает запрос в подзапрос с «нулевым» лимитом и читает cursor.description.
-    Возвращает список словарей в том же формате, что snap_structure (внутренние
-    ключи в нижнем регистре), но data_type/data_scale/PK пустые — тип из описания
-    курсора не нужен для сопоставления по имени. Регистр имён — как отдаёт БД
-    (Oracle ВЕРХНИЙ, Postgres нижний).
-
-    ВНИМАНИЕ к алиасу подзапроса: он НЕ должен начинаться с подчёркивания.
-    Oracle требует, чтобы неквотированный идентификатор начинался с буквы, и на
-    '_sp_probe' отвечал ORA-00911 «invalid character» — то есть снятие колонок
-    по своему SELECT не работало на Oracle вообще, независимо от самого запроса.
-    'sp_probe' валиден и в Oracle, и в Postgres.
-    """
-    from Connect import connectPostgres, connectOracle  # noqa: E402
-
-    stmt = _strip_terminators(sql)
-    if not stmt:
-        raise ValueError("Пустой SELECT-запрос.")
-    bad = _check_sql_chars(stmt)
-    if bad:
-        raise ValueError(f"В тексте запроса недопустимый символ — {bad}")
-
-    if db == "Post":
-        probe = f"SELECT * FROM (\n{stmt}\n) AS sp_probe LIMIT 0"
-    else:
-        probe = f"SELECT * FROM (\n{stmt}\n) sp_probe WHERE ROWNUM < 1"
-
-    conn = connectPostgres(cred) if db == "Post" else connectOracle(cred)
-    try:
-        cur = conn.cursor()
-        cur.execute(probe)
-        desc = cur.description or []
-    finally:
-        conn.close()
-
-    if not desc:
-        raise ValueError("Запрос не вернул ни одной колонки (проверь SELECT).")
-    return [{"column_name": d[0], "data_type": "", "data_scale": None,
-             "is_primary_key": None} for d in desc]
+# Снятие колонок по своему SELECT (и проверка текста запроса на типографский
+# мусор) живёт в ядре сложного ETL — оно нужно обоим конструкторам, а для
+# сложной линии ещё и с типами (snap_query_structure). Имена оставлены
+# прежними: на них ссылаются старые вызовы и самопроверки.
+snap_query_columns = B.snap_query_columns
+_check_sql_chars = B._check_sql_chars
+_strip_terminators = B._strip_terminators
 
 
 # ─────────────────────────── генерация SQL ───────────────────────────
@@ -707,7 +628,6 @@ def _selftest():
 
 
 if __name__ == "__main__":
-    import sys
     if "--selftest" in sys.argv:
         _selftest()
     else:
