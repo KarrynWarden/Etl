@@ -81,13 +81,45 @@ def LoadConfig(configKey):
     config = loadFullConfig()
     data = config["data"]
     if configKey not in data:
-        similar = [k for k in data if k.lower() == configKey.lower()]
-        hint = ""
-        if similar:
-            hint = (f" Есть ключ {similar[0]!r} — различие только в РЕГИСТРЕ. "
-                    f"Регистр имени линии должен совпадать с тем, что пишет в "
-                    f"etl_log_iud_row/etl_jobs триггер ведущей БД (Oracle — "
-                    f"ВЕРХНИЙ, Postgres — нижний); переименуй фрагмент в "
-                    f"config.d, а не подгоняй даг.")
-        raise KeyError(f"Конфиг для ключа {configKey} не найден.{hint}")
+        raise KeyError(f"Конфиг для ключа {configKey} не найден."
+                       + _missingKeyHint(configKey, data))
     return data[configKey]
+
+
+def _missingKeyHint(configKey, data):
+    """Подсказка к «конфиг не найден»: регистр / направление / не тот etlFolder.
+
+    Без неё сообщение одинаково выглядит и когда фрагмент назван не так, и
+    когда рантайм вообще смотрит в ЧУЖОЙ etlFolder (ETL_FULL_PATH указывает на
+    другую среду, или выкачена ветка без этого фрагмента) — а чинится это
+    по-разному. Поэтому всегда печатаем реальный каталог и что в нём найдено.
+    """
+    fragDir = os.path.join(_BASE, "config.d")
+    parts = []
+
+    similar = [k for k in data if k.lower() == configKey.lower()]
+    if similar:
+        parts.append(f" Есть ключ {similar[0]!r} — различие только в РЕГИСТРЕ. "
+                     f"Регистр имени линии должен совпадать с тем, что пишет в "
+                     f"etl_log_iud_row/etl_jobs триггер ведущей БД (Oracle — "
+                     f"ВЕРХНИЙ, Postgres — нижний); переименуй фрагмент в "
+                     f"config.d, а не подгоняй даг.")
+
+    # тот же префикс (имя линии), но другое направление — частая опечатка в даге
+    line = configKey[:-8]
+    if line:
+        others = sorted(k for k in data
+                        if k != configKey and k[:-8].lower() == line.lower())
+        if others:
+            parts.append(f" Для линии {line!r} есть направления: "
+                         f"{', '.join(repr(k[-8:]) for k in others)}.")
+
+    fragPath = os.path.join(fragDir, f"{configKey}.json")
+    if os.path.exists(fragPath):
+        parts.append(f" Файл {fragPath} существует, но ключа {configKey!r} "
+                     f"внутри нет — имя файла и ключ внутри должны совпадать.")
+    parts.append(f" Читалось из {fragDir} (ETL_FULL_PATH={FULL_PATH!r}), "
+                 f"собрано линий: {len(data)}. Если каталог не тот — проверь "
+                 f"ETL_FULL_PATH среды; если фрагмента там нет — выкати его в "
+                 f"ветку деплоя вместе с дагом.")
+    return "".join(parts)
