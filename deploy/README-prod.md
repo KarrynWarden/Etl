@@ -89,15 +89,46 @@ bash deploy/deploy-prod.sh          # прод <- origin/test, с подтвер
 `post-receive` разложит код в `prod-src`, проверит, что даги парсятся, и —
 поскольку рубильник ещё не включён — **ничего не перезапустит**.
 
-Затем на сервере:
-```bash
-cp /opt/airflow-prod/prod-src/deploy/prod.env.example /opt/airflow-prod/prod-src/.env
-# впиши БОЕВЫЕ реквизиты РЕДАКТОРОМ (не командой с паролем в shell)
-chgrp etlprod /opt/airflow-prod/prod-src/.env && chmod 640 /opt/airflow-prod/prod-src/.env
+Затем `.env` с реквизитами боевых БД. **Лучший способ — создать его прямо на
+сервере редактором**: пароль тогда нигде не путешествует и не оседает ни в
+истории shell, ни во временных файлах.
 
-# подключения (печатает только OK/FAIL):
-PYTHONPATH=/opt/airflow-prod/prod-src python3 /opt/airflow-prod/prod-src/tools/check_db.py MAIN A56
+```bash
+sudo -s
+cp /opt/airflow-prod/prod-src/deploy/prod.env.example /opt/airflow-prod/prod-src/.env
+nano /opt/airflow-prod/prod-src/.env          # вписать значения
+chown root:etlprod /opt/airflow-prod/prod-src/.env
+chmod 640 /opt/airflow-prod/prod-src/.env     # читает группа: под ней ходит airflow
 ```
+
+Где взять значения: они уже есть на этом же сервере — в старом прод-коде
+(`/opt/airflow/airflow/`), либо в его `.env`, либо прямо в старом
+`Connect/__init__.py`, где реквизиты были захардкожены:
+```bash
+grep -rniE 'host|user|password|passwd|pwd|dsn|makedsn' /opt/airflow/airflow/Connect/ | head
+ls -la /opt/airflow/airflow/.env 2>/dev/null
+```
+
+Если удобнее заполнять на dev-PC — файл переносится по ssh и ставится на место
+с нужными правами, а временная копия затирается:
+```bash
+scp prod.env devel@airflow:/home/devel/prod.env
+ssh devel@airflow
+sudo install -o root -g etlprod -m 640 /home/devel/prod.env /opt/airflow-prod/prod-src/.env
+shred -u /home/devel/prod.env
+```
+> Название файла на dev-PC — **`prod.env`**, а не `.env.prod`: `.gitignore`
+> ловит `.env` и `*.env`, но `.env.prod` не подходит ни под один шаблон и может
+> уехать в репозиторий. Ещё надёжнее — держать его вообще вне клона.
+
+Проверка (печатает только OK/FAIL, без паролей и IP):
+```bash
+sudo -u airflow env PYTHONPATH=/opt/airflow-prod/prod-src \
+  /opt/airflow/venv/bin/python /opt/airflow-prod/prod-src/tools/check_db.py MAIN A56
+```
+
+`.env` читает только код процессов. В systemd-файле `airflow-prod.env` паролей
+нет и быть не должно — там только пути.
 
 ### Шаг 3. Готовность боевых БД — основная работа
 
@@ -174,6 +205,21 @@ sudo -u airflow env AIRFLOW_HOME=/opt/airflow/airflow /opt/airflow/venv/bin/airf
   | xargs -r -n1 sudo -u airflow env AIRFLOW_HOME=/opt/airflow/airflow /opt/airflow/venv/bin/airflow dags pause
 ```
 Дождись, пока текущие задачи доработают (в UI не должно остаться `running`).
+
+### Шаг 5.5. Предпроверка (можно и нужно гонять заранее)
+
+```bash
+sudo bash precheck-prod.sh
+```
+Ничего не переключает и не перезапускает — только читает и печатает отчёт:
+подготовка на месте, рубильник выключен, код разложен, `.env` читается
+пользователем `airflow`, даги парсятся, пул `Etl` нужного размера, какие
+`dag_id` совпадут со старыми, какие даги прода сейчас включены (список
+сохраняется в `/opt/airflow-prod/state/` — по нему гасить перед переключением и
+возвращать при откате), и в конце — `tools/preflight.py` по боевым БД.
+
+Скрипт безопасно запускать в рабочее время и столько раз, сколько нужно:
+пока не выполнен `--cutover`, работающий прод его не замечает.
 
 ### Шаг 6. Переключение
 
