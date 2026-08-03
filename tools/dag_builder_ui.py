@@ -20,6 +20,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from tools import dag_builder as B  # noqa: E402
+from tools import trigger_builder as T  # noqa: E402
 
 _NONE = "— нет —"
 
@@ -375,6 +376,235 @@ def _delete_controls(W, out, list_fn, targets_fn, delete_fn, after_fn, label="л
     return pick, btn, confirm, _refresh
 
 
+_STATUS_ICON = {"ok": "✅", "warn": "⚠️", "error": "❌", "missing": "❌",
+                "fail": "🔌", "skip": "⬜"}
+_STATUS_WORD = {"ok": "в порядке", "warn": "замечания", "error": "ошибка",
+                "missing": "нет триггера", "fail": "не проверено",
+                "skip": "не требуется"}
+
+
+def _trigger_report_text(results, db_reports):
+    """Текстовый отчёт проверки триггеров (для зоны вывода)."""
+    lines = []
+    for db, rep in sorted(db_reports.items()):
+        lines.append(f"=== {db} (реквизиты {rep['cred']}, журнал {rep['journal']}) "
+                     f"{_STATUS_ICON.get(rep['status'], '')}")
+        for m in rep["messages"]:
+            lines.append("    " + m)
+    for r in results:
+        lines.append("")
+        lines.append(f"{_STATUS_ICON.get(r['status'], '')} {r['key']} "
+                     f"[{r['db']} · {r['mode']}] ведущая {r['table_master'] or '—'} "
+                     f"→ tablename '{r['tablename']}': {_STATUS_WORD.get(r['status'])}")
+        if r.get("found"):
+            lines.append("    найдено: " + ", ".join(r["found"]))
+        for p in r.get("problems") or []:
+            lines.append("    ❌ " + p)
+        for n in r.get("notes") or []:
+            lines.append("    · " + n)
+    return "\n".join(lines)
+
+
+def _trigger_controls(W, out, ctx_fn, save_option=True, mode_note_fn=None, extra=()):
+    """Блок «Триггер на ведущей»: показать DDL, проверить в БД, создать/обновить.
+
+    Триггер — вторая половина линии: без него режимы по журналу
+    (`iud`, `delete_insert`) не видят изменений и молча ничего не переносят.
+    Раньше его приходилось делать отдельно, руками по шаблону — поэтому блок
+    висит прямо в форме сборки, рядом с кнопками создания линии.
+
+    ctx_fn() -> dict(db, table, tablename, period_column, pk_columns, cred,
+                     mode, key). Если данных ещё нет — бросает RuntimeError с
+    текстом, который и показывается пользователю.
+    mode_note_fn() -> строка-замечание про режим (или '').
+    Возвращает dict: box (виджет), ddl_text() (текст DDL или None — если
+    сохранять не просили/собрать не удалось), refresh().
+    """
+    info = W.HTML()
+    note = W.HTML()
+    journal = W.Text(description="Журнал", placeholder="по умолчанию — как читает ETL",
+                     layout=W.Layout(width="420px"),
+                     style={"description_width": "70px"})
+    chk_save = W.Checkbox(
+        value=True, indent=False,
+        description="Сохранять DDL в etlFolder/queries/triggers/<ключ>.sql")
+    btn_show = W.Button(description="Показать DDL", icon="code",
+                        layout=W.Layout(width="190px"))
+    btn_check = W.Button(description="Проверить в БД", icon="search",
+                         layout=W.Layout(width="190px"))
+    btn_make = W.Button(description="Создать / обновить триггер", icon="bolt",
+                        button_style="warning", layout=W.Layout(width="250px"))
+    c_info = W.HTML()
+    c_yes = W.Button(description="✅ Да, выполнить DDL в БД", button_style="danger",
+                     layout=W.Layout(width="260px"))
+    c_no = W.Button(description="Отмена", layout=W.Layout(width="120px"))
+    confirm = W.VBox([c_info, W.HBox([c_yes, c_no])],
+                     layout=W.Layout(display="none", border="2px solid #dc3545",
+                                     padding="6px", margin="4px 0"))
+
+    def _build():
+        """(ddl, ctx) — бросает исключение с понятным текстом."""
+        ctx = ctx_fn()
+        ddl = T.build_trigger(ctx["db"], ctx["table"], ctx["tablename"],
+                              ctx.get("period_column"), ctx.get("pk_columns") or [],
+                              journal.value.strip() or None)
+        return ddl, ctx
+
+    def refresh(_=None):
+        note.value = (mode_note_fn() or "") if mode_note_fn else ""
+        try:
+            ddl, ctx = _build()
+        except Exception as e:
+            info.value = ("<span style='color:#888'>DDL появится, когда будут "
+                          f"известны ведущая, имя линии и PK: {_esc(str(e))}</span>")
+            return
+        pk = ", ".join(ctx.get("pk_columns") or []) or "—"
+        info.value = (
+            f"триггер <code>{_esc(ddl['name'])}</code> на <code>{_esc(ctx['table'])}</code> "
+            f"[{ctx['db']}] → журнал <code>{_esc(ddl['journal'])}</code>, "
+            f"<code>tablename = '{_esc(ctx['tablename'])}'</code>, PK: <code>{_esc(pk)}</code>"
+            + (f", функция <code>{_esc(ddl['func'])}</code>" if ddl["func"] else ""))
+
+    def _show(_):
+        try:
+            ddl, ctx = _build()
+        except Exception as e:
+            with out:
+                out.clear_output(); print(f"DDL собрать не удалось: {e}")
+            return
+        with out:
+            out.clear_output()
+            print("=" * 70)
+            print(f"DDL ТРИГГЕРА ведущей ({ctx['db']})")
+            print("-" * 70)
+            print(ddl["text"])
+
+    def _check(_):
+        from IPython.display import display, HTML
+        try:
+            ddl, ctx = _build()
+        except Exception as e:
+            with out:
+                out.clear_output(); print(f"Проверять нечего: {e}")
+            return
+        with out:
+            out.clear_output()
+            display(HTML(_spinner_html("Смотрю триггер в БД — подождите…")))
+        target = {"key": ctx.get("key") or ctx["tablename"], "kind": "etl",
+                  "db_master": ctx["db"], "table_master": ctx["table"],
+                  "tablename": ctx["tablename"], "mode": ctx.get("mode", "iud"),
+                  "period_column": ctx.get("period_column"),
+                  "pk_columns": ctx.get("pk_columns") or [],
+                  # проверяем по запросу пользователя даже в режимах, которым
+                  # журнал не нужен: он сам решил посмотреть, что там стоит
+                  "needs": True, "note": None}
+        try:
+            results, db_reports = T.check_targets(
+                [target], creds={ctx["db"]: ctx.get("cred", "MAIN")},
+                journals={ctx["db"]: journal.value.strip() or None})
+        except Exception as e:
+            with out:
+                out.clear_output(); print(f"Проверка не удалась: {type(e).__name__}: {e}")
+            return
+        with out:
+            out.clear_output()
+            print(_trigger_report_text(results, db_reports))
+            if results and results[0]["status"] in ("missing", "error"):
+                if not T.needs_trigger(ctx.get("mode", "iud")):
+                    print(f"\nПри этом режим {ctx['mode']} журнал не читает — "
+                          f"триггер этой линии не требуется, проверка показана "
+                          f"как есть.")
+                else:
+                    print("\nПоправить — кнопка «Создать / обновить триггер» "
+                          "(DDL можно посмотреть заранее).")
+
+    def _ask(_):
+        try:
+            ddl, ctx = _build()
+        except Exception as e:
+            with out:
+                out.clear_output(); print(f"DDL собрать не удалось: {e}")
+            return
+        c_info.value = (
+            f"<b>Выполнить DDL в БД {ctx['db']}</b> (реквизиты "
+            f"{_esc(ctx.get('cred', 'MAIN'))})? Триггер "
+            f"<code>{_esc(ddl['name'])}</code> на <code>{_esc(ctx['table'])}</code> "
+            "будет создан или ЗАМЕНЁН (CREATE OR REPLACE). Это изменение в "
+            "боевой БД, не в репозитории:"
+            f"<pre style='max-height:220px;overflow:auto'>{_esc(ddl['text'])}</pre>")
+        confirm.layout.display = ""
+
+    def _hide(_):
+        confirm.layout.display = "none"
+
+    def _go(_):
+        from IPython.display import display, HTML
+        confirm.layout.display = "none"
+        try:
+            ddl, ctx = _build()
+        except Exception as e:
+            with out:
+                out.clear_output(); print(f"DDL собрать не удалось: {e}")
+            return
+        for b in (btn_make, c_yes, c_no):
+            b.disabled = True
+        with out:
+            out.clear_output()
+            display(HTML(_spinner_html("Выполняю DDL в БД — подождите…")))
+        try:
+            done = T.apply_trigger(ctx["db"], ddl["statements"], ctx.get("cred", "MAIN"))
+        except Exception as e:
+            with out:
+                out.clear_output()
+                print(f"Триггер НЕ создан: {type(e).__name__}: {e}")
+                print("\nЧастые причины: нет прав на ведущую таблицу или на журнал "
+                      "(нужен GRANT INSERT на etl_log_iud_row), либо триггер должен "
+                      "создаваться под владельцем таблицы.")
+            return
+        finally:
+            for b in (btn_make, c_yes, c_no):
+                b.disabled = False
+        with out:
+            out.clear_output()
+            print(f"✅ Триггер {ddl['name']} создан/обновлён в {ctx['db']}. Выполнено:")
+            for d in done:
+                print("  ", d)
+            # Файл с DDL пишется не здесь, а при сборке линии — говорим прямо,
+            # чтобы «создал триггер» не путали с «сохранил в репозиторий».
+            print("\nВ БД изменения уже применены. Копия DDL попадёт в репозиторий "
+                  "при «Создать файлы» / «Создать и запушить»."
+                  if (save_option and chk_save.value) else
+                  "\nВ БД изменения уже применены. В репозиторий этот DDL не "
+                  "сохраняется.")
+
+    btn_show.on_click(_show)
+    btn_check.on_click(_check)
+    btn_make.on_click(_ask)
+    c_yes.on_click(_go)
+    c_no.on_click(_hide)
+
+    def ddl_text():
+        """Текст DDL для записи рядом с линией (None — если не нужно/не собрать)."""
+        if save_option and not chk_save.value:
+            return None
+        try:
+            return _build()[0]["text"]
+        except Exception:
+            return None
+
+    children = [W.HTML("<b>Триггер на ведущей</b> — вторая половина линии: "
+                       "события в <code>etl_log_iud_row</code> пишет он, "
+                       "без него режимы по журналу молча ничего не переносят."),
+                note, info] + list(extra) + [journal]
+    if save_option:
+        children.append(chk_save)
+    children += [W.HBox([btn_show, btn_check, btn_make]), confirm]
+    box = W.VBox(children, layout=W.Layout(border="1px solid #17a2b8",
+                                           padding="6px", margin="4px 0"))
+    return {"box": box, "ddl_text": ddl_text, "refresh": refresh,
+            "journal": journal, "save": chk_save}
+
+
 def _publish_controls(W, out, do_write, message_fn, on_pushed=None):
     """Кнопка «создать и запушить» + подтверждение (защита от мисклика).
 
@@ -462,7 +692,7 @@ def _complex_ui():
     Возвращает VBox — его встраивают во вкладку в launch()."""
     import ipywidgets as W
 
-    state = {"master_cols": [], "slave_cols": [], "rows": [], "row_widgets": [],
+    state = {"master_cols": [], "slave_cols": [], "rows": [],
              "period_m_w": None, "period_s_w": None,
              "struct_master_rel": None, "struct_slave_rel": None,
              "tags_auto": True, "_tags_guard": False, "_opts_guard": False}
@@ -670,6 +900,9 @@ def _complex_ui():
                           layout=W.Layout(width="640px"),
                           style={"description_width": "180px"})
     # ── поле режима query_section (список групп задаёт свой запрос) ──
+    # Показывается ТОЛЬКО при mode=query_section: список групп из своего запроса
+    # читает один этот режим, в остальных ключ periodsSql не пишется вообще —
+    # видимое поле там сбивало с толку («заполнил, а оно не работает»).
     f_periods = W.Textarea(description="SQL периодов (query_section)",
                            placeholder="Запрос групп для перезаливки. Колонки должны "
                                        "соответствовать периоду ведущей: одна колонка-дата "
@@ -677,6 +910,7 @@ def _complex_ui():
                                        "путь пропишется в periodsSql.",
                            layout=W.Layout(width="760px", height="100px"),
                            style={"description_width": "180px"})
+    periods_box = W.VBox([f_periods])
     adv_help = W.HTML(
         "<span style='color:#888'>"
         "<b>Фильтр ведущей/ведомой</b> — доп. условие WHERE (например <code>doctype = 7</code>).<br>"
@@ -686,13 +920,13 @@ def _complex_ui():
         "<b>truncatePeriod</b> — сравнивать период по дате, без времени.<br>"
         "<b>skipAudit</b> — исключить линию из общего аудита (AuditAll).<br>"
         "<b>Не сверять поля</b> — auditExcludeFields: колонки, которые аудит игнорирует.<br>"
-        "<b>SQL периодов</b> — только для mode=<code>query_section</code>: запрос "
-        "возвращает список групп для перезаливки. Колонки должны соответствовать "
-        "периоду ведущей (см. блок «Период группы» ниже): одна колонка-дата либо "
-        "year[, month[, day]].</span>")
+        "<b>SQL периодов</b> — появляется только при mode=<code>query_section</code> "
+        "(другие режимы его не читают): запрос возвращает список групп для "
+        "перезаливки. Колонки должны соответствовать периоду ведущей (см. блок "
+        "«Период группы» ниже): одна колонка-дата либо year[, month[, day]].</span>")
     advanced = W.Accordion(children=[W.VBox(
         [adv_help, f_filter, f_filter_s, f_sql, f_sql_name, f_confl, f_confl_w,
-         f_trunc, f_skip_audit, f_audit_excl, f_periods])])
+         f_trunc, f_skip_audit, f_audit_excl, periods_box])])
     advanced.set_title(0, "Дополнительно (необязательно)")
     advanced.selected_index = None
 
@@ -704,6 +938,21 @@ def _complex_ui():
     map_title = W.HTML("")
     hide_unmapped = W.Checkbox(description="Скрывать непривязанные", value=False,
                                indent=False)
+    # ── ручное добавление колонок ──
+    btn_add_mrow = W.Button(description="➕ колонка ведущей", icon="plus",
+                            layout=W.Layout(width="220px"))
+    new_scol = W.Text(placeholder="колонка ведомой", layout=W.Layout(width="180px"))
+    new_scol_type = W.Text(placeholder="её тип", layout=W.Layout(width="140px"))
+    btn_add_scol = W.Button(description="➕ колонка ведомой", icon="plus",
+                            layout=W.Layout(width="200px"))
+    manual_help = W.HTML(
+        "<span style='color:#888'>Колонки можно править руками: имя и тип ведущей — "
+        "прямо в строке, <b>🗑</b> убирает колонку из линии, кнопки ниже добавляют новую. "
+        "Тип нужен, когда его не отдаёт источник: у константы в запросе "
+        "(<code>null CHECKDIR</code>, <code>2 CHECKDIR</code>) тип определить неоткуда, "
+        "и он подсвечен как <b>неизвестный</b>. Такие колонки рантайм сверяет только по "
+        "имени, поэтому вписанный тип ничего не сломает; надёжнее всего задать тип прямо "
+        "в запросе — <code>CAST(NULL AS NUMBER) CHECKDIR</code>.</span>")
     # шапка над колонками: какая таблица/БД слева (ведущая) и справа (ведомая) —
     # чтобы не гадать по регистру, из какой таблицы колонка
     map_head = W.HBox([], layout=W.Layout(align_items="center",
@@ -769,12 +1018,11 @@ def _complex_ui():
 
     # ── фильтр строк: показывать только привязанные (для проверки) ──
     def _apply_row_filter(_=None):
-        widgets = state.get("row_widgets", [])
+        rows = state.get("rows", [])
         if hide_unmapped.value:
-            map_box.children = [w for (m, dd, pk), w in zip(state["rows"], widgets)
-                                if dd.value != _NONE]
+            map_box.children = [r["box"] for r in rows if r["dd"].value != _NONE]
         else:
-            map_box.children = widgets
+            map_box.children = [r["box"] for r in rows]
     hide_unmapped.observe(_apply_row_filter, names="value")
 
     # ── связь 1:1: в каждой выпадашке оставляем только ещё не занятые колонки ──
@@ -784,21 +1032,92 @@ def _complex_ui():
         if state.get("_opts_guard"):
             return
         all_s = [c["column_name"] for c in state["slave_cols"]]
-        used = {dd.value for _m, dd, _p in state["rows"] if dd.value != _NONE}
+        used = {r["dd"].value for r in state["rows"] if r["dd"].value != _NONE}
         state["_opts_guard"] = True
         try:
-            for _m, dd, _p in state["rows"]:
-                cur = dd.value
+            for r in state["rows"]:
+                cur = r["dd"].value
                 opts = [_NONE] + [s for s in all_s if s == cur or s not in used]
-                if list(dd.options) != opts:
-                    dd.options = opts
-                    dd.value = cur            # сохранить выбор строки
+                if list(r["dd"].options) != opts:
+                    r["dd"].options = opts
+                    r["dd"].value = cur       # сохранить выбор строки
         finally:
             state["_opts_guard"] = False
 
     def _on_pair_change(_=None):
         _refresh_slave_options()
         _apply_row_filter()
+
+    def _on_rows_changed():
+        """Состав колонок изменился руками — обновить и списки периода."""
+        _on_pair_change()
+        _refresh_period_keep()
+
+    def _mark_type(row):
+        """Подсветить тип, который источник не отдал (константа в запросе).
+        Пустой/unknown — рамка внимания; как только вписали своё — снимаем."""
+        unknown = B.unknown_type(row["type"].value)
+        row["type"].layout.border = "2px solid #e0a800" if unknown else ""
+
+    def _make_row(mcol, sval=None, is_pk=False):
+        """Строка сопоставления: имя и тип ведущей правятся руками, 🗑 убирает
+        колонку из линии (в json и в перенос она не попадёт)."""
+        name_w = W.Text(value=str(mcol.get("column_name") or ""),
+                        placeholder="имя колонки", layout=W.Layout(width="190px"))
+        type_w = W.Text(value=str(mcol.get("data_type") or ""),
+                        placeholder="тип", layout=W.Layout(width="140px"))
+        all_s = [c["column_name"] for c in state["slave_cols"]]
+        opts = [_NONE] + all_s
+        dd = W.Dropdown(options=opts, value=sval if sval in opts else _NONE,
+                        layout=W.Layout(width="240px"))
+        dd.observe(_on_pair_change, names="value")
+        pk = W.Checkbox(value=bool(is_pk), description="PK", indent=False,
+                        layout=W.Layout(width="70px"))
+        # PK входит в DDL триггера — держим блок «Триггер» в актуальном виде
+        pk.observe(lambda _c: trg["refresh"](), names="value")
+        rm = W.Button(description="", icon="trash", tooltip="убрать колонку из линии",
+                      layout=W.Layout(width="42px"))
+        row = {"name": name_w, "type": type_w, "dd": dd, "pk": pk,
+               "scale": mcol.get("data_scale")}
+        # увеличенная высота строки + разделитель, чтобы строки не сливались
+        row["box"] = W.HBox(
+            [name_w, type_w, W.HTML("→", layout=W.Layout(width="24px")), dd, pk, rm],
+            layout=W.Layout(align_items="center", min_height="42px",
+                            padding="4px 2px", border_bottom="1px solid #eee"))
+        type_w.observe(lambda _c: _mark_type(row), names="value")
+        _mark_type(row)
+
+        def _remove(_):
+            state["rows"] = [r for r in state["rows"] if r is not row]
+            _on_rows_changed()
+        rm.on_click(_remove)
+        return row
+
+    def _add_master_row(_=None):
+        if not state["rows"] and not state["slave_cols"]:
+            _log("Сначала сними структуры — потом можно добавлять колонки руками.")
+            return
+        state["rows"] = list(state["rows"]) + [
+            _make_row({"column_name": "", "data_type": ""})]
+        _on_rows_changed()
+    btn_add_mrow.on_click(_add_master_row)
+
+    def _add_slave_col(_=None):
+        """Добавить колонку ведомой руками — если её не отдала БД (только что
+        создали, нет прав на словарь и т.п.). Тип обязателен: json ведомой
+        сверяется с information_schema по паре (имя, тип)."""
+        nm = new_scol.value.strip()
+        if not nm:
+            _log("Впиши имя колонки ведомой."); return
+        if any(c["column_name"] == nm for c in state["slave_cols"]):
+            _log(f"Колонка ведомой «{nm}» уже есть в списке."); return
+        state["slave_cols"] = list(state["slave_cols"]) + [{
+            "column_name": nm, "data_type": new_scol_type.value.strip(),
+            "data_scale": None, "is_primary_key": None}]
+        new_scol.value = new_scol_type.value = ""
+        _on_rows_changed()
+        _log(f"Колонка ведомой «{nm}» добавлена в список — выбери её в нужной строке.")
+    btn_add_scol.on_click(_add_slave_col)
 
     # ── отрисовка таблицы сопоставления колонок ──
     def _render_mapping(mcols, scols, pair_map=None, pk_names=None,
@@ -808,39 +1127,34 @@ def _complex_ui():
         s_lbl = (ts.value.strip() or "ведомая")
         map_head.children = [
             W.HTML(f"<b>ВЕДУЩАЯ</b> · <code>{m_lbl}</code> "
-                   f"<span style='color:#888'>[{dbm.value}]</span>",
-                   layout=W.Layout(width="324px")),
+                   f"<span style='color:#888'>[{dbm.value}] имя / тип</span>",
+                   layout=W.Layout(width="354px")),
             W.HTML(f"<b>ВЕДОМАЯ</b> · <code>{s_lbl}</code> "
                    f"<span style='color:#888'>[{dbs.value}]</span>",
-                   layout=W.Layout(width="280px")),
-            W.HTML("<b>PK</b>", layout=W.Layout(width="80px")),
+                   layout=W.Layout(width="264px")),
+            W.HTML("<b>PK</b>", layout=W.Layout(width="70px")),
+            W.HTML("", layout=W.Layout(width="42px")),
         ]
-        slave_opts = [_NONE] + [c["column_name"] for c in scols]
-        rows, widgets = [], []
+        state["slave_cols"] = list(scols)
+        rows = []
         for mcol in mcols:
             name = mcol["column_name"]
             sval = pair_map.get(name) if pair_map else None
             is_pk = (name in pk_names) if pk_names is not None \
                 else bool(mcol.get("is_primary_key"))
-            lbl = W.HTML(f"<code>{name}</code> "
-                         f"<span style='color:#888'>{mcol['data_type']}</span>",
-                         layout=W.Layout(width="300px"))
-            dd = W.Dropdown(options=slave_opts, value=sval if sval in slave_opts else _NONE,
-                            layout=W.Layout(width="280px"))
-            dd.observe(_on_pair_change, names="value")
-            pk = W.Checkbox(value=is_pk, description="PK", indent=False,
-                            layout=W.Layout(width="80px"))
-            rows.append((mcol, dd, pk))
-            # увеличенная высота строки + разделитель, чтобы строки не сливались
-            widgets.append(W.HBox(
-                [lbl, W.HTML("→", layout=W.Layout(width="24px")), dd, pk],
-                layout=W.Layout(align_items="center", min_height="42px",
-                                padding="4px 2px", border_bottom="1px solid #eee")))
+            rows.append(_make_row(mcol, sval, is_pk))
         state["rows"] = rows
-        state["row_widgets"] = widgets
         _refresh_slave_options()   # сразу убрать занятые из чужих списков
         _apply_row_filter()
 
+        _render_period(period_m, period_s)
+        trg["refresh"]()
+
+    def _render_period(period_m, period_s):
+        """Панели «Период группы» по ТЕКУЩИМ колонкам формы (включая правленные
+        руками) — период выбирается из того, что реально попадёт в структуры."""
+        mcols = _collect_master_cols()
+        scols = list(state["slave_cols"])
         m_names = [c["column_name"] for c in mcols]
         s_names = [c["column_name"] for c in scols]
         state["period_m_w"] = _period_picker(W, "Период ВЕДУЩЕЙ", m_names, mcols, period_m)
@@ -855,20 +1169,54 @@ def _complex_ui():
                    layout=W.Layout(align_items="flex-start")),
         ]
 
+    def _refresh_period_keep():
+        """Пересобрать панели периода после ручной правки состава колонок,
+        сохранив выбранное значение."""
+        cur_m = state["period_m_w"]["value"]() if state["period_m_w"] else None
+        cur_s = state["period_s_w"]["value"]() if state["period_s_w"] else None
+        _render_period(cur_m, cur_s)
+
+    def _collect_master_cols():
+        """Колонки ведущей ИЗ ФОРМЫ (имя/тип правятся руками, удалённые строки
+        исключены). Это и есть источник json-структуры ведущей."""
+        out = []
+        for r in state["rows"]:
+            name = r["name"].value.strip()
+            if not name:
+                continue
+            out.append({"column_name": name,
+                        "data_type": r["type"].value.strip(),
+                        "data_scale": r["scale"],
+                        "is_primary_key": "Primary Key" if r["pk"].value else None})
+        return out
+
     def _collect_pairs():
         pairs = []
-        for mcol, dd, _pk in state["rows"]:
-            sval = None if dd.value == _NONE else dd.value
-            pairs.append((mcol["column_name"], sval))
+        for r in state["rows"]:
+            name = r["name"].value.strip()
+            if not name:
+                continue
+            pairs.append((name, None if r["dd"].value == _NONE else r["dd"].value))
         return pairs
 
-    def _apply_pk():
-        # перенести галочки PK обратно в словари колонок (build_all зеркалит на ведомую)
-        for mcol, _dd, pk in state["rows"]:
-            mcol["is_primary_key"] = "Primary Key" if pk.value else None
+    def _check_rows():
+        """Понятные ошибки до сборки: пустые/повторяющиеся имена, пустые типы."""
+        names = [r["name"].value.strip() for r in state["rows"]]
+        dupes = sorted({n for n in names if n and names.count(n) > 1})
+        if dupes:
+            raise RuntimeError("Колонки ведущей повторяются: " + ", ".join(dupes) +
+                               ". Убери лишние строки (🗑) или переименуй.")
+        empty = [r["name"].value.strip() for r in state["rows"]
+                 if r["name"].value.strip() and not r["type"].value.strip()
+                 and r["dd"].value != _NONE]
+        if empty:
+            raise RuntimeError(
+                "Не заполнен тип у колонок: " + ", ".join(empty) +
+                ". Впиши тип в строке (или убери колонку из линии) — он попадёт в "
+                "json-структуру, по которой рантайм сверяет источник.")
 
     def _build_spec():
-        _apply_pk()
+        _check_rows()
         extra = {
             "filterClause": f_filter.value.strip() or None,
             "filterClauseSlave": f_filter_s.value.strip() or None,
@@ -888,7 +1236,7 @@ def _complex_ui():
             "line_name": line.value.strip() or None,
             "dag_id": dag.value.strip() or None,
             "mode": mode.value,
-            "master_cols": state["master_cols"], "slave_cols": state["slave_cols"],
+            "master_cols": _collect_master_cols(), "slave_cols": state["slave_cols"],
             "pairs": _collect_pairs(),
             "period_column": state["period_m_w"]["value"]() if state["period_m_w"] else None,
             "slave_period_column": state["period_s_w"]["value"]() if state["period_s_w"] else None,
@@ -901,6 +1249,8 @@ def _complex_ui():
             "periods_sql_text": f_periods.value.strip() or None,
             "struct_master_rel": state["struct_master_rel"],
             "struct_slave_rel": state["struct_slave_rel"],
+            # версионируемая копия DDL триггера (галочка в блоке «Триггер»)
+            "trigger_sql_text": trg["ddl_text"](),
         }
         # расписание
         kind = _SCHED_KINDS[sched_kind.value]
@@ -915,32 +1265,125 @@ def _complex_ui():
             spec["schedule_cron"] = sched_cron.value.strip()
         return spec
 
+    # ── блок «Триггер на ведущей» ──
+    def _line_name():
+        return (line.value.strip()
+                or (B.to_db_case(B.bare(tm.value.strip()), dbm.value)
+                    if tm.value.strip() else ""))
+
+    def _trigger_ctx():
+        ln = _line_name()
+        if not ln:
+            raise RuntimeError("не заполнена ведущая / имя линии")
+        if not tm.value.strip():
+            raise RuntimeError("не заполнена ведущая таблица")
+        pk = [r["name"].value.strip() for r in state["rows"]
+              if r["pk"].value and r["name"].value.strip()]
+        if not pk:
+            raise RuntimeError("не отмечен PK в таблице колонок")
+        return {"db": dbm.value, "table": tm.value.strip(), "tablename": ln,
+                "period_column": (state["period_m_w"]["value"]()
+                                  if state["period_m_w"] else None),
+                "pk_columns": pk, "cred": user_m_get(), "mode": mode.value,
+                "key": f"{ln}{dbm.value}{dbs.value}"}
+
+    def _trigger_mode_note():
+        if T.needs_trigger(mode.value):
+            if mode.value in T.TRIGGER_MODES_OPTIONAL:
+                return ("<span style='color:#8a6d3b'>режим "
+                        f"<code>{mode.value}</code> журналом только дополняется: "
+                        "линия работает и без триггера (по сравнению срезов), "
+                        "но с ним реагирует на каждое изменение.</span>")
+            return ("<span style='color:#8a6d3b'>режим "
+                    f"<code>{mode.value}</code> работает ТОЛЬКО по журналу — "
+                    "без триггера перенос не увидит ни одного изменения.</span>")
+        return ("<span style='color:#888'>режим "
+                f"<code>{mode.value}</code> журнал не читает "
+                "(группы даёт isokaudit=4 либо свой SQL периодов) — триггер этой "
+                "линии не нужен, галочка сохранения снята автоматически.</span>")
+
+    trg = _trigger_controls(W, out, _trigger_ctx, save_option=True,
+                            mode_note_fn=_trigger_mode_note)
+
     def _current_mapping():
-        """Текущее сопоставление из формы: {master_name: slave_name|None} и набор PK."""
-        pm = {}
-        pk = set()
-        for mcol, dd, pkw in state["rows"]:
-            nm = mcol["column_name"]
-            pm[nm] = None if dd.value == _NONE else dd.value
-            if pkw.value:
+        """Текущее состояние формы: {master: slave|None}, набор PK и {master: тип}
+        (ручные типы нужно сохранить при пересъёме — источник их не отдаёт)."""
+        pm, pk, types = {}, set(), {}
+        for r in state["rows"]:
+            nm = r["name"].value.strip()
+            if not nm:
+                continue
+            pm[nm] = None if r["dd"].value == _NONE else r["dd"].value
+            types[nm] = r["type"].value.strip()
+            if r["pk"].value:
                 pk.add(nm)
-        return pm, pk
+        return pm, pk, types
+
+    def _snap_note_html(notes):
+        if not notes:
+            return ""
+        return ("<div style='margin-top:4px;color:#8a6d3b'>· " +
+                "<br>· ".join(notes) + "</div>")
+
+    def _snap_master(prev_types=None):
+        """Снять структуру ведущей. ПРИОРИТЕТ — свой запрос («SQL ведущей»), и
+        только если его нет — таблица.
+
+        Так же поступает рантайм: при заданном selectSql он сверяет структуру по
+        описанию курсора этого запроса, а не по таблице. Раньше структура всегда
+        снималась с таблицы, поэтому колонки запроса, которых в таблице нет
+        (`null CHECKDIR`), в структуру просто не попадали, и перенос их не видел.
+
+        Возвращает (колонки, заметки для пользователя).
+        """
+        notes = []
+        sql_text = f_sql.value.strip()
+        if not sql_text:
+            if not tm.value.strip():
+                raise RuntimeError("Заполни имя ведущей таблицы.")
+            return B.snap_structure(dbm.value, tm.value.strip(), user_m_get()), notes
+        mcols = B.snap_query_structure(dbm.value, sql_text, user_m_get())
+        notes.append("структура ведущей снята <b>по своему запросу</b> "
+                     "(«SQL ведущей»), а не по таблице")
+        # Первичный ключ из описания курсора не виден — берём из таблицы ведущей.
+        if tm.value.strip():
+            try:
+                tcols = B.snap_structure(dbm.value, tm.value.strip(), user_m_get())
+                mcols = B.merge_table_pk(mcols, tcols)
+            except Exception as e:
+                notes.append(f"PK из таблицы {tm.value.strip()} подтянуть не удалось "
+                             f"({type(e).__name__}) — отметь PK галочками вручную")
+        # Ручные типы (их источник не отдаёт) переносим на новую съёмку.
+        if prev_types:
+            for c in mcols:
+                old = prev_types.get(c["column_name"])
+                if old and B.unknown_type(c["data_type"]):
+                    c["data_type"] = old
+        unknown = [c["column_name"] for c in mcols if B.unknown_type(c["data_type"])]
+        if unknown:
+            notes.append("тип не определился у " +
+                         ", ".join(f"<code>{c}</code>" for c in unknown) +
+                         " (константа в запросе) — впиши его в строке вручную либо "
+                         "задай в запросе через CAST")
+        return mcols, notes
 
     # ── снять структуры из БД ──
     def on_snap(_):
         try:
-            if not tm.value.strip() or not ts.value.strip():
-                _log("Заполни имена ведущей и ведомой таблиц."); return
+            if not ts.value.strip():
+                _log("Заполни имя ведомой таблицы."); return
             edit = work_mode.value == "edit"
-            # в правке сохраняем текущие связки/PK/период, чтобы пересъём не снёс их
-            prev_pairs, prev_pk = (_current_mapping() if edit and state["rows"]
-                                   else ({}, None))
+            # в правке сохраняем текущие связки/PK/период/типы, чтобы пересъём их не снёс
+            prev_pairs, prev_pk, prev_types = (_current_mapping() if state["rows"]
+                                               else ({}, None, {}))
+            if not edit:
+                prev_pairs, prev_pk = {}, None
             # период сохраняем при пересъёме структур (строка либо dict)
             prev_pm = state["period_m_w"]["value"]() if (edit and state["period_m_w"]) else None
             prev_ps = state["period_s_w"]["value"]() if (edit and state["period_s_w"]) else None
 
             _log("Снимаю структуры из БД…")
-            mcols = B.snap_structure(dbm.value, tm.value.strip(), user_m_get())
+            mcols, snap_notes = _snap_master(prev_types)
             scols = B.snap_structure(dbs.value, ts.value.strip(), user_s_get())
             state["master_cols"], state["slave_cols"] = mcols, scols
 
@@ -958,7 +1401,7 @@ def _complex_ui():
                 if new_cols:
                     note += (" <b>Новые колонки (привяжи вручную при необходимости):</b> "
                              + ", ".join(f"<code>{c}</code>" for c in new_cols))
-                map_title.value = note
+                map_title.value = note + _snap_note_html(snap_notes)
                 _log("Структуры обновлены, связки сохранены. Привяжи новые поля и «Сохранить».")
             else:
                 sugg, unmatched = B.auto_match(mcols, scols)
@@ -970,7 +1413,7 @@ def _complex_ui():
                 if unmatched:
                     note += (" <b>Без пары в ведомой:</b> "
                              + ", ".join(f"<code>{u}</code>" for u in unmatched))
-                map_title.value = note
+                map_title.value = note + _snap_note_html(snap_notes)
                 _log("Структуры сняты. Поправь выпадашки и галочки PK, затем «Предпросмотр».")
         except Exception as e:
             _log(f"Ошибка снятия структур: {type(e).__name__}: {e}")
@@ -1044,6 +1487,22 @@ def _complex_ui():
                 out.clear_output()
                 for rel, content in files:
                     print("=" * 70); print(rel); print("-" * 70); print(content)
+                # DDL триггера показываем ВСЕГДА — даже когда его не сохраняют в
+                # репозиторий: увидеть, что именно поедет в БД, нужно до нажатия
+                # «Создать триггер».
+                if not any(rel.startswith("etlFolder/queries/triggers/")
+                           for rel, _c in files):
+                    print("=" * 70)
+                    print("DDL ТРИГГЕРА ведущей (в репозиторий НЕ сохраняется)")
+                    print("-" * 70)
+                    try:
+                        ctx = _trigger_ctx()
+                        print(T.build_trigger(
+                            ctx["db"], ctx["table"], ctx["tablename"],
+                            ctx["period_column"], ctx["pk_columns"],
+                            trg["journal"].value.strip() or None)["text"])
+                    except Exception as e:
+                        print(f"(собрать не удалось: {e})")
         except Exception as e:
             _log(f"Ошибка предпросмотра: {type(e).__name__}: {e}")
 
@@ -1182,6 +1641,22 @@ def _complex_ui():
     btn_archive.on_click(on_archive)
     btn_restore.on_click(on_restore)
 
+    # ── видимость полей, зависящих от режима переноса ──
+    def _on_mode(_=None):
+        # «SQL периодов» читает ТОЛЬКО query_section — в остальных режимах поля
+        # нет вовсе, чтобы его не заполняли впустую.
+        qs = mode.value == "query_section"
+        periods_box.layout.display = "" if qs else "none"
+        if qs:
+            advanced.selected_index = 0     # раскрыть: без этого поля не найти
+        # DDL триггера кладём в репозиторий только для режимов, которые его
+        # используют; галочку всегда можно вернуть руками.
+        trg["save"].value = T.needs_trigger(mode.value)
+        trg["refresh"]()
+    mode.observe(_on_mode, names="value")
+    for _w in (tm, line, dbm, dbs):
+        _w.observe(lambda _c: trg["refresh"](), names="value")
+
     # форма сборки (new/edit) — прячется целиком в режиме архива
     build_area = W.VBox([
         W.HBox([tm, ts]), W.HBox([btn_case, case_hint]),
@@ -1197,12 +1672,17 @@ def _complex_ui():
         W.HTML("<b>Колонки</b> (ведущая → ведомая; отметь PK, составной ключ — "
                "несколько галочек):"),
         period_box, W.HBox([map_title, hide_unmapped]), map_head, map_box,
+        manual_help,
+        W.HBox([btn_add_mrow, W.HTML("&nbsp;&nbsp;"), new_scol, new_scol_type,
+                btn_add_scol]),
+        W.HTML("<hr>"), trg["box"],
         W.HTML("<hr>"), commit_hint, commit_msg,
         W.HBox([btn_prev, btn_make, btn_push_only, btn_pub]),
         pub_confirm, push_only_confirm,
     ])
 
     _refresh_default_tags()   # проставить 3 тега по умолчанию
+    _on_mode()                # спрятать «SQL периодов» вне query_section
     _on_work_mode()           # выставить видимость по текущему режиму
 
     return W.VBox([
@@ -1220,7 +1700,7 @@ def _sp_ui():
     import ipywidgets as W
     from tools import sp_builder as SP  # noqa: E402
 
-    state = {"master_cols": [], "slave_cols": [], "rows": [], "row_widgets": [],
+    state = {"master_cols": [], "slave_cols": [], "rows": [], "snap_count": 0,
              "_opts_guard": False}
 
     # ── тип линии и режим работы ──
@@ -1365,6 +1845,18 @@ def _sp_ui():
                                           border_bottom="2px solid #bbb", padding="2px"))
     map_box = W.VBox([], layout=W.Layout(max_height="420px", overflow="auto",
                                          border="1px solid #ddd", padding="4px"))
+    # ── ручное добавление/удаление колонок ──
+    btn_add_mrow = W.Button(description="➕ колонка ведущей", icon="plus",
+                            layout=W.Layout(width="220px"))
+    new_scol = W.Text(placeholder="колонка ведомой", layout=W.Layout(width="200px"))
+    btn_add_scol = W.Button(description="➕ колонка ведомой", icon="plus",
+                            layout=W.Layout(width="200px"))
+    manual_help = W.HTML(
+        "<span style='color:#888'>Строки можно править руками: имя (или выражение) "
+        "ведущей — прямо в строке, <b>🗑</b> убирает колонку из переноса, кнопки ниже "
+        "добавляют новую. В режиме <b>«Свой SELECT»</b> порядок и количество строк "
+        "должны в точности совпадать с колонками запроса — вставка позиционная; "
+        "в режиме «из таблицы» из этих имён собирается SELECT.</span>")
     out = W.Output()
 
     btn_snap = W.Button(description="Снять колонки", button_style="primary",
@@ -1397,30 +1889,75 @@ def _sp_ui():
         if state.get("_opts_guard"):
             return
         all_s = [c["column_name"] for c in state["slave_cols"]]
-        used = {dd.value for _m, dd in state["rows"] if dd.value != _NONE}
+        used = {r["dd"].value for r in state["rows"] if r["dd"].value != _NONE}
         state["_opts_guard"] = True
         try:
-            for _m, dd in state["rows"]:
-                cur = dd.value
+            for r in state["rows"]:
+                cur = r["dd"].value
                 opts = [_NONE] + [s for s in all_s if s == cur or s not in used]
-                if list(dd.options) != opts:
-                    dd.options = opts
-                    dd.value = cur
+                if list(r["dd"].options) != opts:
+                    r["dd"].options = opts
+                    r["dd"].value = cur
         finally:
             state["_opts_guard"] = False
 
     def _apply_row_filter(_=None):
-        widgets = state.get("row_widgets", [])
+        rows = state.get("rows", [])
         if hide_unmapped.value:
-            map_box.children = [w for (m, dd), w in zip(state["rows"], widgets)
-                                if dd.value != _NONE]
+            map_box.children = [r["box"] for r in rows if r["dd"].value != _NONE]
         else:
-            map_box.children = widgets
+            map_box.children = [r["box"] for r in rows]
     hide_unmapped.observe(_apply_row_filter, names="value")
 
     def _on_pair_change(_=None):
         _refresh_slave_options()
         _apply_row_filter()
+
+    def _make_row(mcol, sval=None):
+        """Строка сопоставления: имя/выражение ведущей правится руками, 🗑 убирает
+        колонку из переноса, ➕ добавляет новую (см. _add_master_row)."""
+        name_w = W.Text(value=str(mcol.get("column_name") or ""),
+                        placeholder="колонка или выражение ведущей",
+                        layout=W.Layout(width="300px"))
+        all_s = [c["column_name"] for c in state["slave_cols"]]
+        opts = [_NONE] + all_s
+        dd = W.Dropdown(options=opts, value=sval if sval in opts else _NONE,
+                        layout=W.Layout(width="280px"))
+        dd.observe(_on_pair_change, names="value")
+        rm = W.Button(description="", icon="trash", tooltip="убрать колонку из переноса",
+                      layout=W.Layout(width="42px"))
+        row = {"name": name_w, "dd": dd}
+        row["box"] = W.HBox(
+            [name_w, W.HTML("→", layout=W.Layout(width="24px")), dd, rm],
+            layout=W.Layout(align_items="center", min_height="40px",
+                            padding="4px 2px", border_bottom="1px solid #eee"))
+
+        def _remove(_):
+            state["rows"] = [r for r in state["rows"] if r is not row]
+            _on_pair_change()
+        rm.on_click(_remove)
+        return row
+
+    def _add_master_row(_=None):
+        if not state["slave_cols"]:
+            _log("Сначала сними колонки — потом можно добавлять их руками.")
+            return
+        state["rows"] = list(state["rows"]) + [_make_row({"column_name": ""})]
+        _on_pair_change()
+
+    def _add_slave_col(_=None):
+        """Добавить колонку ведомой руками (если её не отдала БД)."""
+        nm = new_scol.value.strip()
+        if not nm:
+            _log("Впиши имя колонки ведомой."); return
+        if any(c["column_name"] == nm for c in state["slave_cols"]):
+            _log(f"Колонка ведомой «{nm}» уже есть в списке."); return
+        state["slave_cols"] = list(state["slave_cols"]) + [{
+            "column_name": nm, "data_type": "", "data_scale": None,
+            "is_primary_key": None}]
+        new_scol.value = ""
+        _on_pair_change()
+        _log(f"Колонка ведомой «{nm}» добавлена в список — выбери её в нужной строке.")
 
     def _render_mapping(mcols, scols, pair_map=None):
         m_lbl = (tm.value.strip() or "запрос ведущей")
@@ -1433,31 +1970,33 @@ def _sp_ui():
                    f"<span style='color:#888'>[{dbs.value}]</span>",
                    layout=W.Layout(width="280px")),
         ]
-        slave_opts = [_NONE] + [c["column_name"] for c in scols]
-        rows, widgets = [], []
-        for mcol in mcols:
-            name = mcol["column_name"]
-            sval = pair_map.get(name) if pair_map else None
-            dtype = mcol.get("data_type") or ""
-            lbl = W.HTML(f"<code>{name}</code> <span style='color:#888'>{dtype}</span>",
-                         layout=W.Layout(width="300px"))
-            dd = W.Dropdown(options=slave_opts,
-                            value=sval if sval in slave_opts else _NONE,
-                            layout=W.Layout(width="280px"))
-            dd.observe(_on_pair_change, names="value")
-            rows.append((mcol, dd))
-            widgets.append(W.HBox(
-                [lbl, W.HTML("→", layout=W.Layout(width="24px")), dd],
-                layout=W.Layout(align_items="center", min_height="40px",
-                                padding="4px 2px", border_bottom="1px solid #eee")))
-        state["rows"] = rows
-        state["row_widgets"] = widgets
+        state["slave_cols"] = list(scols)
+        state["rows"] = [_make_row(m, (pair_map or {}).get(m["column_name"]))
+                         for m in mcols]
         _refresh_slave_options()
         _apply_row_filter()
 
     def _collect_pairs():
-        return [(mcol["column_name"], None if dd.value == _NONE else dd.value)
-                for mcol, dd in state["rows"]]
+        out = []
+        for r in state["rows"]:
+            name = r["name"].value.strip()
+            if not name:
+                continue
+            out.append((name, None if r["dd"].value == _NONE else r["dd"].value))
+        return out
+
+    def _custom_count_warning():
+        """В режиме «свой SELECT» вставка позиционная: число строк должно совпадать
+        с числом колонок запроса, иначе значения уедут не в те столбцы."""
+        if src_mode.value != "custom" or not state.get("snap_count"):
+            return None
+        rows = len([r for r in state["rows"] if r["name"].value.strip()])
+        if rows != state["snap_count"]:
+            return (f"⚠ В форме {rows} колонок, а запрос отдавал "
+                    f"{state['snap_count']}. Вставка позиционная — если запрос не "
+                    f"менялся, лишние строки уведут значения в другие столбцы. "
+                    f"Проверь состав или пересними колонки.")
+        return None
 
     def _build_spec():
         return {
@@ -1473,6 +2012,54 @@ def _sp_ui():
             "append": (kind.value == "once" and once_mode.value == "append"),
             "doc": doc.value.strip() or None,
         }
+
+    # ── блок «Триггер на ведущей» ──
+    # Справочник и разовый перенос журнал НЕ читают (полная перезаливка), поэтому
+    # своего триггера им не требуется. Блок здесь по другой причине: та же таблица
+    # часто участвует ещё и в сложной линии (или журнал по ней ведут ради истории),
+    # и тогда ставить триггер удобнее сразу, не уходя из формы.
+    trg_table = W.Text(description="Таблица", placeholder="по умолчанию — ведущая",
+                       layout=W.Layout(width="420px"),
+                       style={"description_width": "70px"})
+    trg_name_in = W.Text(description="tablename", placeholder="по умолчанию — метка линии",
+                         layout=W.Layout(width="420px"),
+                         style={"description_width": "70px"})
+    trg_pk = W.Text(description="PK", placeholder="колонки через запятую, напр. idrw",
+                    layout=W.Layout(width="420px"),
+                    style={"description_width": "70px"})
+    trg_period = W.Text(description="Период", placeholder="колонка-дата, напр. createdate",
+                        layout=W.Layout(width="420px"),
+                        style={"description_width": "70px"})
+
+    def _trigger_ctx():
+        tbl = trg_table.value.strip() or (tm.value.strip()
+                                          if src_mode.value == "table" else "")
+        if not tbl:
+            raise RuntimeError(
+                "не задана таблица (в режиме «свой SELECT» имя ведущей — только "
+                "метка линии, впиши реальную таблицу в поле «Таблица»)")
+        lbl = trg_name_in.value.strip() or line.value.strip() or B.bare(tm.value.strip())
+        if not lbl:
+            raise RuntimeError("не задано имя линии (tablename)")
+        pk = [c.strip() for c in trg_pk.value.replace(";", ",").split(",") if c.strip()]
+        if not pk:
+            raise RuntimeError("не заданы колонки PK")
+        return {"db": dbm.value, "table": tbl, "tablename": lbl,
+                "period_column": trg_period.value.strip() or None,
+                "pk_columns": pk, "cred": user_m_get(), "mode": "iud",
+                "key": SP.sp_key(lbl, dbm.value, dbs.value)}
+
+    def _trigger_mode_note():
+        return ("<span style='color:#888'>Перенос справочника/разовый — "
+                "<b>полная перезаливка</b> (DELETE ведомой + INSERT всех строк), "
+                "журнал <code>etl_log_iud_row</code> он не читает: <b>для самого "
+                "справочника триггер не нужен</b>. Ставь его, если эта же таблица "
+                "участвует в сложной линии — тогда <code>tablename</code> должен "
+                "совпадать с её <code>tableNameEtlJobs</code>.</span>")
+
+    trg = _trigger_controls(W, out, _trigger_ctx, save_option=False,
+                            mode_note_fn=_trigger_mode_note,
+                            extra=(trg_table, trg_name_in, trg_pk, trg_period))
 
     # ── снять колонки ──
     def on_snap(_):
@@ -1491,6 +2078,9 @@ def _sp_ui():
                 mcols = B.snap_structure(dbm.value, tm.value.strip(), user_m_get())
             scols = B.snap_structure(dbs.value, ts.value.strip(), user_s_get())
             state["master_cols"], state["slave_cols"] = mcols, scols
+            # запомнить, сколько колонок отдал источник: если строки правили
+            # руками, при сборке предупредим о рассинхроне со «своим SELECT»
+            state["snap_count"] = len(mcols)
 
             sugg, unmatched = B.auto_match(mcols, scols)
             pair_map = {m["column_name"]: s for m, s in zip(mcols, sugg)}
@@ -1581,8 +2171,24 @@ def _sp_ui():
             with out:
                 out.clear_output()
                 print(f"Ключ линии: {key}\n")
+                warn = _custom_count_warning()
+                if warn:
+                    print(warn + "\n")
                 for rel, content in files:
                     print("=" * 70); print(rel); print("-" * 70); print(content)
+                # DDL триггера — в предпросмотре виден всегда (в файлы линии
+                # справочника он не пишется: перенос идёт полной перезаливкой)
+                print("=" * 70)
+                print("DDL ТРИГГЕРА ведущей (в репозиторий НЕ сохраняется)")
+                print("-" * 70)
+                try:
+                    ctx = _trigger_ctx()
+                    print(T.build_trigger(
+                        ctx["db"], ctx["table"], ctx["tablename"],
+                        ctx["period_column"], ctx["pk_columns"],
+                        trg["journal"].value.strip() or None)["text"])
+                except Exception as e:
+                    print(f"(собрать не удалось: {e})")
         except Exception as e:
             _log(f"Ошибка предпросмотра: {type(e).__name__}: {e}")
 
@@ -1599,9 +2205,12 @@ def _sp_ui():
 
     def on_make(_):
         try:
+            warn = _custom_count_warning()
             written = _write_current()
             with out:
                 out.clear_output()
+                if warn:
+                    print(warn + "\n")
                 print(f"Готово (конфиг {SP.SP_KIND_CONFIG[kind.value]} собрался):")
                 for p in written:
                     print("  ", os.path.relpath(p, ROOT))
@@ -1704,6 +2313,8 @@ def _sp_ui():
     btn_disable.on_click(on_disable)
     btn_enable.on_click(on_enable)
     btn_move.on_click(on_move)
+    btn_add_mrow.on_click(_add_master_row)
+    btn_add_scol.on_click(_add_slave_col)
 
     # push-only для формы сборки и отдельный — для панели вкл/выкл (свой виджет:
     # один и тот же кнопка-виджет нельзя разместить в двух контейнерах).
@@ -1795,15 +2406,22 @@ def _sp_ui():
         W.HTML("<b>Сопоставление колонок</b> (ведущая → ведомая; порядок = порядок "
                "вставки):"),
         W.HBox([map_title, hide_unmapped]), map_head, map_box,
+        manual_help,
+        W.HBox([btn_add_mrow, W.HTML("&nbsp;&nbsp;"), new_scol, btn_add_scol]),
+        W.HTML("<hr>"), trg["box"],
         W.HTML("<hr>"), commit_hint, commit_msg,
         W.HBox([btn_prev, btn_make, btn_push_only, btn_pub]),
         pub_confirm, push_only_confirm,
     ])
 
+    for _w in (tm, line, dbm, dbs, src_mode):
+        _w.observe(lambda _c: trg["refresh"](), names="value")
+
     _on_src_mode()
     _on_kind()
     _on_mode()
     _update_key_preview()
+    trg["refresh"]()
 
     return W.VBox([
         W.HTML("<h3>Справочники и разовый перенос (delete + insert)</h3>"),
@@ -1812,8 +2430,251 @@ def _sp_ui():
     ])
 
 
+_TRIGGERS_HELP_HTML = """
+<div style='max-height:420px;overflow:auto;padding:8px;line-height:1.45'>
+<b>Что проверяет кнопка «Проверить»</b>
+
+<p style='margin:8px 0 4px'>Линия собрана в репозитории, а половина её работы
+живёт в БД: события в <code>etl_log_iud_row</code> пишет ТРИГГЕР на ведущей.
+Если его нет, режимы <code>iud</code> и <code>delete_insert</code> честно
+отчитываются пропуском (⬜) и не переносят ничего — по логам это выглядит как
+«всё хорошо». Проверка ходит в БД и смотрит:</p>
+
+<ul style='margin:4px 0 4px 18px'>
+<li><b>служебные объекты</b> — журнал <code>etl_log_iud_row</code> (и его
+колонки), <code>etl_jobs</code>, <code>etl_log</code>; на Oracle ещё
+последовательность <code>etl_log_iud_row_seq</code> и триггер
+<code>trg_etl_log_iud_row_bi</code> — если он INVALID, ORA-04098 валит любое
+изменение любой ведущей;</li>
+<li><b>есть ли триггер</b> на ведущей таблице линии и пишет ли он в журнал;</li>
+<li><b>tablename</b> — тот ли литерал. Сравнение с <code>etl_jobs.tablename</code>
+регистрозависимое: <code>'eindexmo'</code> вместо <code>'EINDEXMO'</code> — это
+молчаливый простой линии, поэтому чужой регистр помечается ошибкой;</li>
+<li><b>состояние</b> — включён (не DISABLED) и валиден (не INVALID);</li>
+<li><b>полнота</b> — INSERT, UPDATE и DELETE, построчный (FOR EACH ROW);</li>
+<li><b>тело</b> — упоминаются ли колонка периода, колонки PK и
+<code>isetl</code>.</li>
+</ul>
+
+<p style='margin:8px 0 4px'><b>Статусы:</b> ✅ в порядке · ⚠️ замечания (работать
+будет, но проверь) · ❌ ошибка или триггера нет · 🔌 не удалось проверить
+(нет подключения/прав) · ⬜ триггер не требуется.</p>
+
+<p style='margin:8px 0 4px'><b>Кому триггер не нужен.</b> Режимы
+<code>section</code> и <code>query_section</code> журнал не читают (группы даёт
+<code>isokaudit = 4</code> либо свой SQL периодов). Справочники и разовый
+перенос — тем более: они перезаливают ведомую целиком.
+<code>section_compare</code> живёт и без триггера (сравнивает срезы), но с ним
+реагирует на каждое изменение — поэтому его отсутствие здесь замечание, а не
+ошибка.</p>
+
+<p style='margin:8px 0 4px'><b>Создать или поправить триггер</b> — на вкладке
+самой линии («Сложный ETL» / «Справочники»), блок «Триггер на ведущей»: там
+DDL, проверка и кнопка создания. Массовой кнопки «добавить всем» тут пока нет
+намеренно — сперва посмотреть глазами.</p>
+
+<p style='margin:8px 0 4px'><b>Реквизиты.</b> Рантайм ходит в БД под набором
+<code>MAIN</code> — проверка по умолчанию тоже. Другой набор нужен, если
+ведущие лежат под вторым логином (A56).</p>
+</div>
+"""
+
+
+def _triggers_ui():
+    """Вкладка «Триггеры»: проверить в БД, что триггеры всех линий на месте.
+
+    Отдельная вкладка (а не кнопка в форме линии) — потому что вопрос «всё ли в
+    БД готово» задают ко ВСЕМУ хозяйству сразу, а не к одной линии. Сюда же
+    потом лягут массовые действия (добавить/исправить всем)."""
+    import ipywidgets as W
+
+    _USER_SENT = "✏ своё…"
+
+    def _cred_field(desc, opts=("MAIN", "A56")):
+        dd = W.Dropdown(description=desc, options=list(opts) + [_USER_SENT],
+                        value=opts[0], layout=W.Layout(width="280px"),
+                        style={"description_width": "150px"})
+        txt = W.Text(placeholder="имя набора из .env", layout=W.Layout(width="190px"))
+        txt.layout.display = "none"
+        dd.observe(lambda _:
+                   setattr(txt.layout, "display", "" if dd.value == _USER_SENT else "none"),
+                   names="value")
+
+        def get():
+            return (txt.value.strip() or "MAIN") if dd.value == _USER_SENT else dd.value
+        return W.HBox([dd, txt]), get
+
+    cred_o_box, cred_o_get = _cred_field("Реквизиты Oracle")
+    cred_p_box, cred_p_get = _cred_field("Реквизиты Postgres")
+    j_orcl = W.Text(description="Журнал Oracle",
+                    placeholder=T.JOURNAL_DEFAULT["Orcl"],
+                    layout=W.Layout(width="420px"),
+                    style={"description_width": "150px"})
+    j_post = W.Text(description="Журнал Postgres",
+                    placeholder=T.JOURNAL_DEFAULT["Post"],
+                    layout=W.Layout(width="420px"),
+                    style={"description_width": "150px"})
+    inc_sp = W.Checkbox(value=True, indent=False,
+                        description="Показывать справочники и разовый перенос "
+                                    "(им триггер не нужен)")
+    inc_skip = W.Checkbox(value=False, indent=False,
+                          description="Показывать линии, которым триггер не требуется")
+    help_btn, help_box = _help_toggle(W, _TRIGGERS_HELP_HTML)
+    btn_check = W.Button(description="Проверить", button_style="primary",
+                         icon="search", layout=W.Layout(width="220px"))
+    summary = W.HTML()
+    table = W.HTML()
+    ddl_pick = W.Dropdown(description="Линия", options=[],
+                          layout=W.Layout(width="420px"),
+                          style={"description_width": "90px"})
+    btn_ddl = W.Button(description="Показать DDL", icon="code",
+                       layout=W.Layout(width="190px"))
+    ddl_box = W.VBox([W.HTML("<span style='color:#888'>DDL триггера для линии из "
+                             "проверки — посмотреть, чего не хватает. Создать его "
+                             "можно на вкладке линии.</span>"),
+                      W.HBox([ddl_pick, btn_ddl])],
+                     layout=W.Layout(display="none"))
+    out = W.Output()
+    state = {"results": [], "targets": {}, "db_reports": {}}
+
+    def _row_html(r):
+        icon = _STATUS_ICON.get(r["status"], "")
+        color = {"ok": "#2e7d32", "warn": "#8a6d3b", "error": "#c62828",
+                 "missing": "#c62828", "fail": "#6a1b9a",
+                 "skip": "#888"}.get(r["status"], "#333")
+        details = "".join(
+            f"<div style='color:#c62828'>❌ {_esc(p)}</div>"
+            for p in (r.get("problems") or []))
+        details += "".join(f"<div style='color:#888'>· {_esc(n)}</div>"
+                           for n in (r.get("notes") or []))
+        if r.get("found"):
+            details = (f"<div style='color:#888'>найдено: "
+                       f"{_esc(', '.join(r['found']))}</div>" + details)
+        return (
+            "<tr style='border-bottom:1px solid #eee'>"
+            f"<td style='padding:4px 8px;white-space:nowrap'>{icon} "
+            f"<b style='color:{color}'>{_esc(_STATUS_WORD.get(r['status'], ''))}</b></td>"
+            f"<td style='padding:4px 8px'><code>{_esc(r['key'])}</code></td>"
+            f"<td style='padding:4px 8px;white-space:nowrap'>{_esc(r['db'])} · "
+            f"{_esc(r['mode'])}</td>"
+            f"<td style='padding:4px 8px'><code>{_esc(r['table_master'] or '—')}</code></td>"
+            f"<td style='padding:4px 8px'><code>{_esc(r['tablename'])}</code></td>"
+            f"<td style='padding:4px 8px'>{details or '—'}</td></tr>")
+
+    def _render(results, db_reports):
+        shown = [r for r in results
+                 if r["status"] != "skip" or inc_skip.value]
+        counts = {}
+        for r in results:
+            counts[r["status"]] = counts.get(r["status"], 0) + 1
+        parts = [f"{_STATUS_ICON.get(k, '')} {_STATUS_WORD.get(k, k)}: <b>{v}</b>"
+                 for k, v in sorted(counts.items(),
+                                    key=lambda kv: list(_STATUS_WORD).index(kv[0])
+                                    if kv[0] in _STATUS_WORD else 99)]
+        db_lines = []
+        for db, rep in sorted(db_reports.items()):
+            msgs = "<br>".join(_esc(m) for m in rep["messages"])
+            db_lines.append(
+                f"<div style='margin-top:4px'>{_STATUS_ICON.get(rep['status'], '')} "
+                f"<b>{_esc(db)}</b> <span style='color:#888'>(реквизиты "
+                f"{_esc(rep['cred'])}, журнал {_esc(rep['journal'])})</span><br>"
+                f"<span style='color:#555'>{msgs}</span></div>")
+        summary.value = ("<div><b>Итог:</b> " + " · ".join(parts) + "</div>" +
+                         "".join(db_lines))
+        table.value = (
+            "<div style='overflow-x:auto'><table style='border-collapse:collapse;"
+            "font-size:13px'><tr style='border-bottom:2px solid #bbb'>"
+            "<th style='padding:4px 8px;text-align:left'>Статус</th>"
+            "<th style='padding:4px 8px;text-align:left'>Линия</th>"
+            "<th style='padding:4px 8px;text-align:left'>БД · режим</th>"
+            "<th style='padding:4px 8px;text-align:left'>Ведущая</th>"
+            "<th style='padding:4px 8px;text-align:left'>tablename</th>"
+            "<th style='padding:4px 8px;text-align:left'>Что нашли</th></tr>" +
+            "".join(_row_html(r) for r in shown) + "</table></div>")
+        problem = [r["key"] for r in results
+                   if r["status"] in ("missing", "error", "warn")]
+        opts = problem or [r["key"] for r in results if r["needs"]]
+        ddl_pick.options = opts
+        # Dropdown, созданный с пустым options, при их появлении оставляет value
+        # None — выбираем первую проблемную линию сами, иначе кнопка «Показать
+        # DDL» отвечает «сначала нажми Проверить» на уже проверенном списке.
+        if opts and ddl_pick.value is None:
+            ddl_pick.value = opts[0]
+        ddl_box.layout.display = "" if opts else "none"
+
+    def on_check(_):
+        from IPython.display import display, HTML
+        btn_check.disabled = True
+        with out:
+            out.clear_output()
+            display(HTML(_spinner_html("Собираю линии и смотрю триггеры в БД…")))
+        try:
+            targets = T.trigger_targets(include_sp=inc_sp.value)
+            state["targets"] = {t["key"]: t for t in targets}
+            results, db_reports = T.check_targets(
+                targets,
+                creds={"Orcl": cred_o_get(), "Post": cred_p_get()},
+                journals={"Orcl": j_orcl.value.strip() or None,
+                          "Post": j_post.value.strip() or None})
+            state["results"], state["db_reports"] = results, db_reports
+            _render(results, db_reports)
+            with out:
+                out.clear_output()
+                print(_trigger_report_text(results, db_reports))
+        except Exception as e:
+            with out:
+                out.clear_output()
+                print(f"Проверка не удалась: {type(e).__name__}: {e}")
+        finally:
+            btn_check.disabled = False
+
+    def on_ddl(_):
+        key = ddl_pick.value
+        t = state["targets"].get(key)
+        with out:
+            out.clear_output()
+            if not t:
+                print("Сначала нажми «Проверить»."); return
+            j = {"Orcl": j_orcl.value.strip(), "Post": j_post.value.strip()}
+            try:
+                ddl = T.build_trigger(t["db_master"], t["table_master"],
+                                      t["tablename"], t["period_column"],
+                                      t["pk_columns"],
+                                      j.get(t["db_master"]) or None)
+            except Exception as e:
+                print(f"DDL собрать не удалось: {e}")
+                return
+            print("=" * 70)
+            print(f"{key}: DDL триггера ({t['db_master']})")
+            print("-" * 70)
+            print(ddl["text"])
+            print("Выполнить его можно на вкладке линии — блок «Триггер на ведущей».")
+
+    def _on_filter(_=None):
+        # перерисовать уже полученный результат, не ходя в БД заново
+        if state["results"]:
+            _render(state["results"], state["db_reports"])
+    inc_skip.observe(_on_filter, names="value")
+
+    btn_check.on_click(on_check)
+    btn_ddl.on_click(on_ddl)
+
+    return W.VBox([
+        W.HTML("<h3>Триггеры в БД</h3>"),
+        W.HTML("<span style='color:#888'>Линия живёт в двух местах: конфиг и даг — "
+               "в репозитории, а события изменений пишет <b>триггер в БД</b>. "
+               "Здесь видно, всё ли для линий и справочников на месте.</span>"),
+        W.HBox([cred_o_box, cred_p_box]),
+        W.HBox([j_orcl, j_post]),
+        inc_sp, inc_skip,
+        W.HBox([btn_check, help_btn]), help_box,
+        summary, table, ddl_box, W.HTML("<hr>"), out,
+    ])
+
+
 def launch():
-    """Показать конструктор: две вкладки — «Сложный ETL» и «Справочники / разовый».
+    """Показать конструктор: три вкладки — «Сложный ETL», «Справочники / разовый»
+    и «Триггеры» (проверка того, что есть в БД).
 
     Это единая точка входа; веб-конструктор (Voilà) запускает именно её через
     tools/dagbuilder_app.ipynb, поэтому обновление этого модуля обновляет и
@@ -1821,7 +2682,8 @@ def launch():
     import ipywidgets as W
     from IPython.display import display
 
-    tabs = W.Tab([_complex_ui(), _sp_ui()])
+    tabs = W.Tab([_complex_ui(), _sp_ui(), _triggers_ui()])
     tabs.set_title(0, "Сложный ETL")
     tabs.set_title(1, "Справочники / разовый")
+    tabs.set_title(2, "Триггеры")
     display(tabs)
