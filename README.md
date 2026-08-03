@@ -30,7 +30,7 @@ etlFolder/
         general/newEtl/        — стратегия etl_log_iud_row + section
         general/audit/         — запросы аудита (do_audit)
         oracleSetup/           — DDL etl_log_iud_row + шаблон триггера
-        postgresSetup/         — доводка ведомых таблиц на стороне Postgres
+        postgresSetup/         — доводка таблиц на стороне Postgres (ведомых и ведущих)
         customQueries/         — пользовательские SELECT-источники
     structures/                — json-описания таблиц
 dags/                          — примеры DAG'ов под все 4 направления + AuditAllTest
@@ -409,6 +409,26 @@ SQL: в DBeaver/JDBC она даёт `ORA-00922`, там серверный вы
 - **Имя колонки группы разное на сторонах**: Oracle `GROUPPCODE`, Postgres
   `GROUPCODE`. Это допустимо — стороны сопоставляются по **порядку** колонок в
   json-структурах; важно лишь, чтобы в каждом json стояло имя своей БД.
+
+Отдельно, под линию `eindexmo` (PG → Oracle):
+6. `07_eindexmo_prepare.sql` — поле `CREATEDATE` на ведомой и снятие с неё всех
+   триггеров (журнал ведётся только на ведущей).
+
+## Установка на PostgreSQL
+
+Запустить из `etlFolder/queries/postgresSetup/`:
+1. `01_eindexmo_etl_setup.sql` — поле `createdate` на ведущей `eindexmo`,
+   перенос в него `lastupdate::date`, `BEFORE INSERT` триггер на заполнение
+   `createdate` и `AFTER INSERT/UPDATE/DELETE` триггер, пишущий `IU`/`D` в
+   `etl_user.etl_log_iud_row`.
+
+Общая схема для любой ведущей на PG та же, что и на Oracle
+(`oracleSetup/02_trigger_template.sql`), с поправками PL/pgSQL: NEW меняется
+только в `BEFORE`-триггере, поэтому заполнение периода и логирование — это два
+разных триггера; функция логирования объявляется `SECURITY DEFINER`, чтобы
+прикладным пользователям не нужны были права на `etl_user.etl_log_iud_row`.
+Скрипт заодно снимает вопрос смены ключа/периода: при `UPDATE`, меняющем
+`idrw` или `createdate`, в журнал дополнительно уходит `D` по старой паре.
 
 ## Переменные окружения
 
