@@ -55,23 +55,25 @@ runningEnv() {
     tr '\0' '\n' < "/proc/$pid/environ" | sed -n "s/^$2=//p" | head -1
 }
 
-detectProdHome() {
-    local u home envFile
+detectProdVar() {
+    local name=$1 u val envFile
     for u in "${UNITS[@]}"; do
-        home=$(runningEnv "$u" AIRFLOW_HOME) && [[ -n $home ]] && { echo "$home"; return 0; }
+        val=$(runningEnv "$u" "$name") && [[ -n $val ]] && { echo "$val"; return 0; }
     done
     for u in "${UNITS[@]}"; do
-        home=$(systemctl show -p Environment --value "$u" 2>/dev/null \
-               | tr ' ' '\n' | sed -n 's/^AIRFLOW_HOME=//p' | head -1)
-        [[ -n $home ]] && { echo "$home"; return 0; }
+        val=$(systemctl show -p Environment --value "$u" 2>/dev/null \
+              | tr ' ' '\n' | sed -n "s/^$name=//p" | head -1)
+        [[ -n $val ]] && { echo "$val"; return 0; }
         while read -r envFile; do
             [[ -f $envFile ]] || continue
-            home=$(sed -n 's/^[[:space:]]*AIRFLOW_HOME=//p' "$envFile" | tail -1)
-            [[ -n $home ]] && { echo "$home"; return 0; }
+            val=$(sed -n "s/^[[:space:]]*$name=//p" "$envFile" | tail -1)
+            [[ -n $val ]] && { echo "$val"; return 0; }
         done < <(systemctl cat "$u" 2>/dev/null | sed -n 's/^EnvironmentFile=-\?//p')
     done
     return 1
 }
+
+detectProdHome() { detectProdVar AIRFLOW_HOME; }
 
 # airflow со СТАРЫМ окружением прода (то, что работает сейчас)
 airflowOld() { sudo -u "$RUNAS" env AIRFLOW_HOME="$PROD_HOME" "$VENV/bin/airflow" "$@"; }
@@ -103,12 +105,26 @@ if [[ -z $PROD_HOME ]]; then
 else
     ok "задан вручную: $PROD_HOME"
 fi
-[[ -f $PROD_HOME/airflow.cfg ]] && ok "$PROD_HOME/airflow.cfg на месте" \
-    || bad "нет $PROD_HOME/airflow.cfg — это точно AIRFLOW_HOME прода?"
+PROD_CONFIG=${PROD_CONFIG:-$(detectProdVar AIRFLOW_CONFIG || true)}
+[[ -n $PROD_CONFIG ]] && ok "AIRFLOW_CONFIG прода: $PROD_CONFIG"
+CFG=${PROD_CONFIG:-$PROD_HOME/airflow.cfg}
+if [[ -f $CFG ]]; then
+    ok "airflow.cfg прода: $CFG"
+else
+    bad "не нашёл airflow.cfg прода (пробовал $CFG) — прод запущен не так, как я думаю. Посмотри: systemctl cat ${UNITS[0]}"
+fi
 if [[ -f $ENVFILE ]]; then
-    envHome=$(sed -n 's/^AIRFLOW_HOME=//p' "$ENVFILE" | head -1)
-    [[ $envHome == "$PROD_HOME" ]] && ok "в $ENVFILE тот же AIRFLOW_HOME" \
-        || bad "в $ENVFILE стоит AIRFLOW_HOME=$envHome, а прод работает с $PROD_HOME — переключение увело бы его на чужой airflow.cfg. Почини: PROD_HOME=$PROD_HOME bash setup-airflow-prod.sh"
+    for var in AIRFLOW_HOME AIRFLOW_CONFIG; do
+        envVal=$(sed -n "s/^$var=//p" "$ENVFILE" | head -1)
+        runVal=$(detectProdVar "$var" || true)
+        if [[ -z $envVal && -z $runVal ]]; then
+            continue
+        elif [[ $envVal == "$runVal" ]]; then
+            ok "в $ENVFILE тот же $var"
+        else
+            bad "в $ENVFILE стоит $var=${envVal:-<пусто>}, а прод работает с ${runVal:-<не задан>} — переключение увело бы его на чужой конфиг. Пересобери: bash setup-airflow-prod.sh"
+        fi
+    done
 fi
 
 echo

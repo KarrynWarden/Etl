@@ -68,23 +68,35 @@ runningEnv() {
     tr '\0' '\n' < "/proc/$pid/environ" | sed -n "s/^$2=//p" | head -1
 }
 
-# AIRFLOW_HOME прода: сначала у живого процесса, затем из определения юнита
-# (Environment= и EnvironmentFile=), и только потом сдаёмся.
-detectProdHome() {
-    local u home unitFile envFile
+# Любая переменная окружения прода: сначала у живого процесса, затем из
+# определения юнита (Environment= и EnvironmentFile=).
+detectProdVar() {
+    local name=$1 u val envFile
     for u in "${UNITS[@]}"; do
-        home=$(runningEnv "$u" AIRFLOW_HOME) && [[ -n $home ]] && { echo "$home"; return 0; }
+        val=$(runningEnv "$u" "$name") && [[ -n $val ]] && { echo "$val"; return 0; }
     done
     for u in "${UNITS[@]}"; do
-        home=$(systemctl show -p Environment --value "$u" 2>/dev/null \
-               | tr ' ' '\n' | sed -n 's/^AIRFLOW_HOME=//p' | head -1)
-        [[ -n $home ]] && { echo "$home"; return 0; }
+        val=$(systemctl show -p Environment --value "$u" 2>/dev/null \
+              | tr ' ' '\n' | sed -n "s/^$name=//p" | head -1)
+        [[ -n $val ]] && { echo "$val"; return 0; }
         while read -r envFile; do
             [[ -f $envFile ]] || continue
-            home=$(sed -n 's/^[[:space:]]*AIRFLOW_HOME=//p' "$envFile" | tail -1)
-            [[ -n $home ]] && { echo "$home"; return 0; }
+            val=$(sed -n "s/^[[:space:]]*$name=//p" "$envFile" | tail -1)
+            [[ -n $val ]] && { echo "$val"; return 0; }
         done < <(systemctl cat "$u" 2>/dev/null | sed -n 's/^EnvironmentFile=-\?//p')
     done
+    return 1
+}
+
+detectProdHome() { detectProdVar AIRFLOW_HOME; }
+
+# Где лежит airflow.cfg прода. AIRFLOW_CONFIG, если задан, важнее AIRFLOW_HOME:
+# бывает, что дом указывает в одно место, а конфиг лежит в другом — тогда
+# ориентироваться только на AIRFLOW_HOME нельзя.
+prodCfgPath() {
+    local cfg
+    cfg=$(detectProdVar AIRFLOW_CONFIG) && [[ -n $cfg ]] && { echo "$cfg"; return 0; }
+    [[ -n ${1:-} ]] && { echo "$1/airflow.cfg"; return 0; }
     return 1
 }
 
@@ -163,23 +175,40 @@ case "$MODE" in
     [[ -f $ENVFILE ]] || { echo "Нет $ENVFILE — сначала запусти скрипт без аргументов"; exit 1; }
     [[ -f $SRC/.env ]] || { echo "Нет $SRC/.env с реквизитами БД прода (шаблон deploy/prod.env.example)"; exit 1; }
 
-    # AIRFLOW_HOME в env-файле обязан совпадать с тем, как прод запущен сейчас:
+    # Окружение в env-файле обязано совпадать с тем, как прод запущен сейчас:
     # иначе после рестарта он уедет на чужой airflow.cfg и чужую metadata-базу.
-    echo "== Сверка AIRFLOW_HOME с работающим продом =="
-    envHome=$(sed -n 's/^AIRFLOW_HOME=//p' "$ENVFILE" | head -1)
-    runHome=$(detectProdHome || true)
-    if [[ -z $runHome ]]; then
-        echo "  !! не смог определить AIRFLOW_HOME работающего прода — сверь руками:"
-        echo "     systemctl cat ${UNITS[0]}"
-    elif [[ $envHome != "$runHome" ]]; then
-        echo "  НЕТ  в $ENVFILE стоит AIRFLOW_HOME=$envHome,"
-        echo "       а прод работает с AIRFLOW_HOME=$runHome."
-        echo "       Переключение отменено: с чужим AIRFLOW_HOME прод"
-        echo "       прочитал бы другой airflow.cfg и другую metadata-базу."
-        echo "       Почини: PROD_HOME=$runHome bash setup-airflow-prod.sh"
-        exit 1
+    echo "== Сверка окружения с работающим продом =="
+    for var in AIRFLOW_HOME AIRFLOW_CONFIG; do
+        envVal=$(sed -n "s/^$var=//p" "$ENVFILE" | head -1)
+        runVal=$(detectProdVar "$var" || true)
+        if [[ -z $runVal && -z $envVal ]]; then
+            continue                                  # переменная не используется — и не надо
+        elif [[ -z $runVal ]]; then
+            echo "  !!   $var у работающего прода не найден, а в env-файле стоит '$envVal' — сверь руками:"
+            echo "       systemctl cat ${UNITS[0]}"
+        elif [[ $envVal != "$runVal" ]]; then
+            echo "  НЕТ  в $ENVFILE стоит $var=${envVal:-<пусто>},"
+            echo "       а прод работает с $var=$runVal."
+            echo "       Переключение отменено: с чужим окружением прод прочитал бы"
+            echo "       другой airflow.cfg и другую metadata-базу."
+            echo "       Пересобери env-файл: bash setup-airflow-prod.sh"
+            exit 1
+        else
+            echo "  OK   $var=$runVal"
+        fi
+    done
+
+    # Конфиг, который прод читает сейчас, должен существовать — иначе после
+    # рестарта airflow поднимется на пустой конфигурации по умолчанию.
+    cfg=$(prodCfgPath "$(detectProdHome || true)" || true)
+    if [[ -n $cfg && -f $cfg ]]; then
+        echo "  OK   airflow.cfg: $cfg"
     else
-        echo "  OK   AIRFLOW_HOME=$runHome"
+        echo "  НЕТ  не нашёл airflow.cfg прода (пробовал '$cfg')."
+        echo "       Переключение отменено — сначала разберись, откуда прод берёт конфиг:"
+        echo "         systemctl cat ${UNITS[0]}"
+        echo "         pid=\$(systemctl show -p MainPID --value ${UNITS[0]}); tr '\\0' '\\n' < /proc/\$pid/environ | grep -i airflow"
+        exit 1
     fi
 
     echo "== Проверка, что новые даги парсятся с окружением прода =="
@@ -244,9 +273,23 @@ if [[ -z $PROD_HOME ]]; then
 else
     echo "  AIRFLOW_HOME задан вручную: $PROD_HOME"
 fi
-[[ -f $PROD_HOME/airflow.cfg ]] || { echo "Нет $PROD_HOME/airflow.cfg — это точно AIRFLOW_HOME прода?"; exit 1; }
-echo "  ok: venv, $PROD_HOME/airflow.cfg, юниты ${UNITS[*]}"
-echo "  metadata: $(awk -F'=' '/^[[:space:]]*sql_alchemy_conn/{sub(/^[^=]*=[[:space:]]*/,"");sub(/:[^:@]*@/,":***@");print;exit}' "$PROD_HOME/airflow.cfg")"
+# Конфиг может лежать не в AIRFLOW_HOME: если у прода задан AIRFLOW_CONFIG,
+# он главнее. Тогда эту переменную нужно пронести и в наш env-файл, иначе
+# после рестарта airflow пойдёт искать конфиг в доме и не найдёт.
+PROD_CONFIG=${PROD_CONFIG:-$(detectProdVar AIRFLOW_CONFIG || true)}
+CFG=${PROD_CONFIG:-$PROD_HOME/airflow.cfg}
+if [[ ! -f $CFG ]]; then
+    echo "!! Не нашёл airflow.cfg прода (пробовал '$CFG')."
+    echo "!! AIRFLOW_HOME=$PROD_HOME, AIRFLOW_CONFIG=${PROD_CONFIG:-<не задан>}."
+    echo "!! Посмотри, как прод запущен на самом деле:"
+    echo "     systemctl cat ${UNITS[0]}"
+    echo "     pid=\$(systemctl show -p MainPID --value ${UNITS[0]}); tr '\\0' '\\n' < /proc/\$pid/environ | grep -i airflow"
+    echo "!! и передай верные значения: PROD_HOME=/путь [PROD_CONFIG=/путь/airflow.cfg] bash setup-airflow-prod.sh"
+    exit 1
+fi
+[[ -n $PROD_CONFIG ]] && echo "  AIRFLOW_CONFIG прода: $PROD_CONFIG"
+echo "  ok: venv, $CFG, юниты ${UNITS[*]}"
+echo "  metadata: $(awk -F'=' '/^[[:space:]]*sql_alchemy_conn/{sub(/^[^=]*=[[:space:]]*/,"");sub(/:[^:@]*@/,":***@");print;exit}' "$CFG")"
 
 echo "== 1. Группа $GROUP и участники =="
 groupadd -f "$GROUP"
@@ -339,6 +382,7 @@ echo "== 6. EnvironmentFile $ENVFILE =="
 # executor и прочее остаются в airflow.cfg прода — их намеренно не дублируем.
 cat > "$ENVFILE" <<ENV
 AIRFLOW_HOME=$PROD_HOME
+$([[ -n $PROD_CONFIG ]] && echo "AIRFLOW_CONFIG=$PROD_CONFIG")
 PYTHONPATH=$SRC
 ETL_FULL_PATH=$SRC/
 ETL_MODE=
