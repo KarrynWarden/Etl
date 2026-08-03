@@ -425,6 +425,8 @@ ETL_MODE=
 AIRFLOW__CORE__DAGS_FOLDER=$SRC/dags
 # Новые даги появляются на ПАУЗЕ — после переключения линии включаются по одной.
 AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=True
+# Примеры airflow в проде не нужны (в старом airflow.cfg они включены).
+AIRFLOW__CORE__LOAD_EXAMPLES=False
 ENV
 chown "$RUNAS":"$GROUP" "$ENVFILE"; chmod 640 "$ENVFILE"
 echo "  ok"
