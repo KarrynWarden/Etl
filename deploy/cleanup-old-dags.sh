@@ -93,19 +93,28 @@ read -r -p "Удаляем? (y/N) " answer
 [[ $answer == "y" || $answer == "Y" ]] || { echo "Отменено."; exit 1; }
 
 failed=0
+skipped=0
 while read -r dagId; do
     [[ -z $dagId ]] && continue
-    if airflowNew dags delete -y "$dagId" >/dev/null 2>&1; then
+    if out=$(airflowNew dags delete -y "$dagId" 2>&1); then
         echo "  удалён: $dagId"
+    elif grep -qiE 'not found|does not exist|DagNotFound' <<< "$out"; then
+        # SubDAG'и (dag_id вида «родитель.потомок») удаляются вместе с
+        # родительским дагом, поэтому своей очереди уже не застают.
+        echo "  пропущен: $dagId — записи уже нет"
+        skipped=$((skipped + 1))
     else
         echo "  !! не удалось удалить: $dagId"
+        printf '%s\n' "$out" | sed 's/^/       /' | tail -3
         failed=$((failed + 1))
     fi
 done <<< "$extra"
 
 echo
+[[ $skipped -gt 0 ]] && echo "Пропущено $skipped — их записи ушли вместе с родительскими дагами."
 if [[ $failed -eq 0 ]]; then
     echo "Готово. В UI останутся только даги нового кода (обнови страницу)."
+    echo "Проверить: sudo bash cleanup-old-dags.sh  (без ключа)"
 else
     echo "Готово, но $failed записей не удалились — посмотри вручную: airflow dags delete <dag_id>"
 fi
