@@ -26,7 +26,7 @@ ROOT=/opt/airflow-prod
 GROUP=etlprod
 VENV=/opt/airflow/venv
 RUNAS=airflow
-PROD_HOME=/opt/airflow/airflow
+PROD_HOME=${PROD_HOME:-}               # пусто = определить по работающей службе
 UNITS=(airflow-scheduler airflow-webserver)
 ETL_POOL_NAME=Etl
 ETL_POOL_SLOTS=100
@@ -44,6 +44,34 @@ problems=0
 ok()   { echo "  OK   $*"; }
 bad()  { echo "  НЕТ  $*"; problems=$((problems + 1)); }
 warn() { echo "  !!   $*"; problems=$((problems + 1)); }
+
+unitFull() { [[ $1 == *.* ]] && echo "$1" || echo "$1.service"; }
+dropinPath() { echo "/etc/systemd/system/$(unitFull "$1").d/$DROPIN_NAME"; }
+
+# Переменная окружения работающей службы — правда о том, как прод запущен.
+runningEnv() {
+    local pid; pid=$(systemctl show -p MainPID --value "$1" 2>/dev/null || true)
+    [[ -n ${pid:-} && $pid -gt 0 && -r /proc/$pid/environ ]] || return 1
+    tr '\0' '\n' < "/proc/$pid/environ" | sed -n "s/^$2=//p" | head -1
+}
+
+detectProdHome() {
+    local u home envFile
+    for u in "${UNITS[@]}"; do
+        home=$(runningEnv "$u" AIRFLOW_HOME) && [[ -n $home ]] && { echo "$home"; return 0; }
+    done
+    for u in "${UNITS[@]}"; do
+        home=$(systemctl show -p Environment --value "$u" 2>/dev/null \
+               | tr ' ' '\n' | sed -n 's/^AIRFLOW_HOME=//p' | head -1)
+        [[ -n $home ]] && { echo "$home"; return 0; }
+        while read -r envFile; do
+            [[ -f $envFile ]] || continue
+            home=$(sed -n 's/^[[:space:]]*AIRFLOW_HOME=//p' "$envFile" | tail -1)
+            [[ -n $home ]] && { echo "$home"; return 0; }
+        done < <(systemctl cat "$u" 2>/dev/null | sed -n 's/^EnvironmentFile=-\?//p')
+    done
+    return 1
+}
 
 # airflow со СТАРЫМ окружением прода (то, что работает сейчас)
 airflowOld() { sudo -u "$RUNAS" env AIRFLOW_HOME="$PROD_HOME" "$VENV/bin/airflow" "$@"; }
@@ -63,6 +91,27 @@ for r in rows:
 ' 2>/dev/null | grep -v '^$' | sort
 }
 
+echo "=== 0. AIRFLOW_HOME прода ==="
+if [[ -z $PROD_HOME ]]; then
+    if PROD_HOME=$(detectProdHome); then
+        ok "определён по работающей службе: $PROD_HOME"
+    else
+        bad "не смог определить AIRFLOW_HOME прода — передай явно: PROD_HOME=/путь bash precheck-prod.sh"
+        PROD_HOME=/opt/airflow
+        echo "       (дальше считаю $PROD_HOME — результаты по метаданным могут врать)"
+    fi
+else
+    ok "задан вручную: $PROD_HOME"
+fi
+[[ -f $PROD_HOME/airflow.cfg ]] && ok "$PROD_HOME/airflow.cfg на месте" \
+    || bad "нет $PROD_HOME/airflow.cfg — это точно AIRFLOW_HOME прода?"
+if [[ -f $ENVFILE ]]; then
+    envHome=$(sed -n 's/^AIRFLOW_HOME=//p' "$ENVFILE" | head -1)
+    [[ $envHome == "$PROD_HOME" ]] && ok "в $ENVFILE тот же AIRFLOW_HOME" \
+        || bad "в $ENVFILE стоит AIRFLOW_HOME=$envHome, а прод работает с $PROD_HOME — переключение увело бы его на чужой airflow.cfg. Почини: PROD_HOME=$PROD_HOME bash setup-airflow-prod.sh"
+fi
+
+echo
 echo "=== 1. Подготовка и рубильник ==="
 for d in "$ROOT" "$SRC" "$ROOT/etl.git" "$ROOT/bin"; do
     [[ -d $d ]] && ok "каталог $d" || bad "нет каталога $d"
@@ -73,15 +122,31 @@ done
 
 active=0
 for u in "${UNITS[@]}"; do
-    [[ -f /etc/systemd/system/$u.d/$DROPIN_NAME ]] && active=$((active + 1))
+    [[ -f $(dropinPath "$u") ]] && active=$((active + 1))
 done
 if [[ $active -eq 0 ]]; then
     ok "рубильник ВЫКЛЮЧЕН — прод работает на старом коде (так и должно быть до переключения)"
 elif [[ $active -eq ${#UNITS[@]} ]]; then
-    warn "рубильник УЖЕ ВКЛЮЧЁН — прод работает на новом коде"
+    echo "  --   рубильник включён у всех юнитов"
 else
     bad "drop-in стоит только у части юнитов ($active из ${#UNITS[@]}) — почини до переключения"
 fi
+# Файлы drop-in'а — это намерение; правда в том, с чем реально работают процессы.
+for u in "${UNITS[@]}"; do
+    got=$(runningEnv "$u" AIRFLOW__CORE__DAGS_FOLDER || true)
+    if [[ $active -eq ${#UNITS[@]} ]]; then
+        [[ $got == "$SRC/dags" ]] && ok "$u читает $got" \
+            || bad "$u читает '${got:-<из airflow.cfg>}', а не $SRC/dags — переключение не подействовало"
+    else
+        echo "       $u сейчас читает: ${got:-<из airflow.cfg>}"
+    fi
+done
+# Каталог без суффикса .service systemd не читает — ранняя версия скрипта
+# создавала именно такой, и переключение молча не срабатывало.
+for u in "${UNITS[@]}"; do
+    [[ -e /etc/systemd/system/$u.d/$DROPIN_NAME ]] && \
+        bad "лишний каталог /etc/systemd/system/$u.d — systemd его игнорирует, удали (нужен $u.service.d)"
+done
 
 echo
 echo "=== 2. Код и реквизиты ==="

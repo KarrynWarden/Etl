@@ -29,7 +29,10 @@ MEMBERS=(devel airflow)                # кто пушит в прод + сам 
 VENV=/opt/airflow/venv                 # тот же venv, что у теста
 RUNAS=airflow                          # под кем крутится прод
 DEPLOY_BRANCH=prod                     # какая ветка разворачивается в prod-src
-PROD_HOME=/opt/airflow/airflow         # AIRFLOW_HOME прода (там же airflow.cfg)
+# AIRFLOW_HOME прода определяется АВТОМАТИЧЕСКИ по работающей службе — задавать
+# его руками нельзя: ошибка здесь увела бы прод на чужой airflow.cfg и чужую
+# metadata-базу. Переопределить можно только явно: PROD_HOME=... bash ...
+PROD_HOME=${PROD_HOME:-}
 UNITS=(airflow-scheduler airflow-webserver)   # существующие юниты прода
 ETL_POOL_NAME=Etl                      # пул, который ждёт код (_dagHelpers.ETL_POOL)
 ETL_POOL_SLOTS=100                     # = ETL_POOL_SLOTS в Functions/_dagHelpers.py
@@ -44,7 +47,11 @@ MODE=${1:-prepare}
 [[ $EUID -eq 0 ]] || { echo "Запускай от root (sudo -s)"; exit 1; }
 cd /    # чтобы sudo -u postgres/airflow не ругался на чужой cwd
 
-dropinPath() { echo "/etc/systemd/system/$1.d/$DROPIN_NAME"; }
+# Имя юнита с суффиксом: каталог drop-in'а ДОЛЖЕН называться <юнит>.service.d,
+# иначе systemd его просто не читает, а переключение молча не срабатывает.
+unitFull() { [[ $1 == *.* ]] && echo "$1" || echo "$1.service"; }
+dropinDir() { echo "/etc/systemd/system/$(unitFull "$1").d"; }
+dropinPath() { echo "$(dropinDir "$1")/$DROPIN_NAME"; }
 
 cutoverActive() {
     for u in "${UNITS[@]}"; do
@@ -53,23 +60,74 @@ cutoverActive() {
     return 0
 }
 
+# Переменная окружения работающей службы — единственный надёжный источник
+# правды о том, как прод запущен на самом деле.
+runningEnv() {
+    local pid; pid=$(systemctl show -p MainPID --value "$1" 2>/dev/null || true)
+    [[ -n ${pid:-} && $pid -gt 0 && -r /proc/$pid/environ ]] || return 1
+    tr '\0' '\n' < "/proc/$pid/environ" | sed -n "s/^$2=//p" | head -1
+}
+
+# AIRFLOW_HOME прода: сначала у живого процесса, затем из определения юнита
+# (Environment= и EnvironmentFile=), и только потом сдаёмся.
+detectProdHome() {
+    local u home unitFile envFile
+    for u in "${UNITS[@]}"; do
+        home=$(runningEnv "$u" AIRFLOW_HOME) && [[ -n $home ]] && { echo "$home"; return 0; }
+    done
+    for u in "${UNITS[@]}"; do
+        home=$(systemctl show -p Environment --value "$u" 2>/dev/null \
+               | tr ' ' '\n' | sed -n 's/^AIRFLOW_HOME=//p' | head -1)
+        [[ -n $home ]] && { echo "$home"; return 0; }
+        while read -r envFile; do
+            [[ -f $envFile ]] || continue
+            home=$(sed -n 's/^[[:space:]]*AIRFLOW_HOME=//p' "$envFile" | tail -1)
+            [[ -n $home ]] && { echo "$home"; return 0; }
+        done < <(systemctl cat "$u" 2>/dev/null | sed -n 's/^EnvironmentFile=-\?//p')
+    done
+    return 1
+}
+
 showStatus() {
     echo "== Состояние =="
     if cutoverActive; then
-        echo "  ПЕРЕКЛЮЧЕНО на новый код: drop-in стоит у всех юнитов ${UNITS[*]}"
+        echo "  drop-in стоит у всех юнитов: ${UNITS[*]}"
     else
-        echo "  Прод на СТАРОМ коде (drop-in не установлен)"
+        echo "  drop-in НЕ установлен — прод на старом коде"
     fi
+    # Факт важнее файлов: смотрим, что реально у работающих процессов.
+    for u in "${UNITS[@]}"; do
+        printf '  %-22s %-8s dags_folder=%s\n' "$u" \
+            "$(systemctl is-active "$u" 2>/dev/null || true)" \
+            "$(runningEnv "$u" AIRFLOW__CORE__DAGS_FOLDER || echo '<из airflow.cfg>')"
+        printf '  %-22s %-8s AIRFLOW_HOME=%s\n' "" "" \
+            "$(runningEnv "$u" AIRFLOW_HOME || echo '?')"
+    done
     echo "  код       : $SRC$([[ -d $SRC/dags ]] && echo '' || echo '  (пусто — не было push)')"
     echo "  bare-репо : $BARE"
     echo "  env-файл  : $ENVFILE"
-    for u in "${UNITS[@]}"; do
-        printf '  %-22s %s\n' "$u" "$(systemctl is-active "$u" 2>/dev/null || true)"
-    done
     if [[ -f $ENVFILE ]]; then
         echo "  --- $ENVFILE ---"
         sed 's/^/  /' "$ENVFILE"
     fi
+}
+
+# После рестарта убедиться, что прод ДЕЙСТВИТЕЛЬНО читает новую папку дагов.
+# Без этой проверки неверный путь drop-in'а выглядел бы как успешное
+# переключение: файлы на месте, службы active, а окружение старое.
+verifyCutover() {
+    local u got bad=0
+    sleep 3
+    for u in "${UNITS[@]}"; do
+        got=$(runningEnv "$u" AIRFLOW__CORE__DAGS_FOLDER || true)
+        if [[ $got == "$SRC/dags" ]]; then
+            echo "  OK   $u читает $got"
+        else
+            echo "  НЕТ  $u читает '${got:-<из airflow.cfg>}', а не $SRC/dags"
+            bad=1
+        fi
+    done
+    return $bad
 }
 
 # Выполнить airflow CLI прода с окружением нового кода.
@@ -87,6 +145,10 @@ case "$MODE" in
     echo "== Откат: снимаю drop-in и возвращаю прод на старую папку дагов =="
     for u in "${UNITS[@]}"; do
         rm -f "$(dropinPath "$u")"
+        rmdir "$(dropinDir "$u")" 2>/dev/null || true
+        # каталог без суффикса .service мог остаться от ранней версии скрипта —
+        # systemd его не читал, но пусть не мозолит глаза
+        rm -f "/etc/systemd/system/$u.d/$DROPIN_NAME" 2>/dev/null || true
         rmdir "/etc/systemd/system/$u.d" 2>/dev/null || true
     done
     systemctl daemon-reload
@@ -101,12 +163,31 @@ case "$MODE" in
     [[ -f $ENVFILE ]] || { echo "Нет $ENVFILE — сначала запусти скрипт без аргументов"; exit 1; }
     [[ -f $SRC/.env ]] || { echo "Нет $SRC/.env с реквизитами БД прода (шаблон deploy/prod.env.example)"; exit 1; }
 
+    # AIRFLOW_HOME в env-файле обязан совпадать с тем, как прод запущен сейчас:
+    # иначе после рестарта он уедет на чужой airflow.cfg и чужую metadata-базу.
+    echo "== Сверка AIRFLOW_HOME с работающим продом =="
+    envHome=$(sed -n 's/^AIRFLOW_HOME=//p' "$ENVFILE" | head -1)
+    runHome=$(detectProdHome || true)
+    if [[ -z $runHome ]]; then
+        echo "  !! не смог определить AIRFLOW_HOME работающего прода — сверь руками:"
+        echo "     systemctl cat ${UNITS[0]}"
+    elif [[ $envHome != "$runHome" ]]; then
+        echo "  НЕТ  в $ENVFILE стоит AIRFLOW_HOME=$envHome,"
+        echo "       а прод работает с AIRFLOW_HOME=$runHome."
+        echo "       Переключение отменено: с чужим AIRFLOW_HOME прод"
+        echo "       прочитал бы другой airflow.cfg и другую metadata-базу."
+        echo "       Почини: PROD_HOME=$runHome bash setup-airflow-prod.sh"
+        exit 1
+    else
+        echo "  OK   AIRFLOW_HOME=$runHome"
+    fi
+
     echo "== Проверка, что новые даги парсятся с окружением прода =="
     "$ROOT/bin/check_dags.sh" || { echo "!! Даги не парсятся — переключение отменено."; exit 1; }
 
     echo "== drop-in к юнитам прода =="
     for u in "${UNITS[@]}"; do
-        mkdir -p "/etc/systemd/system/$u.d"
+        mkdir -p "$(dropinDir "$u")"
         cat > "$(dropinPath "$u")" <<DROPIN
 # Переключение прода на код из $SRC. Ставится/снимается скриптом
 # deploy/setup-airflow-prod.sh (--cutover / --rollback). Drop-in читается ПОСЛЕ
@@ -117,6 +198,18 @@ DROPIN
     done
     systemctl daemon-reload
     systemctl restart "${UNITS[@]}"
+
+    echo "== Проверка, что прод реально переключился =="
+    if ! verifyCutover; then
+        echo
+        echo "!! Переключение НЕ состоялось: службы перезапустились со старым"
+        echo "!! окружением. Прод при этом не пострадал — он работает как работал."
+        echo "!! Смотри, не перекрывает ли drop-in что-то в самих юнитах:"
+        echo "!!   systemctl cat ${UNITS[0]}"
+        showStatus
+        exit 1
+    fi
+
     echo
     echo "Переключено. Дальше — deploy/README-prod.md, раздел «После переключения»:"
     echo "  1) в UI все новые даги должны быть на паузе (AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=True);"
@@ -134,11 +227,26 @@ esac
 
 echo "== 0. Проверки окружения =="
 [[ -x $VENV/bin/airflow ]] || { echo "Нет $VENV/bin/airflow"; exit 1; }
-[[ -f $PROD_HOME/airflow.cfg ]] || { echo "Нет $PROD_HOME/airflow.cfg — проверь PROD_HOME"; exit 1; }
 for u in "${UNITS[@]}"; do
     systemctl cat "$u" >/dev/null 2>&1 || { echo "Нет юнита $u — проверь UNITS"; exit 1; }
 done
+
+if [[ -z $PROD_HOME ]]; then
+    PROD_HOME=$(detectProdHome) || {
+        echo "!! Не смог определить AIRFLOW_HOME прода по службам ${UNITS[*]}."
+        echo "!! Посмотри сам и передай явно:"
+        echo "     systemctl cat ${UNITS[0]}"
+        echo "     pid=\$(systemctl show -p MainPID --value ${UNITS[0]}); tr '\\0' '\\n' < /proc/\$pid/environ | grep AIRFLOW_HOME"
+        echo "     PROD_HOME=/путь bash setup-airflow-prod.sh"
+        exit 1
+    }
+    echo "  AIRFLOW_HOME прода определён автоматически: $PROD_HOME"
+else
+    echo "  AIRFLOW_HOME задан вручную: $PROD_HOME"
+fi
+[[ -f $PROD_HOME/airflow.cfg ]] || { echo "Нет $PROD_HOME/airflow.cfg — это точно AIRFLOW_HOME прода?"; exit 1; }
 echo "  ok: venv, $PROD_HOME/airflow.cfg, юниты ${UNITS[*]}"
+echo "  metadata: $(awk -F'=' '/^[[:space:]]*sql_alchemy_conn/{sub(/^[^=]*=[[:space:]]*/,"");sub(/:[^:@]*@/,":***@");print;exit}' "$PROD_HOME/airflow.cfg")"
 
 echo "== 1. Группа $GROUP и участники =="
 groupadd -f "$GROUP"
@@ -214,7 +322,7 @@ while read oldrev newrev ref; do
 
     # Рестарт только если прод УЖЕ переключён на новый код. До переключения
     # (нет drop-in) код просто раскладывается — работающий прод не трогаем.
-    if [ -f "/etc/systemd/system/${UNITS[0]}.d/$DROPIN_NAME" ]; then
+    if [ -f "$(dropinPath "${UNITS[0]}")" ]; then
         sudo systemctl restart ${UNITS[@]}
         echo "deploy: ветка $DEPLOY_BRANCH -> $SRC, прод перезапущен"
     else
