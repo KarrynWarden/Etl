@@ -124,9 +124,20 @@ showStatus() {
     fi
 }
 
+# Применил ли systemd наш EnvironmentFile к юниту (по мнению самого systemd).
+envFileApplied() {
+    systemctl show -p EnvironmentFiles --value "$1" 2>/dev/null | grep -qF "$ENVFILE" \
+        || systemctl cat "$1" 2>/dev/null | grep -qF "EnvironmentFile=$ENVFILE"
+}
+
 # После рестарта убедиться, что прод ДЕЙСТВИТЕЛЬНО читает новую папку дагов.
 # Без этой проверки неверный путь drop-in'а выглядел бы как успешное
 # переключение: файлы на месте, службы active, а окружение старое.
+#
+# Тонкость: у scheduler'а /proc/PID/environ читается пустым — airflow меняет
+# заголовок процесса (setproctitle), затирая область окружения. Это не мешает
+# работе, но судить по environ там нельзя, поэтому для таких процессов
+# ориентируемся на то, что применил systemd.
 verifyCutover() {
     local u got bad=0
     sleep 3
@@ -134,11 +145,22 @@ verifyCutover() {
         got=$(runningEnv "$u" AIRFLOW__CORE__DAGS_FOLDER || true)
         if [[ $got == "$SRC/dags" ]]; then
             echo "  OK   $u читает $got"
+        elif [[ -n $got ]]; then
+            echo "  НЕТ  $u читает '$got', а не $SRC/dags"
+            bad=1
+        elif envFileApplied "$u"; then
+            echo "  OK   $u: systemd применил $ENVFILE"
+            echo "       (окружение процесса не читается — setproctitle, это нормально)"
         else
-            echo "  НЕТ  $u читает '${got:-<из airflow.cfg>}', а не $SRC/dags"
+            echo "  НЕТ  $u: systemd не применил $ENVFILE"
             bad=1
         fi
     done
+    # Заодно показать, что планировщик разбирает на самом деле: пути к файлам
+    # видны прямо в именах его дочерних процессов.
+    local parsing
+    parsing=$(pgrep -a -f DagFileProcessor 2>/dev/null | grep -oE '/[^ ]+\.py' | head -3 || true)
+    [[ -n $parsing ]] && echo "  сейчас разбираются: $(echo "$parsing" | tr '\n' ' ')"
     return $bad
 }
 

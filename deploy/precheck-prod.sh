@@ -154,15 +154,29 @@ else
     bad "drop-in стоит только у части юнитов ($active из ${#UNITS[@]}) — почини до переключения"
 fi
 # Файлы drop-in'а — это намерение; правда в том, с чем реально работают процессы.
+# У scheduler'а environ читается пустым: airflow меняет заголовок процесса
+# (setproctitle) и затирает область окружения. Для таких — судим по systemd.
+envFileApplied() {
+    systemctl show -p EnvironmentFiles --value "$1" 2>/dev/null | grep -qF "$ENVFILE" \
+        || systemctl cat "$1" 2>/dev/null | grep -qF "EnvironmentFile=$ENVFILE"
+}
 for u in "${UNITS[@]}"; do
     got=$(runningEnv "$u" AIRFLOW__CORE__DAGS_FOLDER || true)
-    if [[ $active -eq ${#UNITS[@]} ]]; then
-        [[ $got == "$SRC/dags" ]] && ok "$u читает $got" \
-            || bad "$u читает '${got:-<из airflow.cfg>}', а не $SRC/dags — переключение не подействовало"
-    else
+    if [[ $active -ne ${#UNITS[@]} ]]; then
         echo "       $u сейчас читает: ${got:-<из airflow.cfg>}"
+    elif [[ $got == "$SRC/dags" ]]; then
+        ok "$u читает $got"
+    elif [[ -n $got ]]; then
+        bad "$u читает '$got', а не $SRC/dags — переключение не подействовало"
+    elif envFileApplied "$u"; then
+        ok "$u: systemd применил $ENVFILE (environ не читается — setproctitle)"
+    else
+        bad "$u: systemd не применил $ENVFILE — переключение не подействовало"
     fi
 done
+# Что планировщик разбирает прямо сейчас — пути видны в именах его процессов.
+parsing=$(pgrep -a -f DagFileProcessor 2>/dev/null | grep -oE '/[^ ]+\.py' | head -3 || true)
+[[ -n $parsing ]] && echo "       разбирается сейчас: $(echo "$parsing" | tr '\n' ' ')"
 # Каталог без суффикса .service systemd не читает — ранняя версия скрипта
 # создавала именно такой, и переключение молча не срабатывало.
 for u in "${UNITS[@]}"; do
