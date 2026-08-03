@@ -1,0 +1,2 @@
+INSERT INTO spinitufk (fileext, numver, budglvl, kodubp, kodtofk, nametofk, lsubppay, glavagrs, namebud, kodv, nameruk, namebuh, kodistkbk, nameistkbk, oktmo, ogrn) 
+VALUES (:s, :s, :s, :s, :s, :s, :s, :s, :s, :s, :s, :s, :s, :s, :s, :s)

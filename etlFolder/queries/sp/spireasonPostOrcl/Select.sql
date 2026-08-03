@@ -1,0 +1,1 @@
+select code,name,signend from spireason

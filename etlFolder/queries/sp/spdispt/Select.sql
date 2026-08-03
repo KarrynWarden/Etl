@@ -1,0 +1,1 @@
+SELECT iddt,dtname name,DATEBEG dbegin,DATEEND dend,code,idrw FROM SPDISPT s

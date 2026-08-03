@@ -1,0 +1,8 @@
+{
+  "EINDEXSTRUPostOrcl": {
+    "tableNameSlave": "EINDEXSTRU",
+    "addSql": "queries/sp/EINDEXSTRU/Add.sql",
+    "selectSql": "queries/sp/EINDEXSTRU/Select.sql",
+    "srcMode": "custom"
+  }
+}

@@ -1,0 +1,2 @@
+SELECT code, name, high, okso, dbegin, dend, spec04, staff, agecat, basebudg, signusl, signcase, groupapp, groupkss, groupszp, groupsmp, signtp, spec21, version, sex, idpost_mz, postname, idrw
+FROM spspecfed

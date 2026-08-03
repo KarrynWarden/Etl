@@ -1,0 +1,7 @@
+{
+  "speindexformPostOrcl": {
+    "tableNameSlave": "SPEINDEXFORM",
+    "addSql": "queries/sp/speindexform/Add.sql",
+    "selectSql": "queries/sp/speindexform/Select.sql"
+  }
+}

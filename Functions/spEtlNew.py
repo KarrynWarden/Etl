@@ -39,6 +39,7 @@ def SpEtl(tableNameMaster, tableNameSlave, addAllSpSql, action, selectSpSql, dbM
                 cursor2.executemany(addAllSpSql, rows)
             else:
                 execute_values(cursor2, addAllSpSql, rows)
+            con2.commit()
 
         
         # Фиксация изменений

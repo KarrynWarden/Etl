@@ -1,0 +1,8 @@
+{
+  "REPMOSOFINDOGOVOROrclPost": {
+    "tableNameSlave": "repmosofindogovor",
+    "addSql": "queries/sp/REPMOSOFINDOGOVOR/Add.sql",
+    "selectSql": "queries/sp/REPMOSOFINDOGOVOR/Select.sql",
+    "disabled": true
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "eindexmoPostOrcl": {
+    "tableNameMaster": "eindexmo",
+    "tableNameSlave": "EINDEXMO",
+    "structureMaster": "structures/eindexmo/eindexmo.json",
+    "structureSlave": "structures/eindexmo/EINDEXMO.json",
+    "periodColumn": "createdate",
+    "slavePeriodColumn": "CREATEDATE",
+    "mode": "iud",
+    "selectSql": "queries/customQueries/eindexmo.sql"
+  }
+}

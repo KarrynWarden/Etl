@@ -1,0 +1,2 @@
+INSERT INTO spkau (CODE, NAME, NAME1, NAME2, SCH, SCH1, PART, ADVANCE, PSMO, PDK, PPD, PPGM, TYPECONT, TYPECONT1, DBEGIN, DEND, DEB, TYPEHELP) 
+VALUES (:s, :s, :s, :s, :s, :s, :s, :s, :s, :s, :s, :s, :s, :s, :s, :s, :s, :s)

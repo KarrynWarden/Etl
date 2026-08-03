@@ -23,7 +23,7 @@ def _trimTuple(tup):
 def StructCheckDataBase(jsonStruct, cursor, structureCheckSql, tableName):
     """Сверка json-эталона со схемой таблицы из information_schema/all_tab_columns."""
     bareName = tableName.split(".")[-1]
-    print('here is structure ', tableName, tableName.split("."), ' and ', tableName.split(".")[-1],  structureCheckSql, bareName)
+    #print('here is structure ', tableName, tableName.split("."), ' and ', tableName.split(".")[-1],  structureCheckSql, bareName)
     cursor.execute(structureCheckSql, {"TABLENAME": bareName})
     cursorStruct = cursor.fetchall()
 

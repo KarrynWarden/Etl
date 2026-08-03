@@ -1,0 +1,8 @@
+{
+  "EINDEXMOOrclPost": {
+    "tableNameSlave": "eindexmo",
+    "addSql": "queries/sp/EINDEXMO/Add.sql",
+    "selectSql": "queries/sp/EINDEXMO/Select.sql",
+    "srcMode": "custom"
+  }
+}

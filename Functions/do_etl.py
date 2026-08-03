@@ -1268,6 +1268,7 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords):
                                 cursorSlave.execute(ctx["upsertSql"], rowDb)
                             else:
                                 params = {str(i + 1): v for i, v in enumerate(rowDb)}
+                                #print(ctx["upsertSql"], params)
                                 cursorSlave.execute(ctx["upsertSql"], params)
 
                 else:  # 'D' — удаление
@@ -1695,17 +1696,25 @@ def _diffPeriods(masterRows, slaveRows, truncateLastupdate=False):
     def _bucket(rows):
         buckets = defaultdict(set)
         for period, lu in rows:
-            buckets[_normalizePeriod(period)].add(
+            #buckets[_normalizePeriod(period)].add(
+            buckets[period].add(
                 _normalizeCompareValue(lu, truncateLastupdate))
         return buckets
 
     masterMap = _bucket(masterRows)
     slaveMap = _bucket(slaveRows)
 
+    print("masterMap", masterMap)
+    print("slaveMap", slaveMap)
+
     diff = []
-    for period, masterSet in masterMap.items():
-        if masterSet != slaveMap.get(period, set()):
+    for period in masterMap.keys() | slaveMap.keys():
+        masterSet = masterMap.get(period, set())
+        slaveSet = slaveMap.get(period, set())
+
+        if masterSet != slaveSet:
             diff.append(period)
+    print("diff", diff)
     return diff
 
 
@@ -1731,6 +1740,7 @@ def _processSectionGroup(cfg, ctx, period, idrwBefore):
         cursorSlave.execute(
             ctx["deletePeriodSql"],
             _periodBinds(_periodSpec(cfg["slavePeriodColumn"]), period))
+        print(ctx["deletePeriodSql"], _periodBinds(_periodSpec(cfg["slavePeriodColumn"]), period))
 
         # 2) выбрать актуальные записи из ведущей и залить
         cursorMaster.execute(

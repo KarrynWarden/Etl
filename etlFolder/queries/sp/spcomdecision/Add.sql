@@ -1,0 +1,2 @@
+INSERT INTO sptpcomdecision (CODE, YEAR, DCOM, NCOM, SIGNVAL) 
+VALUES %s

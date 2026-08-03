@@ -1,0 +1,8 @@
+{
+  "SPEINDEXFORMPostOrcl": {
+    "tableNameSlave": "SPEINDEXFORM",
+    "addSql": "queries/sp/SPEINDEXFORM/Add.sql",
+    "selectSql": "queries/sp/SPEINDEXFORM/Select.sql",
+    "srcMode": "custom"
+  }
+}

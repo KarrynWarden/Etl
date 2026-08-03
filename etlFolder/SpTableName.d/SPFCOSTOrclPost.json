@@ -1,0 +1,8 @@
+{
+  "SPFCOSTOrclPost": {
+    "tableNameSlave": "spfcost",
+    "addSql": "queries/sp/SPFCOST/Add.sql",
+    "selectSql": "queries/sp/SPFCOST/Select.sql",
+    "disabled": true
+  }
+}

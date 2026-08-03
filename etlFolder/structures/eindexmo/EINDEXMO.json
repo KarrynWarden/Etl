@@ -1,0 +1,94 @@
+{
+  "data": [
+    {
+      "COLUMN_NAME": "CHECKDT",
+      "DATA_TYPE": "DATE",
+      "DATA_SCALE": null,
+      "IS_PRIMARY_KEY": null
+    },
+    {
+      "COLUMN_NAME": "CREATEDATE",
+      "DATA_TYPE": "DATE",
+      "DATA_SCALE": null,
+      "IS_PRIMARY_KEY": null
+    },
+    {
+      "COLUMN_NAME": "DEPT",
+      "DATA_TYPE": "NUMBER",
+      "DATA_SCALE": 0,
+      "IS_PRIMARY_KEY": null
+    },
+    {
+      "COLUMN_NAME": "EINDEX",
+      "DATA_TYPE": "NUMBER",
+      "DATA_SCALE": 0,
+      "IS_PRIMARY_KEY": null
+    },
+    {
+      "COLUMN_NAME": "FINSOURCE",
+      "DATA_TYPE": "NUMBER",
+      "DATA_SCALE": 0,
+      "IS_PRIMARY_KEY": null
+    },
+    {
+      "COLUMN_NAME": "IDRW",
+      "DATA_TYPE": "NUMBER",
+      "DATA_SCALE": 0,
+      "IS_PRIMARY_KEY": "Primary Key"
+    },
+    {
+      "COLUMN_NAME": "KOSGU",
+      "DATA_TYPE": "NUMBER",
+      "DATA_SCALE": 0,
+      "IS_PRIMARY_KEY": null
+    },
+    {
+      "COLUMN_NAME": "LASTUPDATE",
+      "DATA_TYPE": "DATE",
+      "DATA_SCALE": null,
+      "IS_PRIMARY_KEY": null
+    },
+    {
+      "COLUMN_NAME": "MO",
+      "DATA_TYPE": "NUMBER",
+      "DATA_SCALE": 0,
+      "IS_PRIMARY_KEY": null
+    },
+    {
+      "COLUMN_NAME": "OTDEL",
+      "DATA_TYPE": "NUMBER",
+      "DATA_SCALE": 0,
+      "IS_PRIMARY_KEY": null
+    },
+    {
+      "COLUMN_NAME": "PLAN",
+      "DATA_TYPE": "NUMBER",
+      "DATA_SCALE": 0,
+      "IS_PRIMARY_KEY": null
+    },
+    {
+      "COLUMN_NAME": "QUART",
+      "DATA_TYPE": "NUMBER",
+      "DATA_SCALE": 0,
+      "IS_PRIMARY_KEY": null
+    },
+    {
+      "COLUMN_NAME": "SUBDEPT",
+      "DATA_TYPE": "NUMBER",
+      "DATA_SCALE": 0,
+      "IS_PRIMARY_KEY": null
+    },
+    {
+      "COLUMN_NAME": "SUMEINDEX",
+      "DATA_TYPE": "NUMBER",
+      "DATA_SCALE": 4,
+      "IS_PRIMARY_KEY": null
+    },
+    {
+      "COLUMN_NAME": "YEAR",
+      "DATA_TYPE": "NUMBER",
+      "DATA_SCALE": 0,
+      "IS_PRIMARY_KEY": null
+    }
+  ]
+}

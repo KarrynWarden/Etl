@@ -1,0 +1,12 @@
+{
+  "iprkdeptOrclPost": {
+    "tableNameMaster": "IPRKDEPT",
+    "tableNameSlave": "iprkdept",
+    "structureMaster": "structures/IPRKDEPT/IPRKDEPT.json",
+    "structureSlave": "structures/IPRKDEPT/iprkdept.json",
+    "periodColumn": "DBEG",
+    "slavePeriodColumn": "dbeg",
+    "mode": "section_compare",
+    "truncatePeriod": true
+  }
+}

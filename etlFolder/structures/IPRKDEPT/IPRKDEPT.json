@@ -1,0 +1,112 @@
+{
+  "data": [
+    {
+      "COLUMN_NAME": "DBEG",
+      "DATA_TYPE": "DATE",
+      "DATA_SCALE": null,
+      "IS_PRIMARY_KEY": "Primary Key"
+    },
+    {
+      "COLUMN_NAME": "DDEPART",
+      "DATA_TYPE": "DATE",
+      "DATA_SCALE": null,
+      "IS_PRIMARY_KEY": null
+    },
+    {
+      "COLUMN_NAME": "DEND",
+      "DATA_TYPE": "DATE",
+      "DATA_SCALE": null,
+      "IS_PRIMARY_KEY": null
+    },
+    {
+      "COLUMN_NAME": "DEPT",
+      "DATA_TYPE": "NUMBER",
+      "DATA_SCALE": 0,
+      "IS_PRIMARY_KEY": null
+    },
+    {
+      "COLUMN_NAME": "DVISIT",
+      "DATA_TYPE": "DATE",
+      "DATA_SCALE": null,
+      "IS_PRIMARY_KEY": null
+    },
+    {
+      "COLUMN_NAME": "ID",
+      "DATA_TYPE": "NUMBER",
+      "DATA_SCALE": 0,
+      "IS_PRIMARY_KEY": "Primary Key"
+    },
+    {
+      "COLUMN_NAME": "IDLOGBEG",
+      "DATA_TYPE": "NUMBER",
+      "DATA_SCALE": 0,
+      "IS_PRIMARY_KEY": null
+    },
+    {
+      "COLUMN_NAME": "IDLOGEND",
+      "DATA_TYPE": "NUMBER",
+      "DATA_SCALE": 0,
+      "IS_PRIMARY_KEY": null
+    },
+    {
+      "COLUMN_NAME": "IDRW",
+      "DATA_TYPE": "NUMBER",
+      "DATA_SCALE": 0,
+      "IS_PRIMARY_KEY": null
+    },
+    {
+      "COLUMN_NAME": "LASTUPDATE",
+      "DATA_TYPE": "DATE",
+      "DATA_SCALE": null,
+      "IS_PRIMARY_KEY": null
+    },
+    {
+      "COLUMN_NAME": "METHPRK",
+      "DATA_TYPE": "NUMBER",
+      "DATA_SCALE": 0,
+      "IS_PRIMARY_KEY": null
+    },
+    {
+      "COLUMN_NAME": "MO",
+      "DATA_TYPE": "NUMBER",
+      "DATA_SCALE": 0,
+      "IS_PRIMARY_KEY": null
+    },
+    {
+      "COLUMN_NAME": "OTDEL",
+      "DATA_TYPE": "NUMBER",
+      "DATA_SCALE": 0,
+      "IS_PRIMARY_KEY": null
+    },
+    {
+      "COLUMN_NAME": "REASON",
+      "DATA_TYPE": "NUMBER",
+      "DATA_SCALE": 0,
+      "IS_PRIMARY_KEY": null
+    },
+    {
+      "COLUMN_NAME": "SOURCEBEG",
+      "DATA_TYPE": "NUMBER",
+      "DATA_SCALE": 0,
+      "IS_PRIMARY_KEY": null
+    },
+    {
+      "COLUMN_NAME": "SOURCEEND",
+      "DATA_TYPE": "NUMBER",
+      "DATA_SCALE": 0,
+      "IS_PRIMARY_KEY": null
+    },
+    {
+      "COLUMN_NAME": "SUBDEPT",
+      "DATA_TYPE": "NUMBER",
+      "DATA_SCALE": 0,
+      "IS_PRIMARY_KEY": null
+    },
+    {
+      "COLUMN_NAME": "TYPEPRK",
+      "DATA_TYPE": "NUMBER",
+      "DATA_SCALE": 0,
+      "IS_PRIMARY_KEY": "Primary Key"
+    }
+  ]
+}

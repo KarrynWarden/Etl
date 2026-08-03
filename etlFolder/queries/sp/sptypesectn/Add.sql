@@ -1,0 +1,2 @@
+INSERT INTO sptypesectn (CODE, NAME, GENERAL) 
+VALUES %s

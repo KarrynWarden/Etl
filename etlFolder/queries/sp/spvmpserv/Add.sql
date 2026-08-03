@@ -1,0 +1,2 @@
+INSERT INTO spvmpserv (MEDSERVICE, DBEGIN, DEND, VID, METHOD, FVID, FMETHOD, NGR, PROFCODE, PROFNAME, MODEL, IDRW, division, ros_id_profile, ros_profile_name, ros_id_treatment,  ros_treatment_name) 
+VALUES %s

@@ -1,0 +1,2 @@
+INSERT INTO SPVMPvid (CODE, NAME, DBEGIN, DEND, idrw, division) 
+VALUES %s

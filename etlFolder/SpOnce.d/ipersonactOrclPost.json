@@ -2,6 +2,7 @@
   "ipersonactOrclPost": {
     "tableNameSlave": "ipersonact",
     "addSql": "queries/sp/ipersonact/Add.sql",
-    "selectSql": "queries/sp/ipersonact/Select.sql"
+    "selectSql": "queries/sp/ipersonact/Select.sql",
+    "disabled": true
   }
 }

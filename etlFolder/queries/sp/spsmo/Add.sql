@@ -1,0 +1,2 @@
+INSERT INTO spsmo (code,name,dbegin,dend,longname,idrw,successor,egrulname,bosssn,bossfn,bosspn,buhsn,buhfn,buhpn,bosslong,bosspostr, signmain, docn, docdt, bosssnr, bossfnr, bosspnr, bosspost) 
+VALUES %s

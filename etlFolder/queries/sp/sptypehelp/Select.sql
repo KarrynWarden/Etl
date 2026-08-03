@@ -1,0 +1,2 @@
+SELECT FCODE, NAME, LNAME, FNAME
+FROM sptypehelp

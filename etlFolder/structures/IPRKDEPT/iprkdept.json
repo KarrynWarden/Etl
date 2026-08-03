@@ -1,0 +1,112 @@
+{
+  "data": [
+    {
+      "column_name": "dbeg",
+      "data_type": "date",
+      "data_scale": null,
+      "is_primary_key": "Primary Key"
+    },
+    {
+      "column_name": "ddepart",
+      "data_type": "date",
+      "data_scale": null,
+      "is_primary_key": null
+    },
+    {
+      "column_name": "dend",
+      "data_type": "date",
+      "data_scale": null,
+      "is_primary_key": null
+    },
+    {
+      "column_name": "dept",
+      "data_type": "integer",
+      "data_scale": 0,
+      "is_primary_key": null
+    },
+    {
+      "column_name": "dvizit",
+      "data_type": "date",
+      "data_scale": null,
+      "is_primary_key": null
+    },
+    {
+      "column_name": "id",
+      "data_type": "bigint",
+      "data_scale": 0,
+      "is_primary_key": "Primary Key"
+    },
+    {
+      "column_name": "idlogbeg",
+      "data_type": "bigint",
+      "data_scale": 0,
+      "is_primary_key": null
+    },
+    {
+      "column_name": "idlogend",
+      "data_type": "bigint",
+      "data_scale": 0,
+      "is_primary_key": null
+    },
+    {
+      "column_name": "idrw",
+      "data_type": "bigint",
+      "data_scale": 0,
+      "is_primary_key": null
+    },
+    {
+      "column_name": "lastupdate",
+      "data_type": "timestamp without time zone",
+      "data_scale": null,
+      "is_primary_key": null
+    },
+    {
+      "column_name": "methprk",
+      "data_type": "smallint",
+      "data_scale": 0,
+      "is_primary_key": null
+    },
+    {
+      "column_name": "mo",
+      "data_type": "integer",
+      "data_scale": 0,
+      "is_primary_key": null
+    },
+    {
+      "column_name": "otdel",
+      "data_type": "character varying",
+      "data_scale": null,
+      "is_primary_key": null
+    },
+    {
+      "column_name": "reason",
+      "data_type": "smallint",
+      "data_scale": 0,
+      "is_primary_key": null
+    },
+    {
+      "column_name": "sourcebeg",
+      "data_type": "smallint",
+      "data_scale": 0,
+      "is_primary_key": null
+    },
+    {
+      "column_name": "sourceend",
+      "data_type": "smallint",
+      "data_scale": 0,
+      "is_primary_key": null
+    },
+    {
+      "column_name": "subdept",
+      "data_type": "integer",
+      "data_scale": 0,
+      "is_primary_key": null
+    },
+    {
+      "column_name": "typeprk",
+      "data_type": "smallint",
+      "data_scale": 0,
+      "is_primary_key": "Primary Key"
+    }
+  ]
+}

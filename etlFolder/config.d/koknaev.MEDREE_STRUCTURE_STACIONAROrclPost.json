@@ -6,6 +6,6 @@
     "periodColumn": "dcalc",
     "slavePeriodColumn": "dcalc",
     "mode": "section_compare",
-    "truncatePeriod": true
+    "truncatePeriod": false
   }
 }
