@@ -891,7 +891,8 @@ def _complex_ui():
                      style={"description_width": "180px"})
     f_confl_w = W.Text(description="Конфликт: условие WHERE", layout=W.Layout(width="640px"),
                        style={"description_width": "180px"})
-    f_trunc = W.Checkbox(description="Сравнивать период по дате (truncatePeriod)",
+    f_trunc = W.Checkbox(description="Период сравнивать по дате, без времени "
+                                     "(truncatePeriod)",
                          value=False, indent=False)
     f_skip_audit = W.Checkbox(description="Не аудировать линию (skipAudit)",
                               value=False, indent=False)
@@ -917,7 +918,10 @@ def _complex_ui():
         "<b>SQL ведущей</b> — если перенос идёт не из таблицы, а из своего запроса.<br>"
         "<b>Конфликт: доп. колонки</b> — лишние колонки в ON CONFLICT (upsert).<br>"
         "<b>Конфликт: условие WHERE</b> — для частичного уникального индекса.<br>"
-        "<b>truncatePeriod</b> — сравнивать период по дате, без времени.<br>"
+        "<b>truncatePeriod</b> — сравнивать период по дате, без времени. В "
+        "<code>section_compare</code> он же задаёт гранулярность группы: снят — "
+        "группа это точное значение со временем (medree), поставлен — день "
+        "(iprkdept: ведущая отдаёт datetime, ведомая date).<br>"
         "<b>skipAudit</b> — исключить линию из общего аудита (AuditAll).<br>"
         "<b>Не сверять поля</b> — auditExcludeFields: колонки, которые аудит игнорирует.<br>"
         "<b>SQL периодов</b> — появляется только при mode=<code>query_section</code> "

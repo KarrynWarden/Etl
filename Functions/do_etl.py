@@ -305,6 +305,34 @@ def _normalizePeriod(value):
     return value
 
 
+def _periodKey(value, truncatePeriod):
+    """Канонический ключ ГРУППЫ для section_compare.
+
+    Группы приезжают из трёх независимых источников (сравнение срезов
+    master/slave, журнал etl_log_iud_row, isokaudit=4 в etl_jobs), и ключ у них
+    обязан быть один и тот же: иначе одна и та же группа попадает в набор
+    дважды в разном виде, а sorted() по смеси date и datetime падает с
+    TypeError («can't compare datetime.datetime to datetime.date»).
+
+    Гранулярность задаёт тот же флаг `truncatePeriod`, который решает, сравнивать
+    ли период в SQL по дате (TRUNC/DATE) или точно — чтобы Python и SQL считали
+    группой одно и то же:
+
+      truncatePeriod=True  — группа это ДЕНЬ. Нужно, когда стороны хранят период
+        по-разному: у iprkdept ведущая Oracle DATE (драйвер отдаёт datetime), а
+        ведомая Postgres date (отдаёт date). Без приведения ключи не совпадут
+        никогда, каждая группа считалась бы расходящейся и таблица
+        перезаливалась бы целиком на каждом прогоне.
+
+      truncatePeriod=False — группа это ТОЧНОЕ значение, вместе со временем. Так
+        устроен medree: у dcalc есть время, и отдельным пересчётом (а значит
+        отдельной группой) считается каждое конкретное значение. Тип при этом
+        всё равно унифицируется (date -> datetime в полночь), поэтому Oracle
+        DATE и Postgres timestamp сравниваются корректно.
+    """
+    return _normalizeCompareValue(value, truncatePeriod)
+
+
 # ----------------------------------------------------------------------------
 #     Период группы: одна колонка-дата ЛИБО составная (year[, month[, day]])
 # ----------------------------------------------------------------------------
@@ -1683,21 +1711,24 @@ def _maxIudIdrw(cursor, dbMaster, tableNameEtlJobs):
     return cursor.fetchone()[0]
 
 
-def _diffPeriods(masterRows, slaveRows, truncateLastupdate=False):
-    """Группы, требующие обновления: нет на стороне ведомой либо множества
+def _diffPeriods(masterRows, slaveRows, truncateLastupdate=False,
+                 truncatePeriod=False):
+    """Группы, требующие обновления: нет на одной из сторон либо множества
     lastupdate по группе отличаются.
 
-    Ключ-период всегда приводится к дате (_normalizePeriod). Значения lastupdate
-    нормализуются (_normalizeCompareValue): по умолчанию — с точностью timestamp
-    (унификация типа date/datetime), а по флагу truncateLastupdate — по дате.
-    Без этого date из Postgres и datetime из Oracle считаются разными и группа
-    «отличается» бесконечно.
+    Ключ-период приводится к канону через _periodKey: по флагу truncatePeriod
+    это либо день, либо точное значение со временем (см. там же — почему это
+    один и тот же флаг, что и для SQL).
+
+    Значения lastupdate нормализуются (_normalizeCompareValue): по умолчанию —
+    с точностью timestamp (унификация типа date/datetime), а по флагу
+    truncateLastupdate — по дате. Без этого date из Postgres и datetime из
+    Oracle считаются разными и группа «отличается» бесконечно.
     """
     def _bucket(rows):
         buckets = defaultdict(set)
         for period, lu in rows:
-            #buckets[_normalizePeriod(period)].add(
-            buckets[period].add(
+            buckets[_periodKey(period, truncatePeriod)].add(
                 _normalizeCompareValue(lu, truncateLastupdate))
         return buckets
 
@@ -1708,6 +1739,9 @@ def _diffPeriods(masterRows, slaveRows, truncateLastupdate=False):
     print("slaveMap", slaveMap)
 
     diff = []
+    # По объединению ключей, а не только по ведущей: группа, которой в источнике
+    # уже нет, а в ведомой она осталась, тоже расхождение — раньше цикл шёл по
+    # masterMap и такие группы не вычищались.
     for period in masterMap.keys() | slaveMap.keys():
         masterSet = masterMap.get(period, set())
         slaveSet = slaveMap.get(period, set())
@@ -1831,18 +1865,22 @@ def _runSectionCompare(cfg, ctx, selectSql):
         ctx["cursorMaster"], dbMaster, selectSql, cfg["periodColumn"],
     )
 
-    needUpdate = set(_diffPeriods(masterRows, slaveRows, cfg.get("truncateLastupdate")))
+    # Гранулярность группы у линии одна на все три источника ниже (см. _periodKey).
+    truncatePeriod = bool(cfg.get("truncatePeriod"))
+
+    needUpdate = set(_diffPeriods(masterRows, slaveRows,
+                                  cfg.get("truncateLastupdate"), truncatePeriod))
 
     # 2. сигналы из etl_log_iud_row
     iudPeriods = _selectIudPeriods(ctx["cursorMaster"], dbMaster, tableNameEtlJobs)
-    needUpdate.update(_normalizePeriod(p) for p in iudPeriods)
+    needUpdate.update(_periodKey(p, truncatePeriod) for p in iudPeriods)
 
     # 3. явные группы с isokaudit=4 в etl_jobs
     sqlTpl = _pickSql(dbMaster, periodsIsokAudit4PostSql, periodsIsokAudit4OrclSql)
     explicit = _executeQuery(
         ctx["cursorMaster"], sqlTpl, {"tablename": tableNameEtlJobs},
     )
-    needUpdate.update(_normalizePeriod(row[0]) for row in explicit)
+    needUpdate.update(_periodKey(row[0], truncatePeriod) for row in explicit)
 
     if not needUpdate:
         logger.info("section_compare %s: групп для обновления нет",

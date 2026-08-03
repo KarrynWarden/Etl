@@ -51,7 +51,7 @@ from Functions.updateLog import UpdateLog
 # Переиспользуем низкоуровневые утилиты ядра переноса — чтобы аудит и ETL
 # одинаково подключались, фильтровали поля и строили списки колонок.
 from Functions.do_etl import (
-    _connect, _isPost, _pickSql, _loadStructure, _normalizePeriod,
+    _connect, _isPost, _pickSql, _loadStructure, _periodKey,
     _resolveEtlPath, ShutdownRequested, isShutdown,
     _appendFilter, _filterEtlFields, _bindName, _buildFieldsStr,
     _executeQuery, _configKey, classifyError, _asAndClause,
@@ -306,7 +306,12 @@ def _auditGroup(cfg, ctx, origPeriod, report):
     conMaster = ctx["conMaster"]
     conSlave = ctx["conSlave"]
     filterParams = cfg.get("filterParams") or {}
-    period = _normalizePeriod(origPeriod)
+    # Гранулярность группы — та же, что у переноса (_periodKey): при
+    # truncatePeriod=false период сравнивается точно, вместе со временем.
+    # Безусловное приведение к дате (как было) для таких линий давало полночь,
+    # которой в данных нет: обе выборки возвращали 0 строк, множества
+    # совпадали — и группа помечалась как «идентична» (ложный зелёный).
+    period = _periodKey(origPeriod, cfg["truncatePeriod"])
 
     try:
         # Бинды периода строятся отдельно для каждой стороны: у ведущей и
