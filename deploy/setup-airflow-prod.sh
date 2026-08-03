@@ -329,6 +329,11 @@ done
 
 echo "== 2. Каталоги и права =="
 mkdir -p "$BARE" "$SRC" "$ROOT/bin"
+# Пустой каталог плагинов. В старом AIRFLOW_HOME лежит копия кода времён MODE
+# (plugins/Functions, plugins/Src) — новому коду плагины не нужны вообще, а эти
+# модули ломаются об импорт и сыпят «Broken plugin». Старую папку не трогаем:
+# при --rollback переменная исчезает и прод снова видит её как раньше.
+mkdir -p "$ROOT/plugins"
 chgrp -R "$GROUP" "$BARE" "$SRC"
 chmod -R 2775 "$BARE" "$SRC"           # setgid: новые файлы наследуют группу
 
@@ -427,6 +432,9 @@ AIRFLOW__CORE__DAGS_FOLDER=$SRC/dags
 AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=True
 # Примеры airflow в проде не нужны (в старом airflow.cfg они включены).
 AIRFLOW__CORE__LOAD_EXAMPLES=False
+# Плагины: пустой каталог. Код приезжает через PYTHONPATH, а в старом
+# plugins/ лежит его копия времён MODE — она только сыплет «Broken plugin».
+AIRFLOW__CORE__PLUGINS_FOLDER=$ROOT/plugins
 ENV
 chown "$RUNAS":"$GROUP" "$ENVFILE"; chmod 640 "$ENVFILE"
 echo "  ok"

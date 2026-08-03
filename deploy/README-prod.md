@@ -304,6 +304,14 @@ bash deploy/deploy-prod.sh                  # прод <- origin/test, с под
   SIGTERM. Код это переживает: необработанные записи журнала остаются с
   `isetl = 0` и уедут следующим запуском (ничего не паркуется как ошибка). Но
   тяжёлые окна (ночные заливы, `Medree_prdisp`) деплоем лучше не задевать.
+- **Старый `plugins/` в AIRFLOW_HOME.** В `/opt/airflow/airflow/plugins` лежит
+  копия кода времён `MODE` (`Functions/`, `Src/`). Airflow грузит плагины из
+  `$AIRFLOW_HOME/plugins`, и эти модули ломаются об импорт — в логах сыпется
+  `Broken plugin: cannot import name 'MODE' from 'Src.fullPath'`. Новому коду
+  плагины не нужны (всё приезжает через `PYTHONPATH`), поэтому EnvironmentFile
+  переводит `AIRFLOW__CORE__PLUGINS_FOLDER` на пустой `/opt/airflow-prod/plugins`.
+  Старую папку не трогаем — при `--rollback` переменная исчезает и прод снова
+  видит её как раньше.
 - **`.env` не в git.** При checkout он не затирается (untracked), но и не
   приезжает — на новом сервере его надо создать руками.
 - **Прод пушит не каждый.** Bare-репо прода в группе `etlprod` (devel +
