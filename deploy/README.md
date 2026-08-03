@@ -182,6 +182,11 @@ chgrp etldev /opt/jupyter && chmod g+x /opt/jupyter     # подставь ре�
 результат в UI. Изредка падает на `VACUUM FULL` (эксклюзивный лок vs heartbeat),
 но это приемлемо ради контроля из интерфейса.
 
-## Прод (позже)
-Тот же механизм для ветки `prod` и существующего `/opt/airflow/airflow` добавим
-на финальном шаге, когда новая версия будет проверена.
+## Прод
+Тот же механизм для ветки `prod` и существующего `/opt/airflow/airflow` —
+`deploy/setup-airflow-prod.sh` + `deploy/deploy-prod.sh`. Порядок работ,
+подготовка боевых БД и откат — в **[README-prod.md](README-prod.md)**.
+
+Коротко: прод остаётся в своём `AIRFLOW_HOME` и своей metadata-базе, новый код
+раскладывается в `/opt/airflow-prod/prod-src`, а переключение на него —
+systemd drop-in к существующим юнитам (`--cutover` / `--rollback`).
