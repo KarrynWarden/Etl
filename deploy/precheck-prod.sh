@@ -165,6 +165,41 @@ for u in "${UNITS[@]}"; do
 done
 
 echo
+echo "=== 1b. Процессы airflow: все ли под своими юнитами ==="
+# Второй scheduler, запущенный мимо systemd, не перезапускается вместе с юнитом
+# и продолжает работать со старым окружением: переключение выглядит успешным,
+# а UI и планирование остаются прежними. Два планировщика на одной metadata —
+# ещё и дублирующиеся запуски задач.
+mapfile -t apids < <(pgrep -f 'bin/airflow (scheduler|webserver)$|bin/airflow (scheduler|webserver) ' 2>/dev/null || true)
+if [[ ${#apids[@]} -eq 0 ]]; then
+    warn "не нашёл процессов airflow scheduler/webserver"
+else
+    declare -A unitPids=()
+    for p in "${apids[@]}"; do
+        [[ -r /proc/$p/cgroup ]] || continue
+        punit=$(grep -oE '[A-Za-z0-9_@.\-]+\.service' "/proc/$p/cgroup" 2>/dev/null | tail -1)
+        cmd=$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | cut -c1-60)
+        started=$(ps -o lstart= -p "$p" 2>/dev/null | sed 's/^ *//')
+        if [[ -z $punit ]]; then
+            bad "PID $p вне systemd: $cmd (запущен $started)"
+        else
+            known=0
+            for u in "${UNITS[@]}"; do [[ $punit == "$(unitFull "$u")" ]] && known=1; done
+            if [[ $known -eq 1 ]]; then
+                unitPids[$punit]="${unitPids[$punit]:-} $p"
+            elif [[ $punit == *airflow-test* ]]; then
+                echo "       PID $p — тестовый airflow ($punit), это нормально"
+            else
+                bad "PID $p принадлежит чужому юниту $punit: $cmd"
+            fi
+        fi
+    done
+    for u in "${!unitPids[@]}"; do
+        ok "$u:${unitPids[$u]}"
+    done
+fi
+
+echo
 echo "=== 2. Код и реквизиты ==="
 if [[ -d $SRC/dags ]]; then
     ok "код разложен: $(ls "$SRC/dags"/*.py 2>/dev/null | wc -l) файлов дагов в $SRC/dags"
