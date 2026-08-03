@@ -75,8 +75,14 @@ detectProdVar() {
 
 detectProdHome() { detectProdVar AIRFLOW_HOME; }
 
-# airflow со СТАРЫМ окружением прода (то, что работает сейчас)
-airflowOld() { sudo -u "$RUNAS" env AIRFLOW_HOME="$PROD_HOME" "$VENV/bin/airflow" "$@"; }
+# airflow со СТАРЫМ окружением прода (то, что работает сейчас).
+# AIRFLOW_CONFIG обязателен, если он есть у прода: без него airflow не найдёт
+# конфиг, молча создаст новый рядом и уйдёт в sqlite вместо боевой базы —
+# и весь отчёт ниже будет про пустую чужую БД.
+airflowOld() {
+    sudo -u "$RUNAS" env AIRFLOW_HOME="$PROD_HOME" \
+        ${PROD_CONFIG:+AIRFLOW_CONFIG="$PROD_CONFIG"} "$VENV/bin/airflow" "$@"
+}
 # airflow с НОВЫМ окружением (папка дагов = prod-src/dags)
 airflowNew() { sudo -u "$RUNAS" env $(grep -v '^#' "$ENVFILE" | xargs) "$VENV/bin/airflow" "$@"; }
 

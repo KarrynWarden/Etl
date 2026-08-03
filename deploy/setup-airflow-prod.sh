@@ -147,6 +147,14 @@ airflowProd() {
     sudo -u "$RUNAS" env $(grep -v '^#' "$ENVFILE" | xargs) "$VENV/bin/airflow" "$@"
 }
 
+# Выполнить airflow CLI в СТАРОМ окружении прода (metadata прода, старые даги).
+# AIRFLOW_CONFIG обязателен, если он есть у прода: без него airflow не найдёт
+# конфиг, молча создаст новый рядом и уйдёт в sqlite вместо боевой базы.
+airflowOld() {
+    sudo -u "$RUNAS" env AIRFLOW_HOME="$PROD_HOME" \
+        ${PROD_CONFIG:+AIRFLOW_CONFIG="$PROD_CONFIG"} "$VENV/bin/airflow" "$@"
+}
+
 case "$MODE" in
 --status)
     showStatus
@@ -302,12 +310,18 @@ mkdir -p "$BARE" "$SRC" "$ROOT/bin"
 chgrp -R "$GROUP" "$BARE" "$SRC"
 chmod -R 2775 "$BARE" "$SRC"           # setgid: новые файлы наследуют группу
 
-# DeleteDag ищет логи как <папка дагов>/../logs. После переключения это
-# $SRC/logs, а реальные логи airflow лежат в $PROD_HOME/logs — связываем.
-# ('logs' в .gitignore, поэтому checkout симлинк не тронет.)
-if [[ ! -e $SRC/logs ]]; then
-    ln -s "$PROD_HOME/logs" "$SRC/logs"
-    echo "  $SRC/logs -> $PROD_HOME/logs"
+# DeleteDag ищет логи как <папка дагов>/../logs, то есть после переключения —
+# в $SRC/logs. Связываем с настоящим каталогом логов прода: берём его из
+# airflow.cfg (base_log_folder), а не из AIRFLOW_HOME — дом и конфиг могут
+# лежать в разных местах. ('logs' в .gitignore, checkout симлинк не тронет.)
+LOGDIR=$(awk -F'=' '/^[[:space:]]*base_log_folder/{sub(/^[^=]*=[[:space:]]*/,"");print;exit}' "$CFG")
+[[ -z ${LOGDIR:-} ]] && LOGDIR=$(dirname "$CFG")/logs
+if [[ -L $SRC/logs && $(readlink "$SRC/logs") != "$LOGDIR" ]]; then
+    ln -sfn "$LOGDIR" "$SRC/logs"
+    echo "  $SRC/logs перенацелен -> $LOGDIR"
+elif [[ ! -e $SRC/logs ]]; then
+    ln -s "$LOGDIR" "$SRC/logs"
+    echo "  $SRC/logs -> $LOGDIR"
 fi
 
 echo "== 3. Wrapper для проверки DAG'ов =="
@@ -416,14 +430,11 @@ echo "  ok"
 echo "== 9. Пул $ETL_POOL_NAME ($ETL_POOL_SLOTS слотов) в metadata прода =="
 # Код держит ETL-замок на весь пул (Functions/_dagHelpers.ETL_POOL_SLOTS).
 # Если пула нет или он меньше — аудит-замок не наберёт слоты и повиснет.
-if sudo -u "$RUNAS" env AIRFLOW_HOME="$PROD_HOME" "$VENV/bin/airflow" \
-     pools get "$ETL_POOL_NAME" >/dev/null 2>&1; then
+if airflowOld pools get "$ETL_POOL_NAME" >/dev/null 2>&1; then
     echo "  пул уже есть — проверь размер (должно быть >= $ETL_POOL_SLOTS):"
-    sudo -u "$RUNAS" env AIRFLOW_HOME="$PROD_HOME" "$VENV/bin/airflow" \
-        pools get "$ETL_POOL_NAME" | sed 's/^/    /'
+    airflowOld pools get "$ETL_POOL_NAME" | sed 's/^/    /'
 else
-    sudo -u "$RUNAS" env AIRFLOW_HOME="$PROD_HOME" "$VENV/bin/airflow" \
-        pools set "$ETL_POOL_NAME" "$ETL_POOL_SLOTS" "ETL: перенос данных" || \
+    airflowOld pools set "$ETL_POOL_NAME" "$ETL_POOL_SLOTS" "ETL: перенос данных" || \
         echo "  !! не смог создать пул — заведи руками в UI (Admin -> Pools)"
 fi
 
