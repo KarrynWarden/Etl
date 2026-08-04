@@ -132,8 +132,9 @@ def audit_trigger_name(table, db="Orcl"):
 
 # Общая функция аудитных триггеров Postgres — ровно та, что уже развёрнута в
 # БД (метка таблицы приходит аргументом TG_ARGV[0], поэтому функция одна на все
-# справочники).
-AUDIT_FUNC_POST = "tr_etl_table_iud_func"
+# справочники). Схема указана явно: без неё CREATE OR REPLACE создал бы КОПИЮ
+# функции в первой схеме search_path, и триггеры смотрели бы на разные функции.
+AUDIT_FUNC_POST = "public.tr_etl_table_iud_func"
 
 
 def needs_trigger(mode):

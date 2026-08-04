@@ -2325,10 +2325,15 @@ def _sp_ui():
         return tables[0] if tables else ""
 
     def _audit_dependence():
-        return (atr_dep.value.strip() or dependence.value.strip()
-                or T.sp_dependence({}, SP.sp_key(
-                    line.value.strip() or B.bare(tm.value.strip()),
-                    dbm.value, dbs.value)))
+        """Метка, по которой даг справочников найдёт линию в etl_jobs."""
+        typed = atr_dep.value.strip() or dependence.value.strip()
+        if typed:
+            return typed
+        label = line.value.strip() or B.bare(tm.value.strip())
+        if not label:
+            return ""
+        # то же правило, что и в даге: SPEINDEX1 -> SPEINDEX
+        return T.sp_dependence({"master_label": label}, "")
 
     def _audit_ctx():
         tbl = atr_table.value.strip() or _audit_table_default()
