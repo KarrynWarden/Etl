@@ -285,9 +285,12 @@ def checkLine(rep, seg, key, cfg):
     rep.line(OK if ok and not empty else (WARN if ok else BAD),
              f"{prefix} ведомая {cfg['tableNameSlave']}", note)
 
-    # 3. триггер журнала на ведущей (режимы iud/section_compare им живут)
+    # 3. триггер журнала на ведущей (им живут режимы, читающие etl_log_iud_row).
+    #    Линию на своём SELECT пропускаем: ведущая там — не обязательно та
+    #    таблица, что в конфиге (подробный разбор — на вкладке «Триггеры»).
     mode = cfg.get("mode", "iud")
-    if mode in ("iud", "section_compare", "delete_insert") and not cfg.get("selectSql"):
+    if (mode in ("iud", "section_compare_with_iud", "delete_insert")
+            and not cfg.get("selectSql")):
         has, names = _hasTrigger(seg, dbMaster, cfg["tableNameMaster"])
         if has is None:
             rep.line(WARN, f"{prefix} триггер на {cfg['tableNameMaster']}",

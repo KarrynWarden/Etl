@@ -71,12 +71,23 @@ _MODE_HELP_HTML = """
 который сам ставит <code>isokaudit=4</code> (так работает Medree_prdisp).</p>
 
 <p style='margin:10px 0 4px'><b><code>section_compare</code></b> — срез со
-сравнением (mocheck, medree).<br>
+сравнением (medree).<br>
 Сравнивает пары <code>(period, MAX(lastupdate))</code> на ведущей и ведомой,
-добавляет группы из <code>etl_log_iud_row</code> и с <code>isokaudit=4</code>;
-каждую расходящуюся группу перезаливает целиком.<br>
+добавляет группы с <code>isokaudit=4</code>; каждую расходящуюся группу
+перезаливает целиком. Журнал <code>etl_log_iud_row</code> НЕ читает —
+<b>триггер этому режиму не нужен</b>.<br>
 <i>Когда:</i> данные меняются пачками задним числом, и надёжнее сверять срез,
 чем ловить каждое событие. <i>Дорого:</i> сканирует источник.</p>
+
+<p style='margin:10px 0 4px'><b><code>section_compare_with_iud</code></b> — то же
+плюс журнал.<br>
+Всё как в <code>section_compare</code>, но к группам добавляются ещё и сигналы
+из <code>etl_log_iud_row</code>: линия реагирует на изменение сразу, не дожидаясь
+расхождения срезов. <i>Требует:</i> триггер на ведущей.<br>
+<i>Когда:</i> триггер на ведущей есть и хочется быстрой реакции. Нет триггера —
+берите обычный <code>section_compare</code>: он не будет требовать того, чего
+нет (раньше это был один режим, и линии вроде medree_cons получали замечание о
+триггере, который им не нужен).</p>
 
 <p style='margin:10px 0 4px'><b><code>delete_insert</code></b> — событийный, но
 «один id = несколько строк» (expmed).<br>
@@ -383,6 +394,13 @@ _STATUS_WORD = {"ok": "в порядке", "warn": "замечания", "error"
                 "skip": "не требуется"}
 
 
+def _col_text(col):
+    """Колонка для показа: имя либо выражение, предположенное по своему SELECT."""
+    if isinstance(col, dict):
+        return col.get("expr") or "+".join(str(v) for v in col.values() if v)
+    return str(col)
+
+
 def _trigger_report_text(results, db_reports):
     """Текстовый отчёт проверки триггеров (для зоны вывода)."""
     lines = []
@@ -392,9 +410,11 @@ def _trigger_report_text(results, db_reports):
         for m in rep["messages"]:
             lines.append("    " + m)
     for r in results:
+        kind = {"audit": " · аудитный", "iud": " · журнальный"}.get(r.get("check"), "")
         lines.append("")
         lines.append(f"{_STATUS_ICON.get(r['status'], '')} {r['key']} "
-                     f"[{r['db']} · {r['mode']}] ведущая {r['table_master'] or '—'} "
+                     f"[{r['db']} · {r['mode']}{kind}] "
+                     f"ведущая {r['table_master'] or '—'} "
                      f"→ tablename '{r['tablename']}': {_STATUS_WORD.get(r['status'])}")
         if r.get("found"):
             lines.append("    найдено: " + ", ".join(r["found"]))
@@ -405,13 +425,18 @@ def _trigger_report_text(results, db_reports):
     return "\n".join(lines)
 
 
-def _trigger_controls(W, out, ctx_fn, save_option=True, mode_note_fn=None, extra=()):
+def _trigger_controls(W, out, ctx_fn, save_option=True, mode_note_fn=None,
+                      extra=(), kind="iud"):
     """Блок «Триггер на ведущей»: показать DDL, проверить в БД, создать/обновить.
 
-    Триггер — вторая половина линии: без него режимы по журналу
-    (`iud`, `delete_insert`) не видят изменений и молча ничего не переносят.
-    Раньше его приходилось делать отдельно, руками по шаблону — поэтому блок
-    висит прямо в форме сборки, рядом с кнопками создания линии.
+    Триггер — вторая половина линии, и он бывает двух видов (kind):
+
+      'iud'   — журнальный: пишет события в etl_log_iud_row. Без него режимы по
+                журналу (`iud`, `delete_insert`, `section_compare_with_iud`) не
+                видят изменений и молча ничего не переносят;
+      'audit' — аудитный: ставит etl_jobs.isokaudit = 0. Это единственный
+                сигнал для дага справочников — без него справочник не
+                перенесётся никогда.
 
     ctx_fn() -> dict(db, table, tablename, period_column, pk_columns, cred,
                      mode, key). Если данных ещё нет — бросает RuntimeError с
@@ -420,9 +445,13 @@ def _trigger_controls(W, out, ctx_fn, save_option=True, mode_note_fn=None, extra
     Возвращает dict: box (виджет), ddl_text() (текст DDL или None — если
     сохранять не просили/собрать не удалось), refresh().
     """
+    audit = kind == "audit"
     info = W.HTML()
     note = W.HTML()
-    journal = W.Text(description="Журнал", placeholder="по умолчанию — как читает ETL",
+    journal = W.Text(description=("Задания" if audit else "Журнал"),
+                     placeholder=("по умолчанию — etl_jobs, как читает даг"
+                                  if audit else
+                                  "по умолчанию — как читает ETL"),
                      layout=W.Layout(width="420px"),
                      style={"description_width": "70px"})
     chk_save = W.Checkbox(
@@ -445,9 +474,14 @@ def _trigger_controls(W, out, ctx_fn, save_option=True, mode_note_fn=None, extra
     def _build():
         """(ddl, ctx) — бросает исключение с понятным текстом."""
         ctx = ctx_fn()
-        ddl = T.build_trigger(ctx["db"], ctx["table"], ctx["tablename"],
-                              ctx.get("period_column"), ctx.get("pk_columns") or [],
-                              journal.value.strip() or None)
+        if audit:
+            ddl = T.build_audit_trigger(ctx["db"], ctx["table"], ctx["tablename"],
+                                        journal.value.strip() or None)
+        else:
+            ddl = T.build_trigger(ctx["db"], ctx["table"], ctx["tablename"],
+                                  ctx.get("period_column"),
+                                  ctx.get("pk_columns") or [],
+                                  journal.value.strip() or None)
         return ddl, ctx
 
     def refresh(_=None):
@@ -458,7 +492,15 @@ def _trigger_controls(W, out, ctx_fn, save_option=True, mode_note_fn=None, extra
             info.value = ("<span style='color:#888'>DDL появится, когда будут "
                           f"известны ведущая, имя линии и PK: {_esc(str(e))}</span>")
             return
-        pk = ", ".join(ctx.get("pk_columns") or []) or "—"
+        if audit:
+            info.value = (
+                f"триггер <code>{_esc(ddl['name'])}</code> на "
+                f"<code>{_esc(ctx['table'])}</code> [{ctx['db']}] → "
+                f"<code>{_esc(ddl['jobs'])}.isokaudit = 0</code> для "
+                f"<code>tablename = '{_esc(ctx['tablename'])}'</code>"
+                + (f", функция <code>{_esc(ddl['func'])}</code>" if ddl["func"] else ""))
+            return
+        pk = ", ".join(_col_text(c) for c in (ctx.get("pk_columns") or [])) or "—"
         info.value = (
             f"триггер <code>{_esc(ddl['name'])}</code> на <code>{_esc(ctx['table'])}</code> "
             f"[{ctx['db']}] → журнал <code>{_esc(ddl['journal'])}</code>, "
@@ -490,18 +532,23 @@ def _trigger_controls(W, out, ctx_fn, save_option=True, mode_note_fn=None, extra
         with out:
             out.clear_output()
             display(HTML(_spinner_html("Смотрю триггер в БД — подождите…")))
-        target = {"key": ctx.get("key") or ctx["tablename"], "kind": "etl",
+        target = {"key": ctx.get("key") or ctx["tablename"],
+                  "kind": "sp:regular" if audit else "etl",
                   "db_master": ctx["db"], "table_master": ctx["table"],
+                  "tables": [ctx["table"]],
                   "tablename": ctx["tablename"], "mode": ctx.get("mode", "iud"),
+                  "check": "audit" if audit else "iud",
                   "period_column": ctx.get("period_column"),
                   "pk_columns": ctx.get("pk_columns") or [],
+                  "select_sql": ctx.get("select_sql"), "guess": ctx.get("guess"),
                   # проверяем по запросу пользователя даже в режимах, которым
                   # журнал не нужен: он сам решил посмотреть, что там стоит
                   "needs": True, "note": None}
         try:
             results, db_reports = T.check_targets(
                 [target], creds={ctx["db"]: ctx.get("cred", "MAIN")},
-                journals={ctx["db"]: journal.value.strip() or None})
+                journals={ctx["db"]: None if audit
+                          else (journal.value.strip() or None)})
         except Exception as e:
             with out:
                 out.clear_output(); print(f"Проверка не удалась: {type(e).__name__}: {e}")
@@ -510,7 +557,7 @@ def _trigger_controls(W, out, ctx_fn, save_option=True, mode_note_fn=None, extra
             out.clear_output()
             print(_trigger_report_text(results, db_reports))
             if results and results[0]["status"] in ("missing", "error"):
-                if not T.needs_trigger(ctx.get("mode", "iud")):
+                if not audit and not T.needs_trigger(ctx.get("mode", "iud")):
                     print(f"\nПри этом режим {ctx['mode']} журнал не читает — "
                           f"триггер этой линии не требуется, проверка показана "
                           f"как есть.")
@@ -592,10 +639,16 @@ def _trigger_controls(W, out, ctx_fn, save_option=True, mode_note_fn=None, extra
         except Exception:
             return None
 
-    children = [W.HTML("<b>Триггер на ведущей</b> — вторая половина линии: "
-                       "события в <code>etl_log_iud_row</code> пишет он, "
-                       "без него режимы по журналу молча ничего не переносят."),
-                note, info] + list(extra) + [journal]
+    head = (W.HTML("<b>Аудитный триггер справочника</b> — единственный сигнал "
+                   "«справочник изменился»: он ставит "
+                   "<code>etl_jobs.isokaudit = 0</code>, а даг "
+                   "<code>SpEtlNew</code> берёт работу только оттуда. Нет "
+                   "триггера — справочник не переносится, и ошибки нигде нет.")
+            if audit else
+            W.HTML("<b>Триггер на ведущей</b> — вторая половина линии: "
+                   "события в <code>etl_log_iud_row</code> пишет он, "
+                   "без него режимы по журналу молча ничего не переносят."))
+    children = [head, note, info] + list(extra) + [journal]
     if save_option:
         children.append(chk_save)
     children += [W.HBox([btn_show, btn_check, btn_make]), confirm]
@@ -695,6 +748,8 @@ def _complex_ui():
     state = {"master_cols": [], "slave_cols": [], "rows": [],
              "period_m_w": None, "period_s_w": None,
              "struct_master_rel": None, "struct_slave_rel": None,
+             # разбор своего SELECT для триггера (кнопка «Предположить по SQL»)
+             "guess": None,
              "tags_auto": True, "_tags_guard": False, "_opts_guard": False}
 
     # ── режим работы ──
@@ -785,9 +840,65 @@ def _complex_ui():
     dag = W.Text(description="dag_id", placeholder="по умолч. авто (см. ниже)",
                  layout=W.Layout(width="380px"), style={"description_width": "110px"})
     dag_preview = W.HTML("")
-    mode = W.Dropdown(description="mode", value="iud",
-                      options=["iud", "section", "section_compare", "delete_insert",
-                               "query_section"],
+
+    # ── свой даг или общий (составной) ──
+    # Одна ведущая-запрос часто кормит несколько линий (mocheck: MEDCHECK,
+    # EXPMED, PODCHECK, TFOUTSCHET, TFINSCHET из общего MOCHECK.sql). Раньше
+    # конструктор всегда писал СВОЙ даг на линию, и «сложить их в один даг»
+    # можно было только руками — отсюда и просьба уметь объединять линии.
+    _NEW_GROUP = "➕ новый составной даг…"
+    dag_kind = W.ToggleButtons(
+        options=[("Свой даг на линию", "own"), ("В составной даг", "group")],
+        value="own", style={"button_width": "190px"})
+    group_pick = W.Dropdown(description="Составной даг", options=[],
+                            layout=W.Layout(width="420px"),
+                            style={"description_width": "120px"})
+    group_new = W.Text(description="Имя нового", placeholder="напр. MocheckOrclPost2",
+                       layout=W.Layout(width="420px"),
+                       style={"description_width": "120px"})
+    group_help = W.HTML(
+        "<span style='color:#888'>Составной даг — один файл на несколько линий: "
+        "по задаче на линию, общее расписание и теги. Так собирают линии одного "
+        "источника, чтобы не гонять один и тот же запрос несколькими дагами "
+        "параллельно. Линия дописывается в список дага; расписание и теги у "
+        "существующего дага <b>не меняются</b> (они общие на все его линии). "
+        "Даги, написанные руками (<code>MocheckOrclPost</code>, "
+        "<code>MedreeOrclPost</code>), конструктор не переписывает — для них он "
+        "покажет строку, которую нужно вписать самому.</span>")
+    group_box = W.VBox([group_help, group_pick, group_new],
+                       layout=W.Layout(display="none"))
+
+    def _refresh_group_list(_=None):
+        """Список составных дагов: свои (переписываем) и чужие (только подсказка)."""
+        cur = group_pick.value
+        opts = []
+        for name, (_path, parsed) in sorted(B.list_group_dags().items()):
+            label = name if parsed else f"{name} (написан руками)"
+            opts.append((label, name))
+        opts.append((_NEW_GROUP, _NEW_GROUP))
+        group_pick.options = opts
+        vals = [v for _l, v in opts]
+        group_pick.value = cur if cur in vals else vals[0]
+
+    def _group_id():
+        """Имя составного дага для сборки ('' — линия со своим дагом)."""
+        if dag_kind.value != "group":
+            return ""
+        if group_pick.value == _NEW_GROUP:
+            return group_new.value.strip()
+        return group_pick.value or ""
+
+    def _on_dag_kind(_=None):
+        group = dag_kind.value == "group"
+        group_box.layout.display = "" if group else "none"
+        dag.layout.display = "none" if group else ""
+        if group:
+            _refresh_group_list()
+        group_new.layout.display = ("" if group and group_pick.value == _NEW_GROUP
+                                    else "none")
+    dag_kind.observe(_on_dag_kind, names="value")
+    group_pick.observe(lambda _c: _on_dag_kind(), names="value")
+    mode = W.Dropdown(description="mode", value="iud", options=list(T.ALL_MODES),
                       layout=W.Layout(width="280px"), style={"description_width": "110px"})
     mode_info_btn, mode_info_box = _help_toggle(W, _MODE_HELP_HTML)
     doc = W.Text(description="Комментарий", placeholder="_doc: краткое описание линии",
@@ -943,11 +1054,11 @@ def _complex_ui():
     hide_unmapped = W.Checkbox(description="Скрывать непривязанные", value=False,
                                indent=False)
     # ── ручное добавление колонок ──
-    btn_add_mrow = W.Button(description="➕ колонка ведущей", icon="plus",
+    btn_add_mrow = W.Button(description="➕ колонка ведущей",
                             layout=W.Layout(width="220px"))
     new_scol = W.Text(placeholder="колонка ведомой", layout=W.Layout(width="180px"))
     new_scol_type = W.Text(placeholder="её тип", layout=W.Layout(width="140px"))
-    btn_add_scol = W.Button(description="➕ колонка ведомой", icon="plus",
+    btn_add_scol = W.Button(description="➕ колонка ведомой",
                             layout=W.Layout(width="200px"))
     manual_help = W.HTML(
         "<span style='color:#888'>Колонки можно править руками: имя и тип ведущей — "
@@ -983,6 +1094,30 @@ def _complex_ui():
         ln = (line.value.strip()
               or B.to_db_case(B.bare(tm.value.strip()), dbm.value)) \
             if tm.value.strip() or line.value.strip() else ""
+        gid = _group_id()
+        if dag_kind.value == "group":
+            if not gid:
+                dag_preview.value = ("<span style='color:#c62828'>впиши имя нового "
+                                     "составного дага</span>")
+                return
+            parsed = B.list_group_dags().get(gid)
+            if parsed and parsed[1] is None:
+                dag_preview.value = (
+                    "<span style='color:#8a6d3b'>даг <code>" + _esc(gid) +
+                    "</code> написан руками — конструктор его не переписывает. "
+                    "Впиши линию в его список сам: <code>(" + _esc(repr(ln)) +
+                    f", '{dbm.value}', '{dbs.value}')</code></span>")
+            elif parsed:
+                names = ", ".join(l for l, _m, _s in parsed[1]["lines"]) or "пусто"
+                dag_preview.value = (
+                    f"<span style='color:#888'>линия будет добавлена в даг "
+                    f"<code>{_esc(gid)}</code> (сейчас в нём: {_esc(names)}); "
+                    f"расписание и теги останутся его собственные</span>")
+            else:
+                dag_preview.value = (f"<span style='color:#888'>будет создан "
+                                     f"составной даг <code>{_esc(gid)}</code> с "
+                                     f"этой линией; расписание и теги — из формы</span>")
+            return
         if dag.value.strip():
             dag_preview.value = (f"<span style='color:#888'>dag_id (задан вручную): "
                                  f"<code>{dag.value.strip()}</code></span>")
@@ -993,7 +1128,7 @@ def _complex_ui():
         else:
             dag_preview.value = ("<span style='color:#888'>dag_id появится, когда "
                                  "заполнишь ведущую/имя линии</span>")
-    for w in (tm, line, dag, dbm, dbs):
+    for w in (tm, line, dag, dbm, dbs, dag_kind, group_pick, group_new):
         w.observe(_update_dag_preview, names="value")
     _update_dag_preview()
 
@@ -1239,6 +1374,7 @@ def _complex_ui():
             "db_master": dbm.value, "db_slave": dbs.value,
             "line_name": line.value.strip() or None,
             "dag_id": dag.value.strip() or None,
+            "group_dag_id": _group_id() or None,
             "mode": mode.value,
             "master_cols": _collect_master_cols(), "slave_cols": state["slave_cols"],
             "pairs": _collect_pairs(),
@@ -1275,6 +1411,60 @@ def _complex_ui():
                 or (B.to_db_case(B.bare(tm.value.strip()), dbm.value)
                     if tm.value.strip() else ""))
 
+    # «Предположить по SQL». Линия на своём SELECT описана ПСЕВДОНИМАМИ запроса:
+    # в конфиге period=createdate и PK=idrw, а в ведущей этих колонок нет
+    # (в MOCHECK.sql createdate у TFINSCHET — это dschet, а idrw у PODCHECK — id).
+    # Кнопка разбирает запрос и подставляет в триггер настоящие колонки.
+    guess_info = W.HTML()
+    btn_guess = W.Button(description="🔎 Предположить по SQL",
+                         layout=W.Layout(width="230px"))
+    btn_guess_off = W.Button(description="Забыть предположение",
+                             layout=W.Layout(width="200px"))
+    guess_box = W.VBox([W.HBox([btn_guess, btn_guess_off]), guess_info],
+                       layout=W.Layout(display="none"))
+
+    def _guess_visible(_=None):
+        has_sql = bool(f_sql.value.strip())
+        guess_box.layout.display = "" if has_sql else "none"
+        if not has_sql and state.get("guess"):
+            state["guess"] = None
+            guess_info.value = ""
+
+    def _do_guess(_=None):
+        state["guess"] = None
+        table = tm.value.strip()
+        sql = f_sql.value.strip()
+        if not (table and sql):
+            guess_info.value = ("<span style='color:#c62828'>нужны ведущая "
+                                "таблица и текст «SQL ведущей».</span>")
+            return
+        pk = [r["name"].value.strip() for r in state["rows"]
+              if r["pk"].value and r["name"].value.strip()]
+        period = state["period_m_w"]["value"]() if state["period_m_w"] else None
+        g = T.guess_line_columns(sql, table, period, pk,
+                                 f_filter.value.strip() or None)
+        notes = "".join(f"<div style='color:#8a6d3b'>· {_esc(n)}</div>"
+                        for n in g.get("notes") or [])
+        if not g.get("ok"):
+            guess_info.value = ("<span style='color:#c62828'>по запросу ничего "
+                                "определить не удалось — впиши колонки ведущей "
+                                "руками (или ставь триггер сам).</span>" + notes)
+            trg["refresh"]()
+            return
+        state["guess"] = g
+        guess_info.value = (
+            f"<span style='color:#2e7d32'>предположено по запросу: "
+            f"<b>{_esc(T.guess_columns_text(g))}</b></span> — DDL и проверка ниже "
+            f"уже по этим колонкам. Сверь глазами: разбор запроса приблизительный."
+            + notes)
+        trg["refresh"]()
+
+    def _drop_guess(_=None):
+        state["guess"] = None
+        guess_info.value = ("<span style='color:#888'>предположение сброшено — "
+                            "триггер собирается по колонкам формы.</span>")
+        trg["refresh"]()
+
     def _trigger_ctx():
         ln = _line_name()
         if not ln:
@@ -1285,11 +1475,22 @@ def _complex_ui():
               if r["pk"].value and r["name"].value.strip()]
         if not pk:
             raise RuntimeError("не отмечен PK в таблице колонок")
+        period = (state["period_m_w"]["value"]() if state["period_m_w"] else None)
+        guess = state.get("guess")
+        if guess and guess.get("ok"):
+            period = guess.get("period") or period
+            pk = guess.get("pk") or pk
         return {"db": dbm.value, "table": tm.value.strip(), "tablename": ln,
-                "period_column": (state["period_m_w"]["value"]()
-                                  if state["period_m_w"] else None),
+                "period_column": period,
                 "pk_columns": pk, "cred": user_m_get(), "mode": mode.value,
-                "key": f"{ln}{dbm.value}{dbs.value}"}
+                "key": f"{ln}{dbm.value}{dbs.value}",
+                # Проверке важно знать про кастомный источник: по псевдонимам
+                # запроса тело триггера сверять нельзя. Передаём НАЗВАНИЕ
+                # источника, а не текст запроса — оно попадает в отчёт.
+                "select_sql": (("queries/customQueries/"
+                                f"{f_sql_name.value.strip() or _line_name()}.sql")
+                               if f_sql.value.strip() else None),
+                "guess": guess}
 
     def _trigger_mode_note():
         if T.needs_trigger(mode.value):
@@ -1307,7 +1508,12 @@ def _complex_ui():
                 "линии не нужен, галочка сохранения снята автоматически.</span>")
 
     trg = _trigger_controls(W, out, _trigger_ctx, save_option=True,
-                            mode_note_fn=_trigger_mode_note)
+                            mode_note_fn=_trigger_mode_note,
+                            extra=(guess_box,))
+    btn_guess.on_click(_do_guess)
+    btn_guess_off.on_click(_drop_guess)
+    f_sql.observe(lambda _c: _guess_visible(), names="value")
+    _guess_visible()
 
     def _current_mapping():
         """Текущее состояние формы: {master: slave|None}, набор PK и {master: тип}
@@ -1435,6 +1641,14 @@ def _complex_ui():
             dbs.value = data["db_slave"]
             line.value = data["line_name"]
             dag.value = data["dag_id"]
+            # линия могла жить в составном даге — восстановить выбор
+            gid = data.get("group_dag_id")
+            dag_kind.value = "group" if gid else "own"
+            if gid:
+                _refresh_group_list()
+                if gid in [v for _l, v in group_pick.options]:
+                    group_pick.value = gid
+            _on_dag_kind()
             mode.value = data["mode"] if data["mode"] in mode.options else "iud"
             doc.value = data["doc"] or ""
             retry.value = data["retry_mode"] if data["retry_mode"] in ("frequent", "rare") \
@@ -1464,6 +1678,7 @@ def _complex_ui():
             f_sql.value = data["select_sql_text"] or ""
             f_sql_name.value = (os.path.splitext(os.path.basename(data["select_sql"]))[0]
                                 if data.get("select_sql") else "")
+            state["guess"] = None       # предположение — от прежней линии
             f_periods.value = data.get("periods_sql_text") or ""
 
             state["master_cols"], state["slave_cols"] = data["master_cols"], data["slave_cols"]
@@ -1516,8 +1731,13 @@ def _complex_ui():
         if not state["rows"]:
             raise RuntimeError("Сначала сними структуры («Снять структуры из БД») или загрузи линию.")
         files = B.build_all(_build_spec())
+        # Составной даг перезаписывается всегда: новая линия дописывается в его
+        # список — это не «затирание чужого файла», ради которого стоит запрет.
+        gid = _group_id()
+        force = {f"dags/{gid}.py"} if gid else ()
         # в режиме правки перезаписываем существующие файлы намеренно
-        return B.write_files(files, overwrite=(work_mode.value == "edit"))
+        return B.write_files(files, overwrite=(work_mode.value == "edit"),
+                             force=force)
 
     def on_make(_):
         try:
@@ -1665,7 +1885,7 @@ def _complex_ui():
     build_area = W.VBox([
         W.HBox([tm, ts]), W.HBox([btn_case, case_hint]),
         W.HBox([dbm, dbs]), W.HBox([user_m_box, user_s_box]),
-        W.HBox([line, dag]), dag_preview,
+        W.HBox([line, dag]), dag_kind, group_box, dag_preview,
         W.HBox([mode, mode_info_btn, retry]), mode_info_box, doc,
         W.HTML("<b>Расписание и ретраи</b>"), sched_kind, sched_inputs, sched_help,
         W.HTML("<b>Теги</b> (несколько). Новый тег впиши прямо в поле ниже и нажми "
@@ -1687,10 +1907,11 @@ def _complex_ui():
 
     _refresh_default_tags()   # проставить 3 тега по умолчанию
     _on_mode()                # спрятать «SQL периодов» вне query_section
+    _on_dag_kind()            # спрятать блок составного дага
     _on_work_mode()           # выставить видимость по текущему режиму
 
     return W.VBox([
-        W.HTML("<h3>Сложный ETL (свой даг на линию)</h3>"),
+        W.HTML("<h3>Сложный ETL (свой даг или общий на несколько линий)</h3>"),
         work_mode, edit_box, archive_box, W.HTML("<hr>"),
         build_area, W.HTML("<hr>"), out,
     ])
@@ -1763,6 +1984,22 @@ def _sp_ui():
         move_pick.options = SP.list_sp_lines(kind.value)
         other = "разовый" if kind.value == "regular" else "регулярный"
         btn_move.description = f"→ Перевести в {other}"
+
+    def _refresh_sp_edit_list():
+        """Список линий для правки — ТОЛЬКО включённые.
+
+        Отключённую (disabled) править незачем: даг её всё равно пропускает,
+        и правка ничего не изменит, пока линию не включат обратно (вкладка
+        «Вкл/выкл таблицу»). Раньше здесь стоял list_sp_lines(), поэтому
+        отключённые линии висели в списке наравне с работающими.
+        Текущий выбор сохраняем — иначе Dropdown при каждой перезаписи
+        options сбрасывается на первый вариант.
+        """
+        cur = edit_pick.value
+        opts = SP.list_active_sp_lines(kind.value)
+        edit_pick.options = opts
+        if cur in opts:
+            edit_pick.value = cur
 
     # ── шапка-форма ──
     tm = W.Text(description="Ведущая", placeholder="SPMKB  или  KOKNAEV.SPMKB",
@@ -1850,10 +2087,10 @@ def _sp_ui():
     map_box = W.VBox([], layout=W.Layout(max_height="420px", overflow="auto",
                                          border="1px solid #ddd", padding="4px"))
     # ── ручное добавление/удаление колонок ──
-    btn_add_mrow = W.Button(description="➕ колонка ведущей", icon="plus",
+    btn_add_mrow = W.Button(description="➕ колонка ведущей",
                             layout=W.Layout(width="220px"))
     new_scol = W.Text(placeholder="колонка ведомой", layout=W.Layout(width="200px"))
-    btn_add_scol = W.Button(description="➕ колонка ведомой", icon="plus",
+    btn_add_scol = W.Button(description="➕ колонка ведомой",
                             layout=W.Layout(width="200px"))
     manual_help = W.HTML(
         "<span style='color:#888'>Строки можно править руками: имя (или выражение) "
@@ -2057,13 +2294,69 @@ def _sp_ui():
         return ("<span style='color:#888'>Перенос справочника/разовый — "
                 "<b>полная перезаливка</b> (DELETE ведомой + INSERT всех строк), "
                 "журнал <code>etl_log_iud_row</code> он не читает: <b>для самого "
-                "справочника триггер не нужен</b>. Ставь его, если эта же таблица "
-                "участвует в сложной линии — тогда <code>tablename</code> должен "
-                "совпадать с её <code>tableNameEtlJobs</code>.</span>")
+                "справочника журнальный триггер не нужен</b> (ему нужен аудитный — "
+                "блок ниже). Ставь этот, если та же таблица участвует в сложной "
+                "линии — тогда <code>tablename</code> должен совпадать с её "
+                "<code>tableNameEtlJobs</code>.</span>")
 
     trg = _trigger_controls(W, out, _trigger_ctx, save_option=False,
                             mode_note_fn=_trigger_mode_note,
                             extra=(trg_table, trg_name_in, trg_pk, trg_period))
+
+    # ── блок «Аудитный триггер справочника» ──
+    # Вот он справочнику как раз НУЖЕН: даг SpEtlNew берёт работу из
+    # etl_jobs (isokaudit = 0), а ноль туда ставит только триггер на ведущей.
+    # Без него справочник молча не переносится — ошибки нигде не появится.
+    atr_table = W.Text(description="Таблица", placeholder="по умолчанию — ведущая",
+                       layout=W.Layout(width="420px"),
+                       style={"description_width": "90px"})
+    atr_dep = W.Text(description="Зависимость",
+                     placeholder="по умолчанию — «Зависимость» линии / метка ведущей",
+                     layout=W.Layout(width="420px"),
+                     style={"description_width": "90px"})
+
+    def _audit_table_default():
+        """Таблица, на которой должен стоять аудитный триггер (или '')."""
+        if src_mode.value == "table":
+            return tm.value.strip()
+        tables = T.sp_master_tables({"src_mode": "custom",
+                                     "select_sql_text": f_sql.value,
+                                     "master_table": tm.value.strip()})
+        return tables[0] if tables else ""
+
+    def _audit_dependence():
+        return (atr_dep.value.strip() or dependence.value.strip()
+                or T.sp_dependence({}, SP.sp_key(
+                    line.value.strip() or B.bare(tm.value.strip()),
+                    dbm.value, dbs.value)))
+
+    def _audit_ctx():
+        tbl = atr_table.value.strip() or _audit_table_default()
+        if not tbl:
+            raise RuntimeError(
+                "не понятно, на какой таблице ставить триггер: заполни ведущую "
+                "(или впиши таблицу руками — при своём SELECT её не всегда "
+                "видно из запроса)")
+        dep = _audit_dependence()
+        if not dep:
+            raise RuntimeError("не задана зависимость (метка в etl_jobs)")
+        return {"db": dbm.value, "table": tbl, "tablename": dep,
+                "cred": user_m_get(), "mode": "sp",
+                "key": SP.sp_key(line.value.strip() or B.bare(tm.value.strip()),
+                                 dbm.value, dbs.value)}
+
+    def _audit_note():
+        if kind.value == "once":
+            return ("<span style='color:#888'>Разовый перенос запускают руками — "
+                    "аудитный триггер ему не нужен. Блок оставлен на случай, если "
+                    "линию переведут в регулярную.</span>")
+        return ("<span style='color:#8a6d3b'>Регулярный справочник переносится "
+                "ТОЛЬКО по метке <code>etl_jobs.isokaudit = 0</code>. Нет "
+                "триггера — нет переносов, и в логах всё «хорошо».</span>")
+
+    atrg = _trigger_controls(W, out, _audit_ctx, save_option=False,
+                             mode_note_fn=_audit_note, kind="audit",
+                             extra=(atr_table, atr_dep))
 
     # ── снять колонки ──
     def on_snap(_):
@@ -2204,7 +2497,7 @@ def _sp_ui():
         validate = SP.SP_KIND_CONFIG[kind.value]
         written = B.write_files(files, overwrite=(work_mode.value == "edit"),
                                 validate=validate)
-        edit_pick.options = SP.list_sp_lines(kind.value)
+        _refresh_sp_edit_list()
         return written
 
     def on_make(_):
@@ -2277,7 +2570,7 @@ def _sp_ui():
                 _log("Выбери включённую линию."); return
             SP.set_sp_disabled(kind.value, key, True)
             _refresh_toggle_lists()
-            edit_pick.options = SP.list_sp_lines(kind.value)
+            _refresh_sp_edit_list()
             _log(f"Линия «{key}» отключена (disabled=true): регулярный даг её пропустит. "
                  "Вступит в силу после деплоя. Включить обратно — тут же.")
         except Exception as e:
@@ -2290,7 +2583,7 @@ def _sp_ui():
                 _log("Выбери отключённую линию."); return
             SP.set_sp_disabled(kind.value, key, False)
             _refresh_toggle_lists()
-            edit_pick.options = SP.list_sp_lines(kind.value)
+            _refresh_sp_edit_list()
             _log(f"Линия «{key}» снова включена. Вступит в силу после деплоя.")
         except Exception as e:
             _log(f"Ошибка включения: {type(e).__name__}: {e}")
@@ -2303,7 +2596,7 @@ def _sp_ui():
             to_kind = "once" if kind.value == "regular" else "regular"
             SP.move_sp_line(key, kind.value, to_kind)
             _refresh_toggle_lists()
-            edit_pick.options = SP.list_sp_lines(kind.value)
+            _refresh_sp_edit_list()
             other = "разовый" if to_kind == "once" else "регулярный"
             _log(f"Линия «{key}» переведена в «{other}». Файлы изменены локально — "
                  "выложи деплоем/пушем. (SQL остались на месте.)")
@@ -2355,7 +2648,7 @@ def _sp_ui():
         return SP.delete_sp_line(kind.value, key)
 
     def _after_sp_delete():
-        edit_pick.options = SP.list_sp_lines(kind.value)
+        _refresh_sp_edit_list()
         _refresh_toggle_lists()
 
     sp_del_pick, sp_del_btn, sp_del_confirm, sp_del_refresh = _delete_controls(
@@ -2381,7 +2674,7 @@ def _sp_ui():
         btn_make.description = ("Сохранить изменения" if m == "edit"
                                 else "Создать файлы")
         if m == "edit":
-            edit_pick.options = SP.list_sp_lines(kind.value)
+            _refresh_sp_edit_list()
         elif m == "toggle":
             _refresh_toggle_lists()
             sp_del_refresh()
@@ -2392,7 +2685,7 @@ def _sp_ui():
         dependence.layout.display = "" if kind.value == "regular" else "none"
         once_mode_box.layout.display = "" if kind.value == "once" else "none"
         if work_mode.value == "edit":
-            edit_pick.options = SP.list_sp_lines(kind.value)
+            _refresh_sp_edit_list()
         elif work_mode.value == "toggle":
             _refresh_toggle_lists()
             sp_del_refresh()
@@ -2412,20 +2705,25 @@ def _sp_ui():
         W.HBox([map_title, hide_unmapped]), map_head, map_box,
         manual_help,
         W.HBox([btn_add_mrow, W.HTML("&nbsp;&nbsp;"), new_scol, btn_add_scol]),
-        W.HTML("<hr>"), trg["box"],
+        W.HTML("<hr>"), atrg["box"],
+        trg["box"],
         W.HTML("<hr>"), commit_hint, commit_msg,
         W.HBox([btn_prev, btn_make, btn_push_only, btn_pub]),
         pub_confirm, push_only_confirm,
     ])
 
-    for _w in (tm, line, dbm, dbs, src_mode):
-        _w.observe(lambda _c: trg["refresh"](), names="value")
+    def _refresh_triggers(_=None):
+        trg["refresh"]()
+        atrg["refresh"]()
+
+    for _w in (tm, line, dbm, dbs, src_mode, dependence, kind):
+        _w.observe(_refresh_triggers, names="value")
 
     _on_src_mode()
     _on_kind()
     _on_mode()
     _update_key_preview()
-    trg["refresh"]()
+    _refresh_triggers()
 
     return W.VBox([
         W.HTML("<h3>Справочники и разовый перенос (delete + insert)</h3>"),
@@ -2439,10 +2737,21 @@ _TRIGGERS_HELP_HTML = """
 <b>Что проверяет кнопка «Проверить»</b>
 
 <p style='margin:8px 0 4px'>Линия собрана в репозитории, а половина её работы
-живёт в БД: события в <code>etl_log_iud_row</code> пишет ТРИГГЕР на ведущей.
-Если его нет, режимы <code>iud</code> и <code>delete_insert</code> честно
-отчитываются пропуском (⬜) и не переносят ничего — по логам это выглядит как
-«всё хорошо». Проверка ходит в БД и смотрит:</p>
+живёт в БД — в триггере на ведущей. Триггера ДВА РАЗНЫХ ВИДА, и проверяются они
+по-разному:</p>
+
+<ul style='margin:4px 0 4px 18px'>
+<li><b>журнальный</b> (сложные линии, режимы <code>iud</code>,
+<code>delete_insert</code>, <code>section_compare_with_iud</code>) — пишет
+события в <code>etl_log_iud_row</code>. Нет его — прогон честно отчитывается
+пропуском (⬜) и не переносит ничего;</li>
+<li><b>аудитный</b> (<b>справочники</b>) — ставит
+<code>etl_jobs.isokaudit = 0</code>. Даг <code>SpEtlNew</code> берёт работу
+ТОЛЬКО оттуда, поэтому без триггера справочник не обновится никогда — и в логах
+при этом всё «хорошо».</li>
+</ul>
+
+<p style='margin:8px 0 4px'>Проверка ходит в БД и смотрит:</p>
 
 <ul style='margin:4px 0 4px 18px'>
 <li><b>служебные объекты</b> — журнал <code>etl_log_iud_row</code> (и его
@@ -2450,32 +2759,48 @@ _TRIGGERS_HELP_HTML = """
 последовательность <code>etl_log_iud_row_seq</code> и триггер
 <code>trg_etl_log_iud_row_bi</code> — если он INVALID, ORA-04098 валит любое
 изменение любой ведущей;</li>
-<li><b>есть ли триггер</b> на ведущей таблице линии и пишет ли он в журнал;</li>
-<li><b>tablename</b> — тот ли литерал. Сравнение с <code>etl_jobs.tablename</code>
+<li><b>есть ли триггер</b> на ведущей таблице линии и делает ли он то, что
+нужно её виду;</li>
+<li><b>литерал</b> — тот ли. Сравнение с <code>etl_jobs.tablename</code>
 регистрозависимое: <code>'eindexmo'</code> вместо <code>'EINDEXMO'</code> — это
 молчаливый простой линии, поэтому чужой регистр помечается ошибкой;</li>
+<li><b>строка в etl_jobs</b> (справочники) — UPDATE по несуществующей метке не
+делает ничего, и справочник стоит;</li>
 <li><b>состояние</b> — включён (не DISABLED) и валиден (не INVALID);</li>
 <li><b>полнота</b> — INSERT, UPDATE и DELETE, построчный (FOR EACH ROW);</li>
 <li><b>тело</b> — упоминаются ли колонка периода, колонки PK и
 <code>isetl</code>.</li>
 </ul>
 
+<p style='margin:8px 0 4px'><b>Линия на своём SELECT.</b> Если источник —
+<code>selectSql</code>, то <code>periodColumn</code> и PK в конфиге это
+ПСЕВДОНИМЫ запроса, а не колонки ведущей (в <code>MOCHECK.sql</code>
+<code>createdate</code> у TFINSCHET — это <code>dschet</code>, а
+<code>idrw</code> у PODCHECK — <code>id</code>). Проверка разбирает запрос сама
+и сверяет тело триггера уже с настоящими колонками; не разобрала — честно
+говорит об этом и колонки не проверяет, вместо того чтобы ругаться на
+несуществующие. DDL для такой линии тоже собирается по разбору («Показать
+DDL»), но перед применением его стоит прочитать глазами.</p>
+
 <p style='margin:8px 0 4px'><b>Статусы:</b> ✅ в порядке · ⚠️ замечания (работать
 будет, но проверь) · ❌ ошибка или триггера нет · 🔌 не удалось проверить
 (нет подключения/прав) · ⬜ триггер не требуется.</p>
 
 <p style='margin:8px 0 4px'><b>Кому триггер не нужен.</b> Режимы
-<code>section</code> и <code>query_section</code> журнал не читают (группы даёт
-<code>isokaudit = 4</code> либо свой SQL периодов). Справочники и разовый
-перенос — тем более: они перезаливают ведомую целиком.
-<code>section_compare</code> живёт и без триггера (сравнивает срезы), но с ним
-реагирует на каждое изменение — поэтому его отсутствие здесь замечание, а не
-ошибка.</p>
+<code>section</code>, <code>query_section</code> и <code>section_compare</code>
+журнал не читают (группы даёт сравнение срезов, <code>isokaudit = 4</code> либо
+свой SQL периодов). Разовый перенос запускают руками — ему тоже не нужен.
+А вот регулярному справочнику аудитный триггер нужен обязательно.</p>
+
+<p style='margin:8px 0 4px'><b>Архивные линии не проверяются.</b> Линия с
+флагом <code>disabled</code> или с дагом в <code>dags/_archived/</code> не
+работает вовсе — требовать от неё триггер незачем. Показать такие можно
+галочкой «Показывать архивные».</p>
 
 <p style='margin:8px 0 4px'><b>Создать или поправить триггер</b> — на вкладке
-самой линии («Сложный ETL» / «Справочники»), блок «Триггер на ведущей»: там
-DDL, проверка и кнопка создания. Массовой кнопки «добавить всем» тут пока нет
-намеренно — сперва посмотреть глазами.</p>
+самой линии («Сложный ETL» / «Справочники»), блок «Триггер на ведущей» /
+«Аудитный триггер справочника»: там DDL, проверка и кнопка создания. Массовой
+кнопки «добавить всем» тут пока нет намеренно — сперва посмотреть глазами.</p>
 
 <p style='margin:8px 0 4px'><b>Реквизиты.</b> Рантайм ходит в БД под набором
 <code>MAIN</code> — проверка по умолчанию тоже. Другой набор нужен, если
@@ -2520,9 +2845,12 @@ def _triggers_ui():
                     style={"description_width": "150px"})
     inc_sp = W.Checkbox(value=True, indent=False,
                         description="Показывать справочники и разовый перенос "
-                                    "(им триггер не нужен)")
+                                    "(справочникам нужен аудитный триггер)")
     inc_skip = W.Checkbox(value=False, indent=False,
                           description="Показывать линии, которым триггер не требуется")
+    inc_off = W.Checkbox(value=False, indent=False,
+                         description="Показывать архивные (disabled) линии — "
+                                     "они не работают, триггер им не нужен")
     help_btn, help_box = _help_toggle(W, _TRIGGERS_HELP_HTML)
     btn_check = W.Button(description="Проверить", button_style="primary",
                          icon="search", layout=W.Layout(width="220px"))
@@ -2554,13 +2882,18 @@ def _triggers_ui():
         if r.get("found"):
             details = (f"<div style='color:#888'>найдено: "
                        f"{_esc(', '.join(r['found']))}</div>" + details)
+        # какой именно триггер тут ждут: журнальный или аудитный (справочник)
+        kind = {"audit": "аудитный", "iud": "журнальный"}.get(r.get("check"), "")
+        tag = (f" · <span style='color:#888'>{kind}</span>" if kind else "")
+        if r.get("disabled"):
+            tag += " · <span style='color:#888'>архив</span>"
         return (
             "<tr style='border-bottom:1px solid #eee'>"
             f"<td style='padding:4px 8px;white-space:nowrap'>{icon} "
             f"<b style='color:{color}'>{_esc(_STATUS_WORD.get(r['status'], ''))}</b></td>"
             f"<td style='padding:4px 8px'><code>{_esc(r['key'])}</code></td>"
             f"<td style='padding:4px 8px;white-space:nowrap'>{_esc(r['db'])} · "
-            f"{_esc(r['mode'])}</td>"
+            f"{_esc(r['mode'])}{tag}</td>"
             f"<td style='padding:4px 8px'><code>{_esc(r['table_master'] or '—')}</code></td>"
             f"<td style='padding:4px 8px'><code>{_esc(r['tablename'])}</code></td>"
             f"<td style='padding:4px 8px'>{details or '—'}</td></tr>")
@@ -2613,7 +2946,8 @@ def _triggers_ui():
             out.clear_output()
             display(HTML(_spinner_html("Собираю линии и смотрю триггеры в БД…")))
         try:
-            targets = T.trigger_targets(include_sp=inc_sp.value)
+            targets = T.trigger_targets(include_sp=inc_sp.value,
+                                        include_disabled=inc_off.value)
             state["targets"] = {t["key"]: t for t in targets}
             results, db_reports = T.check_targets(
                 targets,
@@ -2640,19 +2974,42 @@ def _triggers_ui():
             if not t:
                 print("Сначала нажми «Проверить»."); return
             j = {"Orcl": j_orcl.value.strip(), "Post": j_post.value.strip()}
+            audit = t.get("check") == "audit"
+            guess = t.get("guess")
             try:
-                ddl = T.build_trigger(t["db_master"], t["table_master"],
-                                      t["tablename"], t["period_column"],
-                                      t["pk_columns"],
-                                      j.get(t["db_master"]) or None)
+                if audit:
+                    ddl = T.build_audit_trigger(t["db_master"], t["table_master"],
+                                                t["tablename"])
+                else:
+                    period, pk = T.effective_columns(t)
+                    ddl = T.build_trigger(t["db_master"], t["table_master"],
+                                          t["tablename"], period, pk,
+                                          j.get(t["db_master"]) or None)
             except Exception as e:
                 print(f"DDL собрать не удалось: {e}")
+                if t.get("select_sql") and not (guess and guess.get("ok")):
+                    print(f"\nЛиния строится по своему запросу "
+                          f"({t['select_sql']}), и разобрать его не вышло: "
+                          f"в конфиге лежат псевдонимы запроса, а не колонки "
+                          f"ведущей. Собери триггер руками либо впиши колонки "
+                          f"на вкладке линии.")
+                    for n in (guess or {}).get("notes") or []:
+                        print("  ·", n)
                 return
             print("=" * 70)
-            print(f"{key}: DDL триггера ({t['db_master']})")
+            print(f"{key}: DDL {'аудитного' if audit else 'журнального'} триггера "
+                  f"({t['db_master']})")
             print("-" * 70)
+            if guess and guess.get("ok"):
+                print(f"-- Колонки предположены по запросу {t['select_sql']}: "
+                      f"{T.guess_columns_text(guess)}")
+                for n in guess.get("notes") or []:
+                    print("--   ·", n)
+                print("-" * 70)
             print(ddl["text"])
-            print("Выполнить его можно на вкладке линии — блок «Триггер на ведущей».")
+            print("Выполнить его можно на вкладке линии — блок "
+                  + ("«Аудитный триггер справочника»." if audit
+                     else "«Триггер на ведущей»."))
 
     def _on_filter(_=None):
         # перерисовать уже полученный результат, не ходя в БД заново
@@ -2666,11 +3023,14 @@ def _triggers_ui():
     return W.VBox([
         W.HTML("<h3>Триггеры в БД</h3>"),
         W.HTML("<span style='color:#888'>Линия живёт в двух местах: конфиг и даг — "
-               "в репозитории, а события изменений пишет <b>триггер в БД</b>. "
-               "Здесь видно, всё ли для линий и справочников на месте.</span>"),
+               "в репозитории, а сигнал об изменениях даёт <b>триггер в БД</b>. "
+               "У сложных линий он пишет в <code>etl_log_iud_row</code>, у "
+               "справочников — ставит <code>etl_jobs.isokaudit = 0</code>. "
+               "Здесь видно, всё ли на месте (жми ℹ — что именно "
+               "проверяется).</span>"),
         W.HBox([cred_o_box, cred_p_box]),
         W.HBox([j_orcl, j_post]),
-        inc_sp, inc_skip,
+        inc_sp, inc_skip, inc_off,
         W.HBox([btn_check, help_btn]), help_box,
         summary, table, ddl_box, W.HTML("<hr>"), out,
     ])

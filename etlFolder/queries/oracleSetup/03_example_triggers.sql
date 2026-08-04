@@ -1,6 +1,17 @@
 --------------------------------------------------------------------------------
 -- Примеры готовых триггеров на основе шаблона 02_trigger_template.sql.
 --
+-- ВАЖНО ПРО ЛИНИИ НА СВОЁМ SELECT (mocheck и подобные). В конфиге такой линии
+-- periodColumn и PK — это ПСЕВДОНИМЫ ЗАПРОСА, а не колонки ведущей таблицы:
+--   ... dschet createdate ... FROM TFINSCHET   -> в триггере :new.dschet;
+--   ... id            (idrw) ... FROM PODCHECK -> в триггере :new.id;
+--   ... TO_DATE(YEAR||'-01-01','YYYY-MM-DD') createdate ...
+-- Колонок CREATEDATE и IDRW в PODCHECK нет вовсе. Поэтому «колонка периода
+-- CREATEDATE в теле не упоминается» для таких линий — не ошибка триггера, а
+-- следствие того, что имя пришло из запроса. Конструктор (вкладка «Триггеры» и
+-- кнопка «Предположить по SQL») разбирает запрос и подставляет настоящие
+-- колонки сам; руками — смотреть в свой selectSql.
+--
 -- 1) Простая таблица medcheck (поле периода — UPDT, PK — IDRW).
 -- 2) reqprepmo, которая участвует одновременно в двух направлениях
 --    (orcl<->post и post<->post в роли mocheck) — два отдельных триггера
@@ -88,6 +99,10 @@ END;
 -- строки в пределах doctype IN (5,6) и заливает всё, что ведущая отдаёт по
 -- этому idrw сейчас.
 
+-- id берётся из PODCHECK.ID (в MOCHECK.sql именно он подставлен в колонку
+-- idrw), период — из того же выражения, что стоит в запросе за псевдонимом
+-- createdate: TO_DATE(YEAR||'-01-01','YYYY-MM-DD'). Колонок IDRW и CREATEDATE
+-- в PODCHECK нет.
 CREATE OR REPLACE TRIGGER tr_podcheck_after_iud
 AFTER INSERT OR UPDATE OR DELETE ON podcheck
 FOR EACH ROW
@@ -97,19 +112,48 @@ DECLARE
     p_period DATE;
 BEGIN
     IF INSERTING THEN
-        p_id := TO_CHAR(:new.id); p_oper := 'IU'; p_period := :new.accdt;
+        p_id := TO_CHAR(:new.id); p_oper := 'IU';
+        p_period := TO_DATE(:new.year || '-01-01', 'YYYY-MM-DD');
     ELSIF UPDATING THEN
-        p_id := TO_CHAR(:new.id); p_oper := 'IU'; p_period := :new.accdt;
+        p_id := TO_CHAR(:new.id); p_oper := 'IU';
+        p_period := TO_DATE(:new.year || '-01-01', 'YYYY-MM-DD');
         -- Сменился ключ — старую строку тоже надо переработать.
         IF :old.id <> :new.id THEN
             INSERT INTO etl_log_iud_row(tablename, timeoper, oper, period, id, isetl)
-            VALUES ('PODCHECK', systimestamp, 'D', :old.accdt, TO_CHAR(:old.id), 0);
+            VALUES ('PODCHECK', systimestamp, 'D',
+                    TO_DATE(:old.year || '-01-01', 'YYYY-MM-DD'),
+                    TO_CHAR(:old.id), 0);
         END IF;
     ELSIF DELETING THEN
-        p_id := TO_CHAR(:old.id); p_oper := 'D'; p_period := :old.accdt;
+        p_id := TO_CHAR(:old.id); p_oper := 'D';
+        p_period := TO_DATE(:old.year || '-01-01', 'YYYY-MM-DD');
     END IF;
     INSERT INTO etl_log_iud_row(tablename, timeoper, oper, period, id, isetl)
     VALUES ('PODCHECK', systimestamp, p_oper, p_period, p_id, 0);
+END;
+/
+
+-- 5. TFINSCHET (линия TFINSCHET, mocheck doctype=9, режим iud).
+--    Тот же случай «псевдоним запроса != колонка ведущей»: период линии
+--    называется createdate, а в TFINSCHET это dschet (см. MOCHECK.sql:
+--    "... dschet createdate ... FROM TFINSCHET").
+CREATE OR REPLACE TRIGGER tr_tfinschet_after_iud
+AFTER INSERT OR UPDATE OR DELETE ON tfinschet
+FOR EACH ROW
+DECLARE
+    p_id     VARCHAR2(200);
+    p_oper   VARCHAR2(2);
+    p_period DATE;
+BEGIN
+    IF INSERTING THEN
+        p_id := TO_CHAR(:new.idrw); p_oper := 'IU'; p_period := :new.dschet;
+    ELSIF UPDATING THEN
+        p_id := TO_CHAR(:new.idrw); p_oper := 'IU'; p_period := :new.dschet;
+    ELSIF DELETING THEN
+        p_id := TO_CHAR(:old.idrw); p_oper := 'D'; p_period := :old.dschet;
+    END IF;
+    INSERT INTO etl_log_iud_row(tablename, timeoper, oper, period, id, isetl)
+    VALUES ('TFINSCHET', systimestamp, p_oper, p_period, p_id, 0);
 END;
 /
 

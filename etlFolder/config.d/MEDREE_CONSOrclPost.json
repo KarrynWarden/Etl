@@ -1,6 +1,6 @@
 {
   "MEDREE_CONSOrclPost": {
-    "_doc": "oracle->postgres, medree_cons. Mode=section_compare: dcalc выступает как createdate, сравниваются (dcalc, max(lastupdate)) на двух сторонах + сигналы из etl_log_iud_row.",
+    "_doc": "oracle->postgres, medree_cons. Mode=section_compare: dcalc выступает как createdate, сравниваются (dcalc, max(lastupdate)) на двух сторонах плюс группы с isokaudit=4. Журнал etl_log_iud_row этот режим НЕ читает: триггера на medree-таблицах нет (и PK у них нет), поэтому и требовать его не надо — кому нужен журнал, тот берёт section_compare_with_iud.",
     "tableNameMaster": "MEDREE_CONS",
     "tableNameSlave": "medree_cons",
     "structureMaster": "structures/MEDREE_CONS/MEDREE_CONS.json",

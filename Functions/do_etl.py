@@ -556,7 +556,8 @@ def _buildUpsertSql(dbSlave, tableNameSlave, structSlave,
     if _isPost(dbSlave):
         columnsStr = ", ".join(columns)
         valuesStr = ", ".join(["%s"] * len(columns))
-        if mode in ("section", "section_compare", "delete_insert", "query_section"):
+        if mode in ("section", "section_compare", "section_compare_with_iud",
+                    "delete_insert", "query_section"):
             # delete_insert тоже сначала удаляет (по idrw), query_section — по
             # (year, month), поэтому конфликта нет — простой INSERT без ON CONFLICT.
             return insertPostSql.format(
@@ -1755,6 +1756,9 @@ def _diffPeriods(masterRows, slaveRows, truncateLastupdate=False,
 def _processSectionGroup(cfg, ctx, period, idrwBefore):
     """Полная перезаливка группы (createdate=period) с пометкой
     обработанных записей etl_log_iud_row.
+
+    idrwBefore = None — журнал линией не используется (режим section_compare
+    без журнала), помечать в нём нечего.
     """
     cursorMaster = ctx["cursorMaster"]
     conMaster = ctx["conMaster"]
@@ -1790,12 +1794,13 @@ def _processSectionGroup(cfg, ctx, period, idrwBefore):
 
         # 3) пометить обработанными те записи журнала, что существовали
         # на момент старта (новые останутся для следующего запуска)
-        markSql = _pickSql(dbMaster, markPeriodIudPostSql, markPeriodIudOrclSql)
-        cursorMaster.execute(markSql, {
-            "tablename": tableNameEtlJobs,
-            "period": period,
-            "idrwBefore": idrwBefore,
-        })
+        if idrwBefore is not None:
+            markSql = _pickSql(dbMaster, markPeriodIudPostSql, markPeriodIudOrclSql)
+            cursorMaster.execute(markSql, {
+                "tablename": tableNameEtlJobs,
+                "period": period,
+                "idrwBefore": idrwBefore,
+            })
 
         # 4) обновить etl_jobs.last_success_ts
         cursorMaster.execute(
@@ -1841,15 +1846,26 @@ def _processSectionGroup(cfg, ctx, period, idrwBefore):
             conSlave.close()
 
 
-def _runSectionCompare(cfg, ctx, selectSql):
-    """Основной цикл section_compare: собрать группы из 3 источников
-    (master vs slave diff, etl_log_iud_row, isokaudit=4) и обработать.
+def _runSectionCompare(cfg, ctx, selectSql, useIud=False):
+    """Основной цикл section_compare: собрать группы и обработать.
+
+    Источников групп два или три:
+      1. сравнение срезов (period, MAX(lastupdate)) ведущей и ведомой;
+      2. группы с isokaudit=4 в etl_jobs;
+      3. ТОЛЬКО при useIud — сигналы из etl_log_iud_row.
+
+    useIud задаётся режимом линии: `section_compare` журнал не читает вовсе
+    (ему не нужен триггер, и предупреждать о нём не за что), а
+    `section_compare_with_iud` читает и требует триггера. Раньше это был один
+    режим: журнал опрашивали у всех, хотя пишут в него единицы, и линии вроде
+    medree_cons получали замечание о ненужном им триггере.
     """
     dbMaster = cfg["dbMaster"]
     dbSlave = cfg["dbSlave"]
     tableNameEtlJobs = cfg["tableNameEtlJobs"]
 
-    idrwBefore = _maxIudIdrw(ctx["cursorMaster"], dbMaster, tableNameEtlJobs)
+    idrwBefore = (_maxIudIdrw(ctx["cursorMaster"], dbMaster, tableNameEtlJobs)
+                  if useIud else None)
 
     # 1. master vs slave по (createdate, max(lastupdate))
     conSlave = _connect(dbSlave)
@@ -1871,9 +1887,11 @@ def _runSectionCompare(cfg, ctx, selectSql):
     needUpdate = set(_diffPeriods(masterRows, slaveRows,
                                   cfg.get("truncateLastupdate"), truncatePeriod))
 
-    # 2. сигналы из etl_log_iud_row
-    iudPeriods = _selectIudPeriods(ctx["cursorMaster"], dbMaster, tableNameEtlJobs)
-    needUpdate.update(_periodKey(p, truncatePeriod) for p in iudPeriods)
+    # 2. сигналы из etl_log_iud_row (только режим section_compare_with_iud)
+    if useIud:
+        iudPeriods = _selectIudPeriods(ctx["cursorMaster"], dbMaster,
+                                       tableNameEtlJobs)
+        needUpdate.update(_periodKey(p, truncatePeriod) for p in iudPeriods)
 
     # 3. явные группы с isokaudit=4 в etl_jobs
     sqlTpl = _pickSql(dbMaster, periodsIsokAudit4PostSql, periodsIsokAudit4OrclSql)
@@ -2064,14 +2082,16 @@ def _run(cfg):
 
         # 6. Диспатч по режиму
         mode = cfg["mode"]
-        if mode == "section_compare":
+        if mode in ("section_compare", "section_compare_with_iud"):
             # Универсальный режим срезов для mocheck / medree. Ищет группы
             # сравнением master/slave, поэтому ему нужны все периоды источника
             # в etl_jobs — регистрируем полным сканом (как и раньше).
             #_registerNewPeriods(cursorMaster, dbMaster, selectSql,
             #                    tableNameEtlJobs, cfg["periodColumn"])
             #conMaster.commit()
-            _runSectionCompare(cfg, ctx, selectSql)
+            # ...with_iud — тот же режим ПЛЮС журнал (нужен триггер на ведущей).
+            _runSectionCompare(cfg, ctx, selectSql,
+                               useIud=(mode == "section_compare_with_iud"))
             return
 
         # 6a. Массовое обновление (isokaudit = 4) — обрабатывается всегда.
