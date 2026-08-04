@@ -1,89 +1,162 @@
 #!/usr/bin/env bash
 #
-# Выкатить на ПРОД то, что уже отработало на тесте.
+# Выложить на ПРОД то, что отработало на тесте — целиком или по отдельным линиям.
 #
-#   bash deploy/deploy-prod.sh              # прод <- origin/test (по умолчанию)
-#   bash deploy/deploy-prod.sh <ref>        # прод <- конкретный коммит/тег
-#   YES=1 bash deploy/deploy-prod.sh        # без вопроса (для скриптов)
+#   bash deploy/deploy-prod.sh --diff                  посмотреть, чем прод отличается от теста
+#   bash deploy/deploy-prod.sh --line prbsmoPostOrcl   выложить одну линию
+#   bash deploy/deploy-prod.sh --line A --line B       несколько линий разом
+#   bash deploy/deploy-prod.sh --paths <путь> [...]    выложить конкретные файлы
+#   bash deploy/deploy-prod.sh                         выложить ВЕСЬ тест
 #
-# Что делает:
-#   1. проверяет, что рабочая копия чистая и remote прода настроен;
-#   2. показывает, ЧТО именно уедет (список коммитов и файлов) и спрашивает y/n;
-#   3. проверяет сборку конфига (битый json / дубликат ключа линии);
-#   4. переводит локальную ветку prod на выбранный ref БЕЗ merge-коммита
-#      (fast-forward или прямая установка) и ставит тег prod-ГГГГММДД-ЧЧММ —
-#      по нему делается откат кода;
-#   5. пушит ветку и тег в bare-репо прода; post-receive раскладывает код,
-#      проверяет парсинг дагов и (если прод уже переключён) перезапускает его.
+#   FROM=<ref> — что считать «тестом» (по умолчанию origin/test)
+#   YES=1      — без вопроса (для скриптов)
 #
-# Прод НЕ переключается этим скриптом — переключение делается один раз на
-# сервере (setup-airflow-prod.sh --cutover), см. deploy/README-prod.md.
+# Как это устроено. Прод — не «хвост» теста, а СОБРАННОЕ состояние: каждая
+# выкладка это коммит поверх предыдущего прода, дерево которого взято с теста
+# (целиком или только по нужным путям). Поэтому недоделанная работа на тесте
+# на прод не уезжает: пока её не выложили явно, её там просто нет.
+#
+# История прода линейна и своя, push всегда fast-forward, откат — выкладка
+# предыдущего тега prod-*.
+#
+# Точечная выкладка НЕ трогает общий код (Functions/, Src/, Connect/): такие
+# правки едут только полной выкладкой, когда тест проверен целиком. Обойти
+# можно осознанно — FORCE_CODE=1.
 #
 set -euo pipefail
 
 BRANCH=${PROD_BRANCH:-prod}
 REMOTE=${PROD_REMOTE:-prod}        # ssh://devel@airflow/opt/airflow-prod/etl.git
-SOURCE_REF=${1:-origin/test}       # что именно выкатываем
+FROM=${FROM:-origin/test}          # что считаем «тестом»
+CODE_RE='^(Functions|Src|Connect)/'
 
 cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
+ROOT=$PWD
 
-if ! git remote get-url "$REMOTE" >/dev/null 2>&1; then
+mode=full
+lines=()
+paths=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --line)  mode=partial; lines+=("$2"); shift 2 ;;
+        --paths) mode=partial; shift; while [[ $# -gt 0 && $1 != --* ]]; do paths+=("$1"); shift; done ;;
+        --diff)  mode=diff; shift ;;
+        --help|-h) sed -n '2,32p' "$0" | sed 's/^# \?//'; exit 0 ;;
+        *) echo "Не понял аргумент: $1 (см. --help)"; exit 1 ;;
+    esac
+done
+
+git remote get-url "$REMOTE" >/dev/null 2>&1 || {
     echo "Нет remote '$REMOTE'. Добавь:"
     echo "  git remote add $REMOTE ssh://devel@airflow/opt/airflow-prod/etl.git"
     exit 1
-fi
+}
 
-if [[ -n "$(git status --porcelain)" ]]; then
-    echo "Рабочая копия не чистая — на прод выкатывается только зафиксированное."
-    git status --short
-    exit 1
-fi
-
-echo "== что выкатываем =="
-git fetch --quiet origin || echo "  (origin недоступен, беру локальные ссылки)"
+echo "== синхронизация ссылок =="
+git fetch --quiet origin 2>/dev/null || echo "  (origin недоступен, беру локальные ссылки)"
 git fetch --quiet "$REMOTE" "$BRANCH" 2>/dev/null || true
 
-if ! NEW=$(git rev-parse --verify --quiet "$SOURCE_REF^{commit}"); then
-    echo "Не нашёл ref '$SOURCE_REF'."
-    exit 1
-fi
-CUR=$(git rev-parse --verify --quiet "$REMOTE/$BRANCH^{commit}" || true)
+NEW=$(git rev-parse --verify --quiet "$FROM^{commit}") || { echo "Не нашёл ref '$FROM'."; exit 1; }
+BASE=$(git rev-parse --verify --quiet "$REMOTE/$BRANCH^{commit}" || true)
 
-if [[ -z "$CUR" ]]; then
-    echo "На проде ветки '$BRANCH' ещё нет — это первая выкатка."
-    echo "Коммит: $(git log -1 --oneline "$NEW")"
-else
-    if [[ "$CUR" == "$NEW" ]]; then
-        echo "Прод уже на $(git log -1 --oneline "$NEW") — выкатывать нечего."
-        exit 0
+if [[ -z $BASE ]]; then
+    echo "На проде ветки '$BRANCH' ещё нет — это первая выкатка, поедет весь тест."
+    mode=full
+fi
+
+# ─────────────────────────── что отличается ───────────────────────────
+if [[ $mode == diff ]]; then
+    echo
+    echo "== Прод:  $(git log -1 --format='%h %ad %s' --date=short "$BASE") =="
+    echo "== Тест:  $(git log -1 --format='%h %ad %s' --date=short "$NEW") =="
+    echo
+    echo "Файлы, которые на тесте отличаются от прода:"
+    git diff --stat "$BASE" "$NEW" | sed 's/^/  /'
+    echo
+    echo "Только общий код (Functions/Src/Connect):"
+    git diff --name-only "$BASE" "$NEW" | grep -E "$CODE_RE" | sed 's/^/  /' || echo "  (нет отличий)"
+    exit 0
+fi
+
+# ─────────────────────────── сборка выкладки ───────────────────────────
+WT=$(mktemp -d /tmp/etl-prod-XXXXXX)
+cleanup() { git worktree remove --force "$WT" >/dev/null 2>&1 || true; rm -rf "$WT"; }
+trap cleanup EXIT
+
+if [[ $mode == partial ]]; then
+    # 1) в рабочем дереве теста выясняем полный список файлов линий
+    git worktree add --detach --quiet "$WT" "$NEW"
+    if [[ ${#lines[@]} -gt 0 ]]; then
+        echo "== файлы линий: ${lines[*]} =="
+        mapfile -t lineFiles < <(python3 "$ROOT/tools/line_files.py" --root "$WT" "${lines[@]}")
+        paths+=("${lineFiles[@]}")
     fi
-    if ! git merge-base --is-ancestor "$CUR" "$NEW"; then
-        echo "!! $SOURCE_REF НЕ является продолжением того, что на проде."
-        echo "   Разойтись историей с продом нельзя — разберись вручную:"
-        echo "     git log --oneline $REMOTE/$BRANCH ^$SOURCE_REF"
+    [[ ${#paths[@]} -gt 0 ]] || { echo "Нечего выкладывать — не задано ни линий, ни путей."; exit 1; }
+
+    blocked=$(printf '%s\n' "${paths[@]}" | grep -E "$CODE_RE" || true)
+    if [[ -n $blocked && ${FORCE_CODE:-} != 1 ]]; then
+        echo "!! Точечная выкладка задевает общий код:"
+        printf '%s\n' "$blocked" | sed 's/^/     /'
+        echo "   Такие правки едут полной выкладкой (bash deploy/deploy-prod.sh),"
+        echo "   когда тест проверен целиком. Осознанно обойти: FORCE_CODE=1 ..."
         exit 1
     fi
-    echo "Коммиты, которые уедут на прод:"
-    git log --oneline "$CUR..$NEW" | sed 's/^/  /'
-    echo
-    echo "Файлы:"
-    git diff --stat "$CUR" "$NEW" | sed 's/^/  /'
+
+    # 2) переводим дерево на текущее состояние прода и накладываем только эти пути
+    git -C "$WT" checkout --detach --quiet "$BASE"
+    for p in "${paths[@]}"; do
+        if git cat-file -e "$NEW:$p" 2>/dev/null; then
+            git -C "$WT" checkout "$NEW" -- "$p"
+        else
+            git -C "$WT" rm -r --quiet --ignore-unmatch -- "$p"   # на тесте файл удалён
+        fi
+    done
+    title="частичная выкладка"
+    [[ ${#lines[@]} -gt 0 ]] && title="линии: ${lines[*]}"
+else
+    # весь тест: дерево прода становится в точности деревом теста
+    git worktree add --detach --quiet "$WT" "$BASE"
+    git -C "$WT" read-tree -u --reset "$NEW"
+    title="целиком: $FROM"
+fi
+
+if git -C "$WT" diff --cached --quiet && git -C "$WT" diff --quiet; then
+    echo "Прод уже содержит это состояние — выкладывать нечего."
+    exit 0
 fi
 
 echo
-echo "== проверка сборки конфига =="
-python3 tools/regen_config.py config SpTableName SpOnce
+echo "== что уедет на прод ($title) =="
+git -C "$WT" add -A
+git -C "$WT" diff --cached --stat "$BASE" | sed 's/^/  /'
 
-if [[ "${YES:-}" != "1" ]]; then
+echo
+echo "== проверка сборки конфига =="
+python3 "$WT/tools/regen_config.py" config SpTableName SpOnce
+
+if [[ ${YES:-} != 1 ]]; then
     echo
-    read -r -p "Выкатываем на ПРОД? (y/N) " answer
-    [[ "$answer" == "y" || "$answer" == "Y" ]] || { echo "Отменено."; exit 1; }
+    read -r -p "Выкладываем на ПРОД? (y/N) " answer
+    [[ $answer == "y" || $answer == "Y" ]] || { echo "Отменено."; exit 1; }
 fi
 
+msg="Выкладка на прод: $title
+Источник: $FROM $(git log -1 --format=%h "$NEW")"
+git -C "$WT" -c user.name="${GIT_AUTHOR_NAME:-$(git config user.name || echo deploy)}" \
+    -c user.email="${GIT_AUTHOR_EMAIL:-$(git config user.email || echo deploy@local)}" \
+    commit --quiet -m "$msg"
+COMMIT=$(git -C "$WT" rev-parse HEAD)
+
+# Тег с точностью до минуты читается человеком, но две выкладки подряд в одну
+# минуту не редкость (правка -> сразу откат), поэтому добиваем суффиксом.
 TAG="prod-$(date '+%Y%m%d-%H%M')"
-echo "== ветка $BRANCH -> $NEW, тег $TAG =="
-git branch -f "$BRANCH" "$NEW"
-git tag -a "$TAG" "$NEW" -m "Выкатка на прод $(date '+%Y-%m-%d %H:%M')"
+suffix=2
+while git rev-parse --verify --quiet "refs/tags/$TAG" >/dev/null; do
+    TAG="prod-$(date '+%Y%m%d-%H%M')-$suffix"
+    suffix=$((suffix + 1))
+done
+git branch -f "$BRANCH" "$COMMIT"
+git tag -a "$TAG" "$COMMIT" -m "$title"
 
 push_retry() {   # сеть иногда отваливается: 2s, 4s, 8s, 16s
     local delay=2
@@ -98,13 +171,12 @@ push_retry() {   # сеть иногда отваливается: 2s, 4s, 8s, 1
 echo "== push -> $REMOTE/$BRANCH =="
 push_retry "$REMOTE" "$BRANCH"
 push_retry "$REMOTE" "$TAG"
-# Тот же тег в канон (gitea), чтобы история выкаток была видна и там.
 git push origin "$TAG" 2>/dev/null || echo "  (тег в origin не ушёл — не критично)"
 
+PREV_TAG=$(git tag --list 'prod-*' --sort=-creatordate | sed -n 2p)
 echo
-echo "Готово. Что дальше:"
-echo "  - если прод ещё не переключён: sudo bash setup-airflow-prod.sh --cutover на сервере;"
-echo "  - откат кода: bash deploy/deploy-prod.sh <предыдущий тег prod-*>"
-echo "    (тег старше текущего прода — push отобьётся, тогда"
-echo "     git push $REMOTE +$BRANCH явно и осознанно);"
-echo "  - полный откат прода на старую версию: sudo bash setup-airflow-prod.sh --rollback"
+echo "Готово: $TAG"
+echo "  чем прод отличается от теста:  bash deploy/deploy-prod.sh --diff"
+echo "  вернуть прошлую выкладку:     FROM=${PREV_TAG:-<прошлый тег prod-*>} bash deploy/deploy-prod.sh"
+echo "                                (вернёт ВСЁ дерево того тега — новым коммитом, без force)"
+echo "  полный откат на старый airflow: sudo bash setup-airflow-prod.sh --rollback"
