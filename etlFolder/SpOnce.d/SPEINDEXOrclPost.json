@@ -1,8 +1,8 @@
 {
   "SPEINDEXOrclPost": {
     "tableNameSlave": "speindex",
-    "addSql": "queries/sp/SPEINDEX/Add.sql",
-    "selectSql": "queries/sp/SPEINDEX/Select.sql",
+    "addSql": "queries/sp/speindexOrclPost/Add.sql",
+    "selectSql": "queries/sp/speindexOrclPost/Select.sql",
     "srcMode": "custom"
   }
 }
