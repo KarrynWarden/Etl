@@ -32,6 +32,7 @@ etlFolder/
         oracleSetup/           — DDL etl_log_iud_row + шаблон триггера
         postgresSetup/         — доводка таблиц на стороне Postgres (ведомых и ведущих)
         customQueries/         — пользовательские SELECT-источники
+        procedures/            — запросы дагов, которые не возят таблицу, а зовут процедуру
         triggers/              — DDL триггеров линий (копия того, что в БД)
     structures/                — json-описания таблиц
 dags/                          — примеры DAG'ов под все 4 направления + AuditAllTest
@@ -519,6 +520,46 @@ SQL: в DBeaver/JDBC она даёт `ORA-00922`, там серверный вы
 6. `07_eindexmo_prepare.sql` — поле `CREATEDATE` на ведомой и снятие с неё всех
    триггеров (журнал ведётся только на ведущей).
 
+Отдельно, под даг `A61ProceduresScanLogProlong` (см. раздел ниже):
+7. `08_log_eindprolong_prolong.sql` — `GRANT UPDATE` на `LOG_EINDPROLONG` для
+   `etl_user` и снятие триггера журнала изменений `tr_log_eindprolong_after_iud`
+   (переноса этой таблицы больше нет).
+
+## Продление ЭИНДЕКСов: даг вместо процедуры
+
+Линия, где Airflow не возит таблицу, а **разбирает журнал заявок на месте**:
+читает Oracle, вызывает процедуру на Postgres, ответ пишет обратно в Oracle.
+Отдельного конфига в `config.d` у неё нет — это не перенос.
+
+| | Было | Стало |
+|-|------|-------|
+| Журнал заявок | `koknaev.LOG_EINDPROLONG` + копия на PG | только `koknaev.LOG_EINDPROLONG` |
+| Кто возит | даг `LogeindprolongOrclPost` (раз в минуту) | никто, переноса нет |
+| Кто разбирает | `pck_eindexmo.scanlogprolong` на PG (раз в час) | даг `A61ProceduresScanLogProlong` (раз в час) |
+| Что зовётся | `pck_eindexmo.ProlongDestrEindex` внутри процедуры | она же, но из дага, параметрами из Oracle |
+| Куда пишется итог | `log_eindprolong` на PG | `LOG_EINDPROLONG` на Oracle (`dwork`, `status`, `lastupdate`) |
+
+- **Выборка та же, что была курсором процедуры** (`SelectPendingOrcl.sql`): по
+  ключу МО+отдел+подразделение+подподразделение берётся одна, самая свежая по
+  `timeoper` открытая заявка (`dwork is null`), порядок — по `timeoper`. Итог
+  проставляется всем открытым заявкам ключа: продление применяется на текущую
+  дату, поэтому более старые уже неактуальны.
+- **Заявки независимы.** Упавшая получает `status = 'ERR'` и строку в
+  `public.ias_func_errlog` (`idfunc = 286`, как у прежней процедуры), остальные
+  разбираются дальше — это `continue` из блока `EXCEPTION`. Запуск при этом
+  красный и **без авто-ретраев**: повтор нашёл бы пустой журнал (заявки уже
+  закрыты как `ERR`) и перекрасил 🟥 в 🟪, спрятав ошибку.
+- **Задача живёт в пуле `Etl`**, поэтому на время аудита (замок `etl_lock`
+  занимает весь пул) не стартует: процедура правит `public.eindexmo` — ведущую
+  таблицу линии `eindexmo` PG → Oracle.
+- **Права и триггер на Oracle** — `oracleSetup/08_log_eindprolong_prolong.sql`:
+  нужен `UPDATE` на журнал, а триггер `tr_log_eindprolong_after_iud` надо снять,
+  иначе он продолжит копить в `etl_log_iud_row` строки, которые никто не
+  разбирает (даг своими `UPDATE`'ами их ещё и добавит).
+- **Что можно убрать на PG** — памятка в
+  `postgresSetup/02_log_eindprolong_retire.sql`: сама `pck_eindexmo.scanlogprolong`
+  и остановившаяся копия `log_eindprolong`. Обязательным это не является.
+
 ## Установка на PostgreSQL
 
 Запустить из `etlFolder/queries/postgresSetup/`:
@@ -526,6 +567,9 @@ SQL: в DBeaver/JDBC она даёт `ORA-00922`, там серверный вы
    перенос в него `lastupdate::date`, `BEFORE INSERT` триггер на заполнение
    `createdate` и `AFTER INSERT/UPDATE/DELETE` триггер, пишущий `IU`/`D` в
    `etl_user.etl_log_iud_row`.
+2. `02_log_eindprolong_retire.sql` — **не установка, а памятка**: что осталось
+   ненужным после перевода продления ЭИНДЕКСов на даг (см. раздел «Продление
+   ЭИНДЕКСов: даг вместо процедуры»). Выполнять руками и только при желании.
 
 Общая схема для любой ведущей на PG та же, что и на Oracle
 (`oracleSetup/02_trigger_template.sql`), с поправками PL/pgSQL: NEW меняется

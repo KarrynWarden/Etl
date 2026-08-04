@@ -1,7 +1,0 @@
-{
-  "LOG_EINDPROLONGOrclPost": {
-    "tableNameSlave": "log_eindprolong",
-    "structureMaster": "structures/log_eindprolong/LOG_EINDPROLONG.json",
-    "structureSlave": "structures/log_eindprolong/log_eindprolong.json"
-  }
-}
