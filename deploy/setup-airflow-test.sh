@@ -90,9 +90,22 @@ while read oldrev newrev ref; do
     # распаковка работает ДО того, как ссылки обновлены.
     git --git-dir=$BARE archive "\$newrev" | tar -x -C "\$TMP"
     if [ ! -f "\$TMP/deploy/check-dags.sh" ]; then
-        echo "!! В присланном дереве нет deploy/check-dags.sh — проверять нечем."
-        echo "!! Push ОТКЛОНЁН намеренно: гейт падает закрыто."
-        rm -rf "\$TMP"; rc=1; continue
+        # Старое дерево — почти наверняка ОТКАТ на прошлый тег, в котором
+        # полной проверки ещё не было. Отклонять его нельзя: откат обязан
+        # работать всегда, тем более в аварии. Но и пропускать вслепую не
+        # будем — гоняем встроенный минимум, компиляцию python.
+        echo "!! В дереве нет deploy/check-dags.sh (откат на старую версию?)."
+        echo "   Полную проверку прогнать нечем — проверяю только синтаксис."
+        DIRS=""
+        for d in Functions Src Connect dags tools; do
+            [ -d "\$TMP/\$d" ] && DIRS="\$DIRS \$TMP/\$d"
+        done
+        if [ -n "\$DIRS" ] && ! python3 -m compileall -q \$DIRS; then
+            echo "!! Синтаксис не прошёл — push ОТКЛОНЁН."
+            rm -rf "\$TMP"; rc=1; continue
+        fi
+        echo "   синтаксис чист — пропускаю."
+        rm -rf "\$TMP"; continue
     fi
     echo "== проверка присланного кода (\$(git --git-dir=$BARE rev-parse --short "\$newrev")) =="
     if ! REQUIRE_AIRFLOW=1 bash "\$TMP/deploy/check-dags.sh" "\$TMP"; then
