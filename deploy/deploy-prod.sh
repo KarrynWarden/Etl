@@ -184,9 +184,18 @@ git branch -f "$BRANCH" "$COMMIT"
 git tag -a "$TAG" "$COMMIT" -m "$title"
 
 push_retry() {   # сеть иногда отваливается: 2s, 4s, 8s, 16s
-    local delay=2
+    # Повторяем только СЕТЕВЫЕ сбои. Отказ pre-receive через две секунды
+    # повторится слово в слово — это не «не долетело», это «сервер сказал нет».
+    local delay=2 out rc
+    local rejectRe='pre-receive hook declined|remote rejected|\[rejected\]|non-fast-forward|protected branch|hook declined'
     for attempt in 1 2 3 4 5; do
-        if git push "$@"; then return 0; fi
+        out=$(git push "$@" 2>&1); rc=$?
+        printf '%s\n' "$out"
+        [[ $rc -eq 0 ]] && return 0
+        if grep -qE "$rejectRe" <<<"$out"; then
+            echo "!! Сервер ОТКЛОНИЛ push — это не сетевой сбой, повторять нечего."
+            return 1
+        fi
         if [[ $attempt -eq 5 ]]; then echo "!! push не удался после повторов."; return 1; fi
         echo "   не прошло, повтор через ${delay}s..."
         sleep "$delay"; delay=$((delay * 2))

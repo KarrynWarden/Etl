@@ -35,12 +35,21 @@ PROTECTED_RE='(^|/)dags/|(^|/)structures/|(^|/)customQueries/|(^|/)config\.d/|(^
 
 cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 
-# push с повтором при сетевых сбоях: 2s, 4s, 8s, 16s
+# push с повтором при СЕТЕВЫХ сбоях: 2s, 4s, 8s, 16s.
+# Отказ сервера повторять бессмысленно: pre-receive через две секунды ответит
+# ровно то же самое, а человек в это время смотрит на четыре одинаковых портянки
+# с ошибкой и ждёт полминуты. Поэтому вывод ловим и по нему отличаем «сервер
+# сказал нет» от «связь оборвалась».
+REJECT_RE='pre-receive hook declined|remote rejected|\[rejected\]|non-fast-forward|protected branch|hook declined'
 push_retry() {
-    local remote=$1 branch=$2 delay=2
+    local remote=$1 branch=$2 delay=2 out rc
     for attempt in 1 2 3 4 5; do
-        if git push "$remote" "$branch"; then
-            return 0
+        out=$(git push "$remote" "$branch" 2>&1); rc=$?
+        printf '%s\n' "$out"
+        [[ $rc -eq 0 ]] && return 0
+        if grep -qE "$REJECT_RE" <<<"$out"; then
+            echo "!! Сервер ОТКЛОНИЛ push — это не сетевой сбой, повторять нечего."
+            return 1
         fi
         if [[ $attempt -eq 5 ]]; then
             echo "!! push в $remote не удался после повторов."
