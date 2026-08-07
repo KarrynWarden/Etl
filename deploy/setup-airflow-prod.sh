@@ -242,7 +242,8 @@ case "$MODE" in
     fi
 
     echo "== Проверка, что новые даги парсятся с окружением прода =="
-    "$ROOT/bin/check_dags.sh" || { echo "!! Даги не парсятся — переключение отменено."; exit 1; }
+    REQUIRE_AIRFLOW=1 bash "$SRC/deploy/check-dags.sh" "$SRC" \
+        || { echo "!! Даги не парсятся — переключение отменено."; exit 1; }
 
     echo "== drop-in к юнитам прода =="
     for u in "${UNITS[@]}"; do
@@ -351,31 +352,62 @@ elif [[ ! -e $SRC/logs ]]; then
     echo "  $SRC/logs -> $LOGDIR"
 fi
 
-echo "== 3. Wrapper для проверки DAG'ов =="
-cat > "$ROOT/bin/check_dags.sh" <<WRAPPER
-#!/bin/bash
-# Проверка, что даги из нового кода парсятся с окружением прода.
-# \`airflow dags list\` возвращает 0 даже при ошибках импорта, поэтому
-# дополнительно смотрим list-import-errors: строка с *.py = сломанный даг.
-# Запускается от root (см. sudoers), сам airflow — под $RUNAS, как в проде.
-AIRFLOW="sudo -u $RUNAS env \$(grep -v '^#' $ENVFILE | xargs) $VENV/bin/airflow"
-\$AIRFLOW dags list >/dev/null || exit 1
-ERRORS=\$(\$AIRFLOW dags list-import-errors 2>&1 || true)
-if printf '%s\n' "\$ERRORS" | grep -qE '\.py'; then
-    echo "Ошибки импорта DAG'ов:"
-    printf '%s\n' "\$ERRORS"
-    exit 1
-fi
-exit 0
-WRAPPER
-chmod 750 "$ROOT/bin/check_dags.sh"
-chown root:"$GROUP" "$ROOT/bin/check_dags.sh"
-echo "  ok"
+echo "== 3. Проверка DAG'ов =="
+# Своей копии проверки на сервере больше НЕТ — обе стороны зовут один скрипт из
+# репозитория (deploy/check-dags.sh). Раньше здесь и в setup-airflow-test.sh
+# генерились две отдельные обёртки; они разъехались, и 2026-08-07 тест сказал
+# "OK" на коде, который прод не смог распарсить. Окружение скрипт строит себе
+# сам (временный AIRFLOW_HOME, sqlite вместо metadata-базы), каталог дагов
+# передаёт в DagBag явно и sudo ему не нужен.
+rm -f "$ROOT/bin/check_dags.sh"
+echo "  проверка живёт в репозитории: deploy/check-dags.sh"
 
 echo "== 4. bare-репозиторий =="
 [[ -e $BARE/HEAD ]] || git init --bare "$BARE" >/dev/null
 git --git-dir="$BARE" config core.sharedRepository group
 chgrp -R "$GROUP" "$BARE"; chmod -R 2775 "$BARE"
+
+echo "== 4b. pre-receive hook (гейт ДО обновления ссылок) =="
+# Единственный гейт, который реально защищает прод. post-receive проверяет код,
+# который УЖЕ разложен в $SRC/dags — каталог, который scheduler перечитывает
+# сам, без всякого рестарта; «сервисы не перезапущены, прод работает как
+# работал» было неправдой. И его exit code git игнорирует, поэтому
+# deploy-prod.sh печатал «Готово» даже на провалившейся проверке (так 2026-08-07
+# и лёг прод). pre-receive проверяет временную распаковку присланного коммита:
+# провал -> push отклонён, ссылки не двинулись, $SRC не тронут.
+cat > "$BARE/hooks/pre-receive" <<HOOK
+#!/bin/bash
+umask 002
+ZERO=0000000000000000000000000000000000000000
+rc=0
+while read oldrev newrev ref; do
+    branch=\${ref#refs/heads/}
+    [ "\$branch" = "$DEPLOY_BRANCH" ] || continue
+    [ "\$newrev" = "\$ZERO" ] && continue          # удаление ветки — не проверяем
+    TMP=\$(mktemp -d /tmp/etl-precheck-XXXXXX) || { echo "!! mktemp не отработал"; exit 1; }
+    # Объекты присланного коммита ещё в карантине; git находит их по
+    # GIT_OBJECT_DIRECTORY из окружения хука, так что распаковка работает
+    # ДО обновления ссылок.
+    git --git-dir=$BARE archive "\$newrev" | tar -x -C "\$TMP"
+    if [ ! -f "\$TMP/deploy/check-dags.sh" ]; then
+        echo "!! В присланном дереве нет deploy/check-dags.sh — проверять нечем."
+        echo "!! Push ОТКЛОНЁН намеренно: гейт падает закрыто."
+        rm -rf "\$TMP"; rc=1; continue
+    fi
+    echo "== проверка присланного кода (\$(git --git-dir=$BARE rev-parse --short "\$newrev")) =="
+    if ! REQUIRE_AIRFLOW=1 bash "\$TMP/deploy/check-dags.sh" "\$TMP"; then
+        echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        echo "!! Push на ПРОД ОТКЛОНЁН: код не прошёл проверку.        !!"
+        echo "!! На сервер ничего не легло, прод работает как работал. !!"
+        echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        rc=1
+    fi
+    rm -rf "\$TMP"
+done
+exit \$rc
+HOOK
+chmod 2775 "$BARE/hooks/pre-receive"; chgrp "$GROUP" "$BARE/hooks/pre-receive"
+echo "  ok"
 
 echo "== 5. post-receive hook (деплой + рестарт) =="
 cat > "$BARE/hooks/post-receive" <<HOOK
@@ -393,12 +425,17 @@ while read oldrev newrev ref; do
     git --git-dir=$BARE --work-tree=$SRC checkout -f "$DEPLOY_BRANCH"
     python3 "$SRC/tools/regen_config.py" config SpTableName SpOnce >/dev/null 2>&1 || true
 
+    # Страховка, а не гейт: отказ делает pre-receive. Здесь проверяется уже
+    # разложенное дерево — тем же скриптом из репозитория, без sudo.
     echo "== Проверка валидности DAG'ов =="
-    if ! PARSE_LOG=\$(sudo $ROOT/bin/check_dags.sh 2>&1); then
+    if ! PARSE_LOG=\$(REQUIRE_AIRFLOW=1 bash "$SRC/deploy/check-dags.sh" "$SRC" 2>&1); then
         echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
         echo "!! КРИТИЧЕСКАЯ ОШИБКА: новые DAG'и не парсятся!          !!"
         echo "\$PARSE_LOG"
-        echo "!! Сервисы НЕ перезапущены — прод работает как работал.  !!"
+        echo "!! Сервисы НЕ перезапущены — но код УЖЕ в $SRC/dags,  !!"
+        echo "!! а его scheduler перечитывает сам. ОТКАТИТЬ НЕМЕДЛЕННО: !!"
+        echo "!!   FROM=<прошлый тег prod-*> bash deploy/deploy-prod.sh !!"
+        echo "!! Сюда доходят только те, кто обошёл pre-receive.       !!"
         echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
         continue
     fi
@@ -439,12 +476,14 @@ ENV
 chown "$RUNAS":"$GROUP" "$ENVFILE"; chmod 640 "$ENVFILE"
 echo "  ok"
 
-echo "== 7. sudoers: hook рестартит прод и проверяет даги без пароля =="
+echo "== 7. sudoers: hook рестартит прод без пароля =="
+# Строки под check_dags.sh больше нет: проверка сама строит себе окружение
+# (временный AIRFLOW_HOME, sqlite вместо metadata-базы) и работает от того,
+# кто пушит, — повышать права ей незачем.
 SUDO=/etc/sudoers.d/airflow-prod
 SCTL=$(command -v systemctl)
 cat > "$SUDO.tmp" <<SUDOERS
 %$GROUP ALL=(root) NOPASSWD: $SCTL restart ${UNITS[*]}
-%$GROUP ALL=(root) NOPASSWD: $ROOT/bin/check_dags.sh
 SUDOERS
 if visudo -cf "$SUDO.tmp"; then
     mv "$SUDO.tmp" "$SUDO"; chmod 440 "$SUDO"; echo "  ok"

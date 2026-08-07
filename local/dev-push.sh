@@ -155,6 +155,31 @@ if ! git rebase "$SERVER/$BRANCH"; then
     exit 1
 fi
 
+# Гейт ДО пушей: синтаксис, сборка конфига, парсинг DAG'ов (см. tools/check_dags.py).
+# Отдельной командой это не сделано намеренно: проверка, которую надо не забыть
+# запустить, не запускается. Сервер поднимать не нужно — DagBag разбирает файлы
+# как библиотека. Обойти осознанно: SKIP_CHECKS=1 bash local/dev-push.sh
+if [[ "${SKIP_CHECKS:-}" == "1" ]]; then
+    echo "!! ПРОВЕРКА ПРОПУЩЕНА (SKIP_CHECKS=1) — на свой страх."
+else
+    set +e
+    bash "$(git rev-parse --show-toplevel)/deploy/check-dags.sh"
+    checkRc=$?
+    set -e
+    case $checkRc in
+        0) ;;
+        2) echo
+           echo "!! Даги НЕ парсились — нет пакета airflow в доступных интерпретаторах."
+           echo "   Синтаксис и конфиг чисты, но ошибку уровня импорта здесь не поймать."
+           echo "   Поправить: ETL_CHECK_PYTHON=/путь/к/python-с-airflow (см. local/README.md)."
+           read -r -p "   Пушить всё равно? (y/N) " ans || ans=""
+           [[ "$ans" == "y" || "$ans" == "Y" ]] || { echo "Отменено."; exit 1; } ;;
+        *) echo
+           echo "!! Проверка не прошла — push отменён. Почини и запусти снова."
+           exit 1 ;;
+    esac
+fi
+
 echo "== push -> $GITEA/$BRANCH (gitea, канон) =="
 push_retry "$GITEA" "$BRANCH"
 

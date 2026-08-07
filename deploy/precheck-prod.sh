@@ -135,11 +135,15 @@ fi
 
 echo
 echo "=== 1. Подготовка и рубильник ==="
-for d in "$ROOT" "$SRC" "$ROOT/etl.git" "$ROOT/bin"; do
+for d in "$ROOT" "$SRC" "$ROOT/etl.git"; do
     [[ -d $d ]] && ok "каталог $d" || bad "нет каталога $d"
 done
 [[ -f $ENVFILE ]] && ok "EnvironmentFile $ENVFILE" || bad "нет $ENVFILE"
-[[ -x $ROOT/bin/check_dags.sh ]] && ok "$ROOT/bin/check_dags.sh" || bad "нет $ROOT/bin/check_dags.sh"
+# Проверка дагов больше не отдельная копия на сервере, а скрипт из репозитория.
+[[ -f $SRC/deploy/check-dags.sh ]] && ok "$SRC/deploy/check-dags.sh" \
+    || bad "нет $SRC/deploy/check-dags.sh (код ещё не выложен?)"
+[[ -x $ROOT/etl.git/hooks/pre-receive ]] && ok "pre-receive hook (гейт выкладки)" \
+    || bad "нет pre-receive hook — push на прод НЕ проверяется"
 [[ -x $ROOT/etl.git/hooks/post-receive ]] && ok "post-receive hook" || bad "нет post-receive hook"
 
 active=0
@@ -246,7 +250,7 @@ fi
 echo
 echo "=== 3. Парсинг дагов с окружением прода ==="
 if [[ -f $ENVFILE && -d $SRC/dags ]]; then
-    if PARSE=$("$ROOT/bin/check_dags.sh" 2>&1); then
+    if PARSE=$(REQUIRE_AIRFLOW=1 bash "$SRC/deploy/check-dags.sh" "$SRC" 2>&1); then
         ok "все даги нового кода импортируются"
     else
         bad "даги не парсятся — переключение сейчас отбилось бы:"

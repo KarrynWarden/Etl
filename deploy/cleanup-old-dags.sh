@@ -43,7 +43,7 @@ for r in rows:
 ' | grep -v '^$' | sort)
 
 if [[ -z $inCode ]]; then
-    echo "Не смог получить список дагов нового кода — проверь: sudo $ROOT/bin/check_dags.sh"
+    echo "Не смог получить список дагов нового кода — проверь: bash $SRC/deploy/check-dags.sh $SRC"
     exit 1
 fi
 

@@ -134,6 +134,31 @@ echo
 echo "== проверка сборки конфига =="
 python3 "$WT/tools/regen_config.py" config SpTableName SpOnce
 
+# Гейт по тому самому дереву, которое уедет на прод (worktree $WT), а не по
+# рабочей копии: выкладывается origin/test, а под рукой может быть что угодно.
+# Спрашиваем ПОСЛЕ проверки — чтобы «y» нажималось с уже известным вердиктом.
+if [[ "${SKIP_CHECKS:-}" == "1" ]]; then
+    echo
+    echo "!! ПРОВЕРКА ПРОПУЩЕНА (SKIP_CHECKS=1) — на прод, на свой страх."
+else
+    echo
+    set +e
+    bash "$WT/deploy/check-dags.sh" "$WT"
+    checkRc=$?
+    set -e
+    case $checkRc in
+        0) ;;
+        2) echo
+           echo "!! Даги НЕ парсились — нет пакета airflow в доступных интерпретаторах."
+           echo "   На прод это выкладывать вслепую не стоит: серверный pre-receive"
+           echo "   проверит сам, но лучше поймать здесь."
+           echo "   Поправить: ETL_CHECK_PYTHON=/путь/к/python-с-airflow" ;;
+        *) echo
+           echo "!! Проверка не прошла — выкладка на прод отменена."
+           exit 1 ;;
+    esac
+fi
+
 if [[ ${YES:-} != 1 ]]; then
     echo
     read -r -p "Выкладываем на ПРОД? (y/N) " answer

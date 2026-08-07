@@ -45,33 +45,16 @@ chgrp -R "$GROUP" "$BARE" "$SRC"
 chmod -R 2775 "$BARE" "$SRC"           # setgid (2): новые файлы наследуют группу $GROUP
 chown -R "$RUNAS":"$RUNAS" "$AHOME"
 
-echo "== 2b. Wrapper для проверки DAG'ов =="
-mkdir -p "$ROOT/bin"
-cat > "$ROOT/bin/check_dags.sh" <<'WRAPPER'
-#!/bin/bash
-# Проверка валидности DAG'ов: поднимаем окружение и убеждаемся, что ни один DAG
-# не падает при импорте.
-# ВАЖНО: сам по себе `airflow dags list` возвращает 0 даже при ошибках импорта
-# (он просто перечисляет то, что распарсилось), поэтому дополнительно проверяем
-# `dags list-import-errors` — строки с путём *.py означают сломанный DAG.
-set -a
-source /opt/airflow-test/airflow-test.env
-set +a
-AIRFLOW=/opt/airflow/venv/bin/airflow
-# 1) базовая проверка, что CLI и metadata поднимаются
-"$AIRFLOW" dags list >/dev/null || exit 1
-# 2) ошибки импорта DAG'ов -> падаем с ненулевым кодом
-ERRORS=$("$AIRFLOW" dags list-import-errors 2>&1 || true)
-if printf '%s\n' "$ERRORS" | grep -qE '\.py'; then
-    echo "Ошибки импорта DAG'ов:"
-    printf '%s\n' "$ERRORS"
-    exit 1
-fi
-exit 0
-WRAPPER
-chmod 750 "$ROOT/bin/check_dags.sh"
-chown root:"$GROUP" "$ROOT/bin/check_dags.sh"
-echo "  ok"
+echo "== 2b. Проверка DAG'ов =="
+# Своей копии проверки на сервере больше НЕТ. Раньше здесь генерился
+# $ROOT/bin/check_dags.sh, и точно такой же — в setup-airflow-prod.sh; две копии
+# успели разъехаться (разный способ подхватить окружение), из-за чего 2026-08-07
+# тест сказал «OK» на коде, который прод не смог распарсить. Теперь обе стороны
+# зовут ОДИН скрипт из репозитория — deploy/check-dags.sh, — и разойтись им негде.
+# Окружение он строит себе сам (временный AIRFLOW_HOME, sqlite-заглушка вместо
+# metadata-базы) и каталог дагов передаёт в DagBag явно.
+rm -f "$ROOT/bin/check_dags.sh"
+echo "  проверка живёт в репозитории: deploy/check-dags.sh"
 
 echo "== 3. bare-репозиторий =="
 if [[ ! -e "$BARE/HEAD" ]]; then
@@ -83,6 +66,48 @@ fi
 # "unable to create temporary object directory".
 git --git-dir="$BARE" config core.sharedRepository group
 chgrp -R "$GROUP" "$BARE"; chmod -R 2775 "$BARE"
+
+echo "== 3b. pre-receive hook (гейт ДО обновления ссылок) =="
+# Единственный гейт, который реально защищает. post-receive проверяет код,
+# который УЖЕ лежит в $SRC/dags — то есть в каталоге, который читает scheduler:
+# отказ от рестарта ничего не спасает, даги всё равно перечитаются и покраснеют.
+# И его exit code git игнорирует, поэтому dev-push.sh рапортовал «Готово» даже
+# когда проверка падала. pre-receive работает по временной распаковке
+# присланного коммита: провал -> push отклонён, ссылки не двинулись, рабочее
+# дерево не тронуто, а ненулевой код виден клиенту.
+cat > "$BARE/hooks/pre-receive" <<HOOK
+#!/bin/bash
+umask 002
+ZERO=0000000000000000000000000000000000000000
+rc=0
+while read oldrev newrev ref; do
+    branch=\${ref#refs/heads/}
+    [ "\$branch" = "$DEPLOY_BRANCH" ] || continue
+    [ "\$newrev" = "\$ZERO" ] && continue          # удаление ветки — не проверяем
+    TMP=\$(mktemp -d /tmp/etl-precheck-XXXXXX) || { echo "!! mktemp не отработал"; exit 1; }
+    # Объекты присланного коммита лежат в карантине; git видит их по
+    # GIT_OBJECT_DIRECTORY, который выставлен в окружении хука — поэтому
+    # распаковка работает ДО того, как ссылки обновлены.
+    git --git-dir=$BARE archive "\$newrev" | tar -x -C "\$TMP"
+    if [ ! -f "\$TMP/deploy/check-dags.sh" ]; then
+        echo "!! В присланном дереве нет deploy/check-dags.sh — проверять нечем."
+        echo "!! Push ОТКЛОНЁН намеренно: гейт падает закрыто."
+        rm -rf "\$TMP"; rc=1; continue
+    fi
+    echo "== проверка присланного кода (\$(git --git-dir=$BARE rev-parse --short "\$newrev")) =="
+    if ! REQUIRE_AIRFLOW=1 bash "\$TMP/deploy/check-dags.sh" "\$TMP"; then
+        echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        echo "!! Push ОТКЛОНЁН: код не прошёл проверку.                !!"
+        echo "!! На сервер ничего не легло, тест работает как работал. !!"
+        echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        rc=1
+    fi
+    rm -rf "\$TMP"
+done
+exit \$rc
+HOOK
+chmod 2775 "$BARE/hooks/pre-receive"; chgrp "$GROUP" "$BARE/hooks/pre-receive"
+echo "  ok"
 
 echo "== 4. post-receive hook (деплой + рестарт) =="
 cat > "$BARE/hooks/post-receive" <<HOOK
@@ -97,8 +122,11 @@ while read oldrev newrev ref; do
         python3 "$SRC/tools/regen_config.py" config SpTableName SpOnce >/dev/null 2>&1 || true
 
         # === ПРОВЕРКА ВАЛИДНОСТИ DAG'ОВ ===
+        # Страховка, а не гейт: настоящий отказ делает pre-receive. Здесь
+        # проверяется уже разложенное дерево — тем же скриптом из репозитория,
+        # без sudo (окружение он строит себе сам, чужое ему не нужно).
         echo "== Проверка валидности DAG'ов =="
-        if PARSE_LOG=\$(sudo -u "$RUNAS" "$ROOT/bin/check_dags.sh" 2>&1); then
+        if PARSE_LOG=\$(REQUIRE_AIRFLOW=1 bash "$SRC/deploy/check-dags.sh" "$SRC" 2>&1); then
             echo "  OK: Все DAG'и успешно распарсены."
 
             # Если всё хорошо, рестартуем сервисы и обновляем Jupyter
@@ -125,7 +153,11 @@ while read oldrev newrev ref; do
             echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
             echo "\$PARSE_LOG"
             echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-            echo "!! Сервисы НЕ перезапущены, чтобы не ломать рабочую версию. !!"
+            echo "!! Сервисы НЕ перезапущены — но код УЖЕ в $SRC/dags,   !!"
+            echo "!! а это каталог, который scheduler перечитывает сам.    !!"
+            echo "!! Чинить и пушить заново НЕМЕДЛЕННО, либо откатить:     !!"
+            echo "!!   git --git-dir=$BARE --work-tree=$SRC checkout -f <прошлый commit> !!"
+            echo "!! Сюда доходят только те, кто обошёл pre-receive.       !!"
             echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
         fi
         # ==================================
@@ -226,13 +258,13 @@ RestartSec=5
 WantedBy=multi-user.target
 UNIT
 
-echo "== 9. sudoers: hook может рестартить airflow-test и проверять даги без пароля =="
+echo "== 9. sudoers: hook может рестартить airflow-test без пароля =="
+# Строки под check_dags.sh больше нет — см. пояснение в setup-airflow-prod.sh.
 SUDO=/etc/sudoers.d/airflow-test
 SCTL=$(command -v systemctl)
 
 cat > "$SUDO.tmp" <<SUDOERS
 %$GROUP ALL=(root) NOPASSWD: $SCTL restart airflow-test-scheduler airflow-test-webserver
-%$GROUP ALL=($RUNAS) NOPASSWD: $ROOT/bin/check_dags.sh
 SUDOERS
 
 if visudo -cf "$SUDO.tmp"; then
