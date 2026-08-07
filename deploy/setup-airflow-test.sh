@@ -40,10 +40,19 @@ for u in "${MEMBERS[@]}"; do
 done
 
 echo "== 2. Каталоги и права =="
-mkdir -p "$BARE" "$SRC" "$AHOME"
+mkdir -p "$BARE" "$SRC" "$AHOME/logs"
 chgrp -R "$GROUP" "$BARE" "$SRC"
 chmod -R 2775 "$BARE" "$SRC"           # setgid (2): новые файлы наследуют группу $GROUP
-chown -R "$RUNAS":"$RUNAS" "$AHOME"
+# logs/ РЕКУРСИЕЙ НЕ ТРОГАЕМ. AIRFLOW_HOME теста — он же каталог логов
+# (base_log_folder по умолчанию = $AIRFLOW_HOME/logs), даги ходят раз в минуту,
+# и там копятся сотни тысяч файлов. Прежний `chown -R "$AHOME"` на повторном
+# запуске висел минутами, переназначая владельца тому, кто им и так владеет:
+# логи пишет сам airflow от своего пользователя. Всё остальное в AIRFLOW_HOME —
+# единицы файлов (airflow.cfg, webserver_config.py), их и обходим.
+chown "$RUNAS":"$RUNAS" "$AHOME" "$AHOME/logs"
+find "$AHOME" -mindepth 1 -maxdepth 1 ! -name logs \
+     -exec chown -R "$RUNAS":"$RUNAS" {} +
+echo "  ok (logs/ пропущены намеренно — рекурсия по ним занимает минуты)"
 
 echo "== 2b. Проверка DAG'ов =="
 # Своей копии проверки на сервере больше НЕТ. Раньше здесь генерился
