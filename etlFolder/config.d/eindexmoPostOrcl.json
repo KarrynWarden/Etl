@@ -1,5 +1,6 @@
 {
   "eindexmoPostOrcl": {
+    "_doc": "Post→Orcl, ведомая KOKNAEV.EINDEXMO. filterClauseSlave БЕЗ парного filterClause — и это намеренно: разовой заливкой Oracle→Postgres взяли только year >= 2019, поэтому на Oracle лежат доисторические строки, которых на ведущей нет и не будет. Без фильтра аудит сравнивал их с пустотой и красил период. Фильтр стоит только на ведомой ровно потому, что описывает строки, которых на ведущей быть не может; ведущую резать нечем и незачем. Периоды тут — даты создания записей (createdate), а не годы данных: строку за 2017 год могут завести сегодня, поэтому year и createdate независимы.",
     "tableNameMaster": "eindexmo",
     "tableNameSlave": "EINDEXMO",
     "structureMaster": "structures/eindexmo/eindexmo.json",
@@ -7,6 +8,7 @@
     "periodColumn": "createdate",
     "slavePeriodColumn": "CREATEDATE",
     "mode": "iud",
-    "selectSql": "queries/customQueries/eindexmo.sql"
+    "selectSql": "queries/customQueries/eindexmo.sql",
+    "filterClauseSlave": "YEAR >= 2019"
   }
 }

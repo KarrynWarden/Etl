@@ -533,7 +533,7 @@ def _appendFilter(sql, filterClause):
 # ----------------------------------------------------------------------------
 
 def _buildUpsertSql(dbSlave, tableNameSlave, structSlave,
-                    conflictExtra, conflictWhere, filterClauseSlave, mode):
+                    conflictExtra, conflictWhere, mode):
     """Сформировать SQL для записи строки в ведомую таблицу.
 
     Режим section_compare всегда сопровождается DELETE WHERE period = X
@@ -549,6 +549,20 @@ def _buildUpsertSql(dbSlave, tableNameSlave, structSlave,
     ), нужно задать в конфиге conflictWhere = "doctype = 7" — это попадёт
     в ON CONFLICT (...) WHERE <conflictWhere>, чтобы PG нашёл тот самый
     частичный индекс.
+
+    filterClauseSlave сюда НЕ передаётся ни на одной из СУБД — запись идёт
+    строго по первичному ключу. Раньше на Oracle он приклеивался к ON у
+    MERGE, и это давало две ошибки сразу:
+      * ORA-38104, если фильтр стоит по переносимой колонке (eindexmo,
+        "YEAR >= 2019"): Oracle запрещает обновлять колонки из ON, а YEAR
+        есть и в UPDATE SET. Падало на КАЖДОЙ строке, независимо от данных;
+      * строка, которая есть, но под фильтр не подходит, уходила в
+        NOT MATCHED -> INSERT и падала дублем по PK (ORA-00001).
+    Смысл ключа — «какие строки ведомой относятся к линии» при СРАВНЕНИИ
+    (аудит) и УДАЛЕНИИ, а не ограничение записи по PK: совпал PK — это та
+    же логическая строка, и перезаписать её правильно. В postgres-ветке так
+    было всегда (срез там выражается через conflictExtra/conflictWhere),
+    теперь обе СУБД ведут себя одинаково.
     """
     columns = _columnNames(structSlave)
     pkCols = _primaryKeys(structSlave)
@@ -591,9 +605,6 @@ def _buildUpsertSql(dbSlave, tableNameSlave, structSlave,
             pkCondParts.append(f"{name} = {placeholder}")
         else:
             updateParts.append(f"{name} = {placeholder}")
-    fcs = _asAndClause(filterClauseSlave)
-    if fcs:
-        pkCondParts.append(f"({fcs})")
     return upsertOrclSql.format(
         tablename=tableNameSlave,
         primary_cond=" AND ".join(pkCondParts),
@@ -2044,7 +2055,6 @@ def _run(cfg):
                 dbSlave, cfg["tableNameSlave"], structSlave,
                 cfg.get("conflictExtra"),
                 cfg.get("conflictWhere"),
-                cfg.get("filterClauseSlave"),
                 cfg.get("mode"),
             ),
             "deleteByIdSql": _buildDeleteByIdSql(
