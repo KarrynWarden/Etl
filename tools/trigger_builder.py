@@ -820,7 +820,7 @@ def build_audit_trigger(db, table, dependence, jobs=None):
                          "триггеру нечего помечать.")
     jobs = (jobs or JOBS_DEFAULT[db]).strip()
     name = audit_trigger_name(table, db)
-    header = (f"-- Аудитный триггер справочника {dependence} ({db}).\n"
+    header = (f"-- Триггер справочника {dependence} ({db}).\n"
               f"-- Ведущая: {table}; задание: {jobs}.\n"
               f"-- Ставит isokaudit = 0 — это и есть сигнал «перенеси справочник».\n")
     if db == "Orcl":
@@ -1243,7 +1243,7 @@ def sp_dependence(data, key):
 
 
 def sp_master_tables(data):
-    """Таблицы, на которые справочнику имеет смысл ставить аудитный триггер.
+    """Таблицы, на которые справочнику имеет смысл ставить его триггер.
 
     Обычный справочник — своя ведущая. Справочник на своём SELECT — ПЕРВАЯ
     таблица каждой ветки запроса (метка линии таблицей не является). Фрагмент
@@ -1675,7 +1675,7 @@ def _selftest():
     g4 = guess_line_columns(sql, "NOSUCH", "createdate", ["idrw"])
     assert not g4["ok"] and "не нашлось ветки" in " ".join(g4["notes"]), g4
 
-    # 7b) аудитный триггер справочника (etl_jobs.isokaudit = 0)
+    # 7b) триггер справочника (etl_jobs.isokaudit = 0)
     a_orcl = build_audit_trigger("Orcl", "KOKNAEV.CALENDAR", "CALENDAR")
     assert a_orcl["name"] == "tr_calendar_iud", a_orcl["name"]
     assert "koknaev.etl_jobs" in a_orcl["statements"][0]

@@ -24,6 +24,26 @@ from tools import trigger_builder as T  # noqa: E402
 
 _NONE = "— нет —"
 
+# Создавать и обновлять триггеры в БД конструктор НЕ умеет намеренно: боевые
+# объекты заводит администратор БД, чтобы правки шли через одни руки. Всё
+# остальное конструктор по-прежнему делает целиком — показать DDL, предположить
+# колонки по своему SELECT, собрать готовый текст триггера и проверить, что
+# реально стоит в БД. Вернуть кнопку — поставить True: код выполнения DDL цел и
+# рабочий, спрятана только сама кнопка с подтверждением.
+ALLOW_TRIGGER_DDL_EXECUTION = False
+
+# Типы колонок для выпадающего списка в сопоставлении. Не выдуманы — собраны из
+# etlFolder/structures/**/*.json, в порядке частоты; у Oracle и Postgres разные
+# имена И регистр, поэтому список свой на каждую сторону. Тип в json сверяется с
+# information_schema/all_tab_columns дословно, так что писать надо ровно так.
+# Чего в списке нет (редкий тип) — вписывается руками по кнопке ✎.
+_TYPES_BY_DB = {
+    "Orcl": ["NUMBER", "VARCHAR2", "DATE", "CLOB", "CHAR"],
+    "Post": ["numeric", "character varying", "date",
+             "timestamp without time zone", "text", "integer",
+             "smallint", "bigint"],
+}
+
 # Метки расписания -> внутренний вид (kind в dag_builder.build_schedule_expr)
 _SCHED_KINDS = {
     "Интервал: каждые N минут": "interval",
@@ -45,6 +65,83 @@ def _rel(p):
 
 def _esc(s):
     return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+class _TypeField:
+    """Тип колонки: выпадающий список частых типов + ✎ для ручного ввода.
+
+    Снаружи ведёт себя как обычный W.Text — есть .value (чтение и запись),
+    .observe(...) и .layout (рамка вешается на весь блок), поэтому в строке
+    сопоставления подменяется один в один.
+
+    Ручной режим включается САМ, если пришедший из БД тип в списке не значится
+    (редкий тип, константа в своём SELECT) — иначе выпадающий список молча
+    потерял бы значение. Кнопка маленькая и без подписи: случай редкий, место
+    в строке дорогое.
+    """
+
+    def __init__(self, W, db, value="", width="150px"):
+        self._opts = list(_TYPES_BY_DB.get(db) or [])
+        val = str(value or "").strip()
+        manual = bool(val) and val not in self._opts
+        self.dd = W.Dropdown(options=[""] + self._opts,
+                             value=(val if val in self._opts else ""),
+                             layout=W.Layout(width=width))
+        self.txt = W.Text(value=val, placeholder="тип",
+                          layout=W.Layout(width=width))
+        self.btn = W.ToggleButton(
+            value=manual, icon="pencil", tooltip="вписать тип вручную",
+            layout=W.Layout(width="36px"))
+        self.box = W.HBox([self.dd, self.txt, self.btn],
+                          layout=W.Layout(align_items="center"))
+        self._sync()
+        self.btn.observe(self._on_toggle, names="value")
+
+    def _sync(self):
+        manual = self.btn.value
+        self.dd.layout.display = "none" if manual else ""
+        self.txt.layout.display = "" if manual else "none"
+
+    def _on_toggle(self, _change):
+        if self.btn.value:
+            # уходим в ручной ввод — донести выбранное, чтобы не перенабирать
+            self.txt.value = self.dd.value or self.txt.value
+        elif self.txt.value.strip() in self._opts:
+            self.dd.value = self.txt.value.strip()
+        self._sync()
+
+    @property
+    def value(self):
+        return self.txt.value if self.btn.value else self.dd.value
+
+    @value.setter
+    def value(self, v):
+        v = str(v or "").strip()
+        manual = bool(v) and v not in self._opts
+        self.txt.value = v
+        # обнуляем список ДО переключения: иначе _on_toggle подставит в поле
+        # старое значение списка вместо только что заданного
+        self.dd.value = "" if manual else v
+        self.btn.value = manual
+        self._sync()
+
+    @property
+    def layout(self):
+        return self.box.layout
+
+    def set_db(self, db):
+        """Сменить сторону (Orcl/Post) — у них разные имена и регистр типов."""
+        opts = list(_TYPES_BY_DB.get(db) or [])
+        if opts == self._opts:
+            return
+        cur = self.value
+        self._opts = opts
+        self.dd.options = [""] + opts      # сбивает dd.value, поэтому ниже —
+        self.value = cur                   # вернуть выбранное (нет в списке -> ✎)
+
+    def observe(self, handler, names="value"):
+        self.dd.observe(handler, names=names)
+        self.txt.observe(handler, names=names)
 
 
 _MODE_HELP_HTML = """
@@ -434,9 +531,14 @@ def _trigger_controls(W, out, ctx_fn, save_option=True, mode_note_fn=None,
       'iud'   — журнальный: пишет события в etl_log_iud_row. Без него режимы по
                 журналу (`iud`, `delete_insert`, `section_compare_with_iud`) не
                 видят изменений и молча ничего не переносят;
-      'audit' — аудитный: ставит etl_jobs.isokaudit = 0. Это единственный
-                сигнал для дага справочников — без него справочник не
-                перенесётся никогда.
+      'audit' — триггер СПРАВОЧНИКА: ставит etl_jobs.isokaudit = 0. Это
+                единственный сигнал для дага справочников — без него справочник
+                не перенесётся никогда.
+
+    Название 'audit' у второго вида — внутреннее и историческое (по колонке
+    isokaudit). В интерфейсе он называется «Триггер справочника»: к аудиту
+    переноса он отношения не имеет, это ровно механизм переноса справочника,
+    и прежняя подпись «Аудитный триггер» сбивала с толку.
 
     ctx_fn() -> dict(db, table, tablename, period_column, pk_columns, cred,
                      mode, key). Если данных ещё нет — бросает RuntimeError с
@@ -639,7 +741,7 @@ def _trigger_controls(W, out, ctx_fn, save_option=True, mode_note_fn=None,
         except Exception:
             return None
 
-    head = (W.HTML("<b>Аудитный триггер справочника</b> — единственный сигнал "
+    head = (W.HTML("<b>Триггер справочника</b> — единственный сигнал "
                    "«справочник изменился»: он ставит "
                    "<code>etl_jobs.isokaudit = 0</code>, а даг "
                    "<code>SpEtlNew</code> берёт работу только оттуда. Нет "
@@ -651,7 +753,18 @@ def _trigger_controls(W, out, ctx_fn, save_option=True, mode_note_fn=None,
     children = [head, note, info] + list(extra) + [journal]
     if save_option:
         children.append(chk_save)
-    children += [W.HBox([btn_show, btn_check, btn_make]), confirm]
+    if ALLOW_TRIGGER_DDL_EXECUTION:
+        children += [W.HBox([btn_show, btn_check, btn_make]), confirm]
+    else:
+        # Кнопки создания нет: DDL в боевой БД выполняет администратор.
+        # Конструктор отдаёт готовый текст и умеет проверить, что стоит сейчас.
+        children += [
+            W.HBox([btn_show, btn_check]),
+            W.HTML("<span style='color:#888'>Создание и обновление триггера в "
+                   "БД — у <b>администратора БД</b>. Здесь: собрать DDL "
+                   "(«Показать DDL»), отдать его администратору и потом "
+                   "убедиться, что триггер встал («Проверить в БД»).</span>"),
+        ]
     box = W.VBox(children, layout=W.Layout(border="1px solid #17a2b8",
                                            padding="6px", margin="4px 0"))
     return {"box": box, "ddl_text": ddl_text, "refresh": refresh,
@@ -1057,7 +1170,10 @@ def _complex_ui():
     btn_add_mrow = W.Button(description="➕ колонка ведущей",
                             layout=W.Layout(width="220px"))
     new_scol = W.Text(placeholder="колонка ведомой", layout=W.Layout(width="180px"))
-    new_scol_type = W.Text(placeholder="её тип", layout=W.Layout(width="140px"))
+    # Тип новой колонки ведомой — список типов ВЕДОМОЙ стороны (у неё свои
+    # имена и регистр), с ✎ на редкий тип. Список переключается вместе с БД.
+    new_scol_type = _TypeField(W, dbs.value, width="150px")
+    dbs.observe(lambda c: new_scol_type.set_db(c["new"]), names="value")
     btn_add_scol = W.Button(description="➕ колонка ведомой",
                             layout=W.Layout(width="200px"))
     manual_help = W.HTML(
@@ -1203,8 +1319,10 @@ def _complex_ui():
         колонку из линии (в json и в перенос она не попадёт)."""
         name_w = W.Text(value=str(mcol.get("column_name") or ""),
                         placeholder="имя колонки", layout=W.Layout(width="190px"))
-        type_w = W.Text(value=str(mcol.get("data_type") or ""),
-                        placeholder="тип", layout=W.Layout(width="140px"))
+        # Тип — список частых для этой БД + ✎ на редкий случай (см. _TypeField).
+        # БД берётся текущая: строки перерисовываются после «Снять колонки»,
+        # то есть уже с той стороной, откуда колонки и приехали.
+        type_w = _TypeField(W, dbm.value, mcol.get("data_type") or "", width="150px")
         all_s = [c["column_name"] for c in state["slave_cols"]]
         opts = [_NONE] + all_s
         dd = W.Dropdown(options=opts, value=sval if sval in opts else _NONE,
@@ -1220,7 +1338,8 @@ def _complex_ui():
                "scale": mcol.get("data_scale")}
         # увеличенная высота строки + разделитель, чтобы строки не сливались
         row["box"] = W.HBox(
-            [name_w, type_w, W.HTML("→", layout=W.Layout(width="24px")), dd, pk, rm],
+            [name_w, type_w.box, W.HTML("→", layout=W.Layout(width="24px")),
+             dd, pk, rm],
             layout=W.Layout(align_items="center", min_height="42px",
                             padding="4px 2px", border_bottom="1px solid #eee"))
         type_w.observe(lambda _c: _mark_type(row), names="value")
@@ -1897,7 +2016,7 @@ def _complex_ui():
                "несколько галочек):"),
         period_box, W.HBox([map_title, hide_unmapped]), map_head, map_box,
         manual_help,
-        W.HBox([btn_add_mrow, W.HTML("&nbsp;&nbsp;"), new_scol, new_scol_type,
+        W.HBox([btn_add_mrow, W.HTML("&nbsp;&nbsp;"), new_scol, new_scol_type.box,
                 btn_add_scol]),
         W.HTML("<hr>"), trg["box"],
         W.HTML("<hr>"), commit_hint, commit_msg,
@@ -2254,56 +2373,14 @@ def _sp_ui():
             "doc": doc.value.strip() or None,
         }
 
-    # ── блок «Триггер на ведущей» ──
-    # Справочник и разовый перенос журнал НЕ читают (полная перезаливка), поэтому
-    # своего триггера им не требуется. Блок здесь по другой причине: та же таблица
-    # часто участвует ещё и в сложной линии (или журнал по ней ведут ради истории),
-    # и тогда ставить триггер удобнее сразу, не уходя из формы.
-    trg_table = W.Text(description="Таблица", placeholder="по умолчанию — ведущая",
-                       layout=W.Layout(width="420px"),
-                       style={"description_width": "70px"})
-    trg_name_in = W.Text(description="tablename", placeholder="по умолчанию — метка линии",
-                         layout=W.Layout(width="420px"),
-                         style={"description_width": "70px"})
-    trg_pk = W.Text(description="PK", placeholder="колонки через запятую, напр. idrw",
-                    layout=W.Layout(width="420px"),
-                    style={"description_width": "70px"})
-    trg_period = W.Text(description="Период", placeholder="колонка-дата, напр. createdate",
-                        layout=W.Layout(width="420px"),
-                        style={"description_width": "70px"})
+    # Блока «Триггер на ведущей» здесь НЕТ намеренно. Журнальный триггер —
+    # принадлежность сложной линии: справочник и разовый перенос журнал
+    # etl_log_iud_row не читают вовсе (полная перезаливка), и блок на этой
+    # странице только путал — выглядел как нечто, что тут нужно завести.
+    # Нужен журнальный триггер той же таблице ради сложной линии — он ставится
+    # на вкладке «Сложный ETL», где и живёт.
 
-    def _trigger_ctx():
-        tbl = trg_table.value.strip() or (tm.value.strip()
-                                          if src_mode.value == "table" else "")
-        if not tbl:
-            raise RuntimeError(
-                "не задана таблица (в режиме «свой SELECT» имя ведущей — только "
-                "метка линии, впиши реальную таблицу в поле «Таблица»)")
-        lbl = trg_name_in.value.strip() or line.value.strip() or B.bare(tm.value.strip())
-        if not lbl:
-            raise RuntimeError("не задано имя линии (tablename)")
-        pk = [c.strip() for c in trg_pk.value.replace(";", ",").split(",") if c.strip()]
-        if not pk:
-            raise RuntimeError("не заданы колонки PK")
-        return {"db": dbm.value, "table": tbl, "tablename": lbl,
-                "period_column": trg_period.value.strip() or None,
-                "pk_columns": pk, "cred": user_m_get(), "mode": "iud",
-                "key": SP.sp_key(lbl, dbm.value, dbs.value)}
-
-    def _trigger_mode_note():
-        return ("<span style='color:#888'>Перенос справочника/разовый — "
-                "<b>полная перезаливка</b> (DELETE ведомой + INSERT всех строк), "
-                "журнал <code>etl_log_iud_row</code> он не читает: <b>для самого "
-                "справочника журнальный триггер не нужен</b> (ему нужен аудитный — "
-                "блок ниже). Ставь этот, если та же таблица участвует в сложной "
-                "линии — тогда <code>tablename</code> должен совпадать с её "
-                "<code>tableNameEtlJobs</code>.</span>")
-
-    trg = _trigger_controls(W, out, _trigger_ctx, save_option=False,
-                            mode_note_fn=_trigger_mode_note,
-                            extra=(trg_table, trg_name_in, trg_pk, trg_period))
-
-    # ── блок «Аудитный триггер справочника» ──
+    # ── блок «Триггер справочника» ──
     # Вот он справочнику как раз НУЖЕН: даг SpEtlNew берёт работу из
     # etl_jobs (isokaudit = 0), а ноль туда ставит только триггер на ведущей.
     # Без него справочник молча не переносится — ошибки нигде не появится.
@@ -2316,7 +2393,7 @@ def _sp_ui():
                      style={"description_width": "90px"})
 
     def _audit_table_default():
-        """Таблица, на которой должен стоять аудитный триггер (или '')."""
+        """Таблица, на которой должен стоять триггер справочника (или '')."""
         if src_mode.value == "table":
             return tm.value.strip()
         tables = T.sp_master_tables({"src_mode": "custom",
@@ -2351,10 +2428,7 @@ def _sp_ui():
                                  dbm.value, dbs.value)}
 
     def _audit_note():
-        if kind.value == "once":
-            return ("<span style='color:#888'>Разовый перенос запускают руками — "
-                    "аудитный триггер ему не нужен. Блок оставлен на случай, если "
-                    "линию переведут в регулярную.</span>")
+        # Ветки про разовый перенос тут нет: у него блок целиком скрыт (_on_kind).
         return ("<span style='color:#8a6d3b'>Регулярный справочник переносится "
                 "ТОЛЬКО по метке <code>etl_jobs.isokaudit = 0</code>. Нет "
                 "триггера — нет переносов, и в логах всё «хорошо».</span>")
@@ -2478,19 +2552,21 @@ def _sp_ui():
                     print(warn + "\n")
                 for rel, content in files:
                     print("=" * 70); print(rel); print("-" * 70); print(content)
-                # DDL триггера — в предпросмотре виден всегда (в файлы линии
-                # справочника он не пишется: перенос идёт полной перезаливкой)
-                print("=" * 70)
-                print("DDL ТРИГГЕРА ведущей (в репозиторий НЕ сохраняется)")
-                print("-" * 70)
-                try:
-                    ctx = _trigger_ctx()
-                    print(T.build_trigger(
-                        ctx["db"], ctx["table"], ctx["tablename"],
-                        ctx["period_column"], ctx["pk_columns"],
-                        trg["journal"].value.strip() or None)["text"])
-                except Exception as e:
-                    print(f"(собрать не удалось: {e})")
+                # DDL триггера справочника — в файлы линии он не пишется
+                # (перенос идёт полной перезаливкой), но нужен администратору
+                # БД, поэтому показываем в предпросмотре. Разовому переносу
+                # триггер не нужен вовсе — там не показываем ничего.
+                if kind.value == "regular":
+                    print("=" * 70)
+                    print("DDL ТРИГГЕРА СПРАВОЧНИКА (в репозиторий НЕ сохраняется)")
+                    print("-" * 70)
+                    try:
+                        ctx = _audit_ctx()
+                        print(T.build_audit_trigger(
+                            ctx["db"], ctx["table"], ctx["tablename"],
+                            atrg["journal"].value.strip() or None)["text"])
+                    except Exception as e:
+                        print(f"(собрать не удалось: {e})")
         except Exception as e:
             _log(f"Ошибка предпросмотра: {type(e).__name__}: {e}")
 
@@ -2689,6 +2765,11 @@ def _sp_ui():
         # зависимость и режим разового — зависят от типа линии
         dependence.layout.display = "" if kind.value == "regular" else "none"
         once_mode_box.layout.display = "" if kind.value == "once" else "none"
+        # Разовый перенос запускают РУКАМИ из интерфейса airflow — в этом вся
+        # его задумка. Ни журнального триггера, ни триггера справочника ему не
+        # нужно, поэтому блок не прячем «на всякий случай», а убираем совсем:
+        # видимый блок читается как «здесь надо что-то завести».
+        atrg["box"].layout.display = "" if kind.value == "regular" else "none"
         if work_mode.value == "edit":
             _refresh_sp_edit_list()
         elif work_mode.value == "toggle":
@@ -2711,14 +2792,12 @@ def _sp_ui():
         manual_help,
         W.HBox([btn_add_mrow, W.HTML("&nbsp;&nbsp;"), new_scol, btn_add_scol]),
         W.HTML("<hr>"), atrg["box"],
-        trg["box"],
         W.HTML("<hr>"), commit_hint, commit_msg,
         W.HBox([btn_prev, btn_make, btn_push_only, btn_pub]),
         pub_confirm, push_only_confirm,
     ])
 
     def _refresh_triggers(_=None):
-        trg["refresh"]()
         atrg["refresh"]()
 
     for _w in (tm, line, dbm, dbs, src_mode, dependence, kind):
@@ -2802,10 +2881,12 @@ DDL»), но перед применением его стоит прочита�
 работает вовсе — требовать от неё триггер незачем. Показать такие можно
 галочкой «Показывать архивные».</p>
 
-<p style='margin:8px 0 4px'><b>Создать или поправить триггер</b> — на вкладке
-самой линии («Сложный ETL» / «Справочники»), блок «Триггер на ведущей» /
-«Аудитный триггер справочника»: там DDL, проверка и кнопка создания. Массовой
-кнопки «добавить всем» тут пока нет намеренно — сперва посмотреть глазами.</p>
+<p style='margin:8px 0 4px'><b>Создаёт и правит триггеры в БД администратор
+БД</b>, не конструктор — так решено, чтобы боевые объекты шли через одни руки.
+Конструктор собирает готовый DDL и проверяет, что стоит: блок «Триггер на
+ведущей» на вкладке «Сложный ETL», «Триггер справочника» — на вкладке
+«Справочники». Забрать текст — «Показать DDL», убедиться после установки —
+«Проверить в БД» (здесь же, сразу по всем линиям).</p>
 
 <p style='margin:8px 0 4px'><b>Реквизиты.</b> Рантайм ходит в БД под набором
 <code>MAIN</code> — проверка по умолчанию тоже. Другой набор нужен, если
@@ -2850,7 +2931,7 @@ def _triggers_ui():
                     style={"description_width": "150px"})
     inc_sp = W.Checkbox(value=True, indent=False,
                         description="Показывать справочники и разовый перенос "
-                                    "(справочникам нужен аудитный триггер)")
+                                    "(справочнику нужен свой триггер)")
     inc_skip = W.Checkbox(value=False, indent=False,
                           description="Показывать линии, которым триггер не требуется")
     inc_off = W.Checkbox(value=False, indent=False,
@@ -3012,8 +3093,9 @@ def _triggers_ui():
                     print("--   ·", n)
                 print("-" * 70)
             print(ddl["text"])
-            print("Выполнить его можно на вкладке линии — блок "
-                  + ("«Аудитный триггер справочника»." if audit
+            print("Этот текст — администратору БД. Собрать его же на вкладке "
+                  "линии можно в блоке "
+                  + ("«Триггер справочника»." if audit
                      else "«Триггер на ведущей»."))
 
     def _on_filter(_=None):
