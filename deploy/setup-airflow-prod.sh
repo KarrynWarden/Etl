@@ -408,7 +408,17 @@ while read oldrev newrev ref; do
         for d in Functions Src Connect dags tools; do
             [ -d "\$TMP/\$d" ] && DIRS="\$DIRS \$TMP/\$d"
         done
-        if [ -n "\$DIRS" ] && ! python3 -m compileall -q \$DIRS; then
+        # Интерпретатор — не любой: коду нужен 3.10+ (match/case), и python
+        # постарше объявит валидный файл сломанным. Такой ложный отказ уже
+        # блокировал выкладку, поэтому версию проверяем явно.
+        PYC=""
+        for p in "$VENV/bin/python" python3; do
+            "\$p" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' \
+                >/dev/null 2>&1 && { PYC="\$p"; break; }
+        done
+        if [ -z "\$PYC" ]; then
+            echo "!! Нет python 3.10+ — синтаксис проверить нечем, пропускаю."
+        elif [ -n "\$DIRS" ] && ! "\$PYC" -m compileall -q \$DIRS; then
             echo "!! Синтаксис не прошёл — push ОТКЛОНЁН."
             rm -rf "\$TMP"; rc=1; continue
         fi

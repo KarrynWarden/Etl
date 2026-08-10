@@ -43,6 +43,14 @@ import traceback
 PY_DIRS = ("Connect", "Functions", "Src", "dags", "tools")
 CONFIG_NAMES = ("config", "SpTableName", "SpOnce")
 
+# Минимальная версия python, на которой код В ПРИНЦИПЕ компилируется:
+# Functions/updateLogSp.py использует match/case (3.10+). Интерпретатором старше
+# проверять нельзя — он забракует валидный файл, и это не теория: именно так
+# /usr/bin/python3 на сервере объявил updateLogSp.py «invalid syntax», гейт
+# отклонил хороший push, и тест остался на старом коде. Лучше честно сказать
+# «проверять нечем», чем выдать ложный вердикт.
+_MIN_PYTHON = (3, 10)
+
 OK, BAD, SKIP = "OK", "!!", " ~"
 
 
@@ -171,6 +179,17 @@ def main(argv=None):
                         help="нет пакета airflow -> ошибка, а не предупреждение "
                              "(так вызывает серверный pre-receive)")
     args = parser.parse_args(argv)
+
+    if sys.version_info < _MIN_PYTHON:
+        need = ".".join(str(x) for x in _MIN_PYTHON)
+        have = ".".join(str(x) for x in sys.version_info[:3])
+        print(f"ОШИБКА: проверка запущена под python {have} ({sys.executable}), "
+              f"а коду нужен {need}+.")
+        print("Этим интерпретатором проверять нельзя: он забракует валидный "
+              "синтаксис (match/case) и даст ложный отказ.")
+        print("Запусти через deploy/check-dags.sh — он подбирает интерпретатор, "
+              "либо задай ETL_CHECK_PYTHON=/путь/к/python3.10+")
+        return 1
 
     root = os.path.abspath(args.root or
                            os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
