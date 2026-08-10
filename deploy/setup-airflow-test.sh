@@ -154,38 +154,41 @@ while read oldrev newrev ref; do
         echo "== Проверка валидности DAG'ов =="
         if PARSE_LOG=\$(REQUIRE_AIRFLOW=1 bash "$SRC/deploy/check-dags.sh" "$SRC" 2>&1); then
             echo "  OK: Все DAG'и успешно распарсены."
-
-            # Если всё хорошо, рестартуем сервисы и обновляем Jupyter
-            sudo systemctl restart airflow-test-scheduler airflow-test-webserver
-
-            if [ -d "$JUPYTER_CLONE/.git" ]; then
-                ( unset GIT_DIR GIT_WORK_TREE
-                # Ноутбук-лаунчер Jupyter автосохраняет (execution_count/выводы/виджеты) —
-                # это шум, «пачкает» клон и блокирует ff-merge. skip-worktree = git
-                # перестаёт следить за файлом (не проверяет и не перезаписывает).
-                git -C "$JUPYTER_CLONE" update-index --skip-worktree tools/new_dag.ipynb 2>/dev/null || true
-                git -C "$JUPYTER_CLONE" fetch -q origin "$DEPLOY_BRANCH" \
-                && git -C "$JUPYTER_CLONE" merge -q --ff-only "origin/$DEPLOY_BRANCH" ) \
-                && echo "Jupyter-клон обновлён до $DEPLOY_BRANCH" \
-                || echo "Jupyter-клон не обновлён (несохранённые правки/дивергенция/права) — пропуск"
-            else
-                echo "Jupyter-клон: $JUPYTER_CLONE/.git не найден или недоступен под \$(id -un) — пропуск"
-            fi
-            echo "deploy: ветка $DEPLOY_BRANCH -> $SRC, airflow-test перезапущен"
         else
-            # Если парсинг упал, выводим ошибку и НЕ рестартуем сервисы!
             echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-            echo "!! КРИТИЧЕСКАЯ ОШИБКА: Новые DAG'и не парсятся!       !!"
-            echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+            echo "!! ВНИМАНИЕ: проверка разложенного кода НЕ прошла.       !!"
             echo "\$PARSE_LOG"
-            echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-            echo "!! Сервисы НЕ перезапущены — но код УЖЕ в $SRC/dags,   !!"
-            echo "!! а это каталог, который scheduler перечитывает сам.    !!"
-            echo "!! Чинить и пушить заново НЕМЕДЛЕННО, либо откатить:     !!"
-            echo "!!   git --git-dir=$BARE --work-tree=$SRC checkout -f <прошлый commit> !!"
-            echo "!! Сюда доходят только те, кто обошёл pre-receive.       !!"
+            echo "!! Код уже в $SRC/dags. Разбирайся и пушь заново либо   !!"
+            echo "!! откатись: git --git-dir=$BARE --work-tree=$SRC checkout -f <коммит> !!"
             echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
         fi
+
+        # РЕСТАРТ БЕЗУСЛОВНЫЙ — и это важнее, чем кажется.
+        # Раньше он висел в ветке «проверка прошла», и провал проверки оставлял
+        # систему в расщеплённом состоянии: на диске новый код, в памяти старый.
+        # Незаметно это потому, что LocalExecutor форкает задачи из долгоживущего
+        # процесса-воркера: первый же выполненный таск импортирует Functions.*,
+        # и все следующие форки наследуют ЭТОТ импорт. Правка на диске начинает
+        # работать только после рестарта планировщика — иначе даг честно
+        # показывает старое поведение (например, отладочные print'ы, которых в
+        # файле уже нет). Не рестартовать при провале смысла нет: код всё равно
+        # лежит в DAGS_FOLDER, и scheduler его перечитает сам.
+        sudo systemctl restart airflow-test-scheduler airflow-test-webserver
+
+        if [ -d "$JUPYTER_CLONE/.git" ]; then
+            ( unset GIT_DIR GIT_WORK_TREE
+            # Ноутбук-лаунчер Jupyter автосохраняет (execution_count/выводы/виджеты) —
+            # это шум, «пачкает» клон и блокирует ff-merge. skip-worktree = git
+            # перестаёт следить за файлом (не проверяет и не перезаписывает).
+            git -C "$JUPYTER_CLONE" update-index --skip-worktree tools/new_dag.ipynb 2>/dev/null || true
+            git -C "$JUPYTER_CLONE" fetch -q origin "$DEPLOY_BRANCH" \
+            && git -C "$JUPYTER_CLONE" merge -q --ff-only "origin/$DEPLOY_BRANCH" ) \
+            && echo "Jupyter-клон обновлён до $DEPLOY_BRANCH" \
+            || echo "Jupyter-клон не обновлён (несохранённые правки/дивергенция/права) — пропуск"
+        else
+            echo "Jupyter-клон: $JUPYTER_CLONE/.git не найден или недоступен под \$(id -un) — пропуск"
+        fi
+        echo "deploy: ветка $DEPLOY_BRANCH -> $SRC, airflow-test перезапущен"
         # ==================================
     else
         echo "ветка \$branch получена (без деплоя)"
