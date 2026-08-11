@@ -189,24 +189,30 @@ push_retry() {   # сеть иногда отваливается: 2s, 4s, 8s, 1
     # Вывод — через tee, а не в переменную: `out=$(git push ...)` под `set -e`
     # убивает скрипт прямо на присваивании, без единой строчки диагностики
     # (наступали, см. комментарий в local/dev-push.sh).
-    local delay=2 log
+    local delay=2 log rcf rc
     local rejectRe='pre-receive hook declined|remote rejected|\[rejected\]|non-fast-forward|protected branch|hook declined'
     log=$(mktemp) || return 1
+    rcf=$(mktemp) || { rm -f "$log"; return 1; }
     for attempt in 1 2 3 4 5; do
-        if git push "$@" 2>&1 | tee "$log"; then
-            rm -f "$log"; return 0
-        fi
+        # Берём статус САМОГО git'а, а не пайплайна. Иначе корректность
+        # зависит от того, включён ли pipefail у вызывающего: без него
+        # статусом пайплайна становится статус tee, то есть 0, и
+        # отклонённый push считается успешным (проверено — так и было).
+        # `if` вокруг нужен, чтобы set -e не убил скрипт на неудаче.
+        if { git push "$@" 2>&1; echo $? >"$rcf"; } | tee "$log"; then :; fi
+        rc=$(cat "$rcf" 2>/dev/null || echo 1)
+        if [[ "$rc" == "0" ]]; then rm -f "$log" "$rcf"; return 0; fi
         if grep -qE "$rejectRe" "$log"; then
             echo "!! Сервер ОТКЛОНИЛ push — это не сетевой сбой, повторять нечего."
-            rm -f "$log"; return 1
+            rm -f "$log" "$rcf"; return 1
         fi
         if [[ $attempt -eq 5 ]]; then
-            echo "!! push не удался после повторов."; rm -f "$log"; return 1
+            echo "!! push не удался после повторов."; rm -f "$log" "$rcf"; return 1
         fi
         echo "   не прошло, повтор через ${delay}s..."
         sleep "$delay"; delay=$((delay * 2))
     done
-    rm -f "$log"
+    rm -f "$log" "$rcf"
 }
 
 echo "== push -> $REMOTE/$BRANCH =="

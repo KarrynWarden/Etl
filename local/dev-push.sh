@@ -4,8 +4,17 @@
 #
 #   bash local/dev-push.sh
 #
-# Перед пушем синхронизируется с сервером (rebase), чтобы не обогнать коллег и
+# Перед пушем синхронизируется с СЕРВЕРОМ (rebase), чтобы не обогнать коллег и
 # чтобы push прошёл fast-forward. Сетевые push'и повторяются с backoff.
+#
+# ВАЖНО про два remote'а. Rebase делается только на server/<ветку>, а push идёт
+# и в gitea. Rebase переписывает коммиты — и если они уже уехали в gitea, её
+# верхушка перестаёт быть предком локальной ветки, а push туда отбивается как
+# non-fast-forward. Это не поломка, а следствие двух пишущих сторон (в сервер
+# пушат и с dev-PC, и из Jupyter-клона). Когда так случается, скрипт печатает,
+# какие коммиты есть только у тебя и какие только в gitea, и предлагает выбор:
+# подобрать чужое (git pull --rebase) либо затереть канон своей версией
+# (git push --force-with-lease). Вслепую он не затирает ничего.
 #
 # После пуша проверяет общий Jupyter-клон на сервере: если в его рабочей копии
 # остались несохранённые правки (из-за них хук не смог обновить клон), скрипт
@@ -49,27 +58,70 @@ REJECT_RE='pre-receive hook declined|remote rejected|\[rejected\]|non-fast-forwa
 # уже нет. Внутри `if` набор -e не действует, а tee заодно возвращает живой
 # прогресс вместо тишины на всё время передачи.
 push_retry() {
-    local remote=$1 branch=$2 delay=2 log
+    local remote=$1 branch=$2 delay=2 log rcf rc
     log=$(mktemp) || return 1
+    rcf=$(mktemp) || { rm -f "$log"; return 1; }
     for attempt in 1 2 3 4 5; do
-        if git push "$remote" "$branch" 2>&1 | tee "$log"; then
-            rm -f "$log"; return 0
-        fi
+        # Берём статус САМОГО git'а, а не пайплайна. Иначе корректность
+        # зависит от того, включён ли pipefail у вызывающего: без него
+        # статусом пайплайна становится статус tee, то есть 0, и
+        # отклонённый push считается успешным (проверено — так и было).
+        # `if` вокруг нужен, чтобы set -e не убил скрипт на неудаче.
+        if { git push "$remote" "$branch" 2>&1; echo $? >"$rcf"; } | tee "$log"; then :; fi
+        rc=$(cat "$rcf" 2>/dev/null || echo 1)
+        if [[ "$rc" == "0" ]]; then rm -f "$log" "$rcf"; return 0; fi
         # Отказ сервера (pre-receive), non-fast-forward и прочее «сервер сказал
         # нет» повторять бессмысленно: через две секунды ответ будет тот же.
         if grep -qE "$REJECT_RE" "$log"; then
             echo "!! Сервер ОТКЛОНИЛ push — это не сетевой сбой, повторять нечего."
-            rm -f "$log"; return 1
+            # Для non-fast-forward показываем расхождение: «отклонено» без
+            # объяснения — тупик, а решение (подобрать чужое или затереть)
+            # принимает человек и только с этим списком на руках.
+            grep -qE 'non-fast-forward|\[rejected\]' "$log" \
+                && show_divergence "$remote" "$branch"
+            rm -f "$log" "$rcf"; return 1
         fi
         if [[ $attempt -eq 5 ]]; then
             echo "!! push в $remote не удался после повторов."
-            rm -f "$log"; return 1
+            rm -f "$log" "$rcf"; return 1
         fi
         echo "   push в $remote не прошёл, повтор через ${delay}s..."
         sleep "$delay"
         delay=$((delay * 2))
     done
-    rm -f "$log"
+    rm -f "$log" "$rcf"
+}
+
+# Что именно разошлось с remote'ом. Вызывается при отказе push'а: без этого
+# «отклонено» — тупик, человеку нечего решать. Показываем ОБЕ стороны, потому
+# что затирать вслепую нельзя: в gitea могут лежать коммиты коллеги.
+show_divergence() {
+    local remote=$1 branch=$2 ahead behind
+    echo
+    echo "   Смотрю, чем '$branch' разошлась с '$remote/$branch':"
+    if ! git fetch -q "$remote" "$branch" 2>/dev/null; then
+        echo "     не смог получить $remote/$branch — сравнивать не с чем."
+        return 0
+    fi
+    ahead=$(git rev-list --count FETCH_HEAD.."$branch" 2>/dev/null || echo "?")
+    behind=$(git rev-list --count "$branch"..FETCH_HEAD 2>/dev/null || echo "?")
+    echo "     у тебя лишних коммитов: $ahead, в $remote лишних: $behind"
+    if [[ "$behind" != "?" && "$behind" != "0" ]]; then
+        echo
+        echo "     ЕСТЬ ТОЛЬКО В $remote (force-push их СОТРЁТ):"
+        git --no-pager log --oneline --no-decorate "$branch"..FETCH_HEAD | sed 's/^/       /'
+    fi
+    if [[ "$ahead" != "?" && "$ahead" != "0" ]]; then
+        echo
+        echo "     есть только у тебя:"
+        git --no-pager log --oneline --no-decorate FETCH_HEAD.."$branch" | sed 's/^/       /'
+    fi
+    echo
+    echo "   Дальше на выбор:"
+    echo "     git pull --rebase $remote $branch   # подобрать чужое и запушить снова"
+    echo "     git push --force-with-lease $remote $branch   # затереть удалённую версию своей"
+    echo "   --force-with-lease откажет, если $remote уехал уже после этой сверки;"
+    echo "   голый --force так не умеет, поэтому им не пользуйся."
 }
 
 # ssh-адрес сервера (user@host) из URL remote'а server
