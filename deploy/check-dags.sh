@@ -54,6 +54,13 @@ CHOSEN=""       # python с airflow (все три яруса)
 NOWINGS=""      # python нужной версии, но без airflow (ярусы 1-2)
 NOTES=()
 
+# `import airflow` при первом запуске создаёт AIRFLOW_HOME (по умолчанию ~/airflow)
+# и пишет туда airflow.cfg. Если HOME чужой или закрыт на запись — импорт падает,
+# и проба объявляет «airflow тут нет», хотя он есть. От HOME проба зависеть не
+# должна: даём ей одноразовый каталог, как и самому ярусу парсинга.
+PROBE_HOME="$(mktemp -d /tmp/etl-probe-XXXXXX)"
+trap 'rm -rf "$PROBE_HOME"' EXIT
+
 _probe() {
     local p=$1 ver err
     [[ -n "$p" ]] || return 1
@@ -65,7 +72,8 @@ _probe() {
         NOTES+=("$p — python $ver, а коду нужен 3.10+ (match/case); его вердикт по синтаксису недостоверен")
         return 1
     fi
-    if err=$("$p" -c 'import airflow' 2>&1); then
+    if err=$(env HOME="$PROBE_HOME" AIRFLOW_HOME="$PROBE_HOME" \
+                 "$p" -c 'import airflow' 2>&1); then
         CHOSEN="$p"; return 0
     fi
     NOTES+=("$p — python $ver, но airflow не импортируется: $(tail -1 <<<"$err")")
@@ -102,5 +110,10 @@ done
 
 ARGS=("$ROOT/tools/check_dags.py" "$ROOT")
 [[ "${REQUIRE_AIRFLOW:-}" == "1" ]] && ARGS+=(--require-airflow)
+
+# Каталог пробы больше не нужен. Убираем ЗДЕСЬ, а не по EXIT-trap: ниже exec
+# заменяет процесс собой, и trap не отработает — каталоги копились бы в /tmp
+# после каждого push (проверено, так и было).
+rm -rf "$PROBE_HOME"; trap - EXIT
 
 exec "$PY" "${ARGS[@]}"
