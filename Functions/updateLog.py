@@ -15,6 +15,7 @@ from Src.generalQueries import (
     selectByIdEtlOrclSql,
     addLogPostSql,
     addLogOrclSql,
+    periodBind,
 )
 
 
@@ -39,7 +40,10 @@ def UpdateLog(tableName, dbMaster, action, cursor, con,
         etlId = None
         audit = -3
     else:
-        cursor.execute(selectIdSql, {"TABLENAME": tableName, "PERIOD": period})
+        # NULL-группа ищется по сентинелу: в SelectIdEtl* обе стороны под
+        # COALESCE, но сам None в бинд не отправляем (см. generalQueries).
+        cursor.execute(selectIdSql,
+                       {"TABLENAME": tableName, "PERIOD": periodBind(period)})
         row = cursor.fetchone()
         etlId = row[0] if row else None
         if audit is None and etlId is not None:

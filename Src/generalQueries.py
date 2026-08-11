@@ -3,8 +3,27 @@
 Все запросы — в .sql файлах (никаких многострочных f-строк в коде Python),
 чтобы их можно было открывать в DBeaver и т.п. без правок.
 """
+import datetime
+
 from Functions.functionsFile.takeOneQuery import TakeOneQuery
 from Src.fullPath import FULL_PATH
+
+# ── сентинел периода ──────────────────────────────────────────────────────────
+# NULL — полноправная группа (у expmed поле-период какое-то время пустое, и это
+# нормальное состояние данных). Сравнить NULL через `=` нельзя, поэтому в SQL обе
+# стороны приводятся COALESCE'ом к этой дате. В БИНД NULL не уходит никогда:
+# подстановку делает periodBind() — иначе пришлось бы гадать, каким типом драйвер
+# пошлёт None (cx_Oracle по умолчанию строкой, а COALESCE(строка, дата) это
+# ORA-00932). Литерал обязан совпадать со значением PERIOD_SENTINEL и с тем, что
+# зашито в .sql-файлах etl_jobs/аудита — поэтому он здесь один на всех.
+PERIOD_SENTINEL_SQL = "TO_DATE('1900-01-01', 'YYYY-MM-DD')"
+PERIOD_SENTINEL = datetime.date(1900, 1, 1)
+
+
+def periodBind(period):
+    """Значение периода для бинда: NULL-группа уезжает сентинелом."""
+    return PERIOD_SENTINEL if period is None else period
+
 
 
 def _q(relative):

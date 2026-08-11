@@ -1,2 +1,3 @@
+-- См. комментарий в PeriodsIsokAudit4Orcl.sql.
 SELECT period FROM etl_jobs
-WHERE tablename = %(tablename)s AND isokaudit = 4 AND period IS NOT NULL
+WHERE tablename = %(tablename)s AND isokaudit = 4

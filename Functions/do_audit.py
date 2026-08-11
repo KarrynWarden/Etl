@@ -55,7 +55,8 @@ from Functions.do_etl import (
     _resolveEtlPath, ShutdownRequested, isShutdown,
     _appendFilter, _filterEtlFields, _bindName, _buildFieldsStr,
     _executeQuery, _configKey, classifyError, _asAndClause,
-    _periodSpec, _periodBinds,
+    _periodSpec, _periodBinds, _periodBind,
+    _PERIOD_SENTINEL_SQL,
     _periodCond as _etlPeriodCond,
 )
 from Src.generalQueries import (
@@ -77,8 +78,10 @@ logger = logging.getLogger(__name__)
 # Сколько отличающихся записей печатать в лог на группу.
 _MAX_PRINT_DIFF = 100
 
-# Граничная дата-сентинел для COALESCE: совпадает с тем, что в .sql.
-_SENTINEL = "TO_DATE('1900-01-01', 'YYYY-MM-DD')"
+# Сентинел для сравнения периодов — ОДИН на аудит и перенос (do_etl). Держать
+# свою копию литерала опасно: разъедутся — NULL-группа будет находиться в одном
+# месте и не находиться в другом.
+_SENTINEL = _PERIOD_SENTINEL_SQL
 
 
 class AuditScopeError(AirflowException):
@@ -138,7 +141,8 @@ def _periodCond(dbType, periodColumn, truncatePeriod):
 
     Одиночная колонка: truncatePeriod=True (medree: dcalc содержит время) —
     сравниваем по дате; COALESCE с сентинелом обрабатывает группы с
-    period IS NULL (у составного периода NULL-группы быть не может).
+    period IS NULL. Составной период тоже может дать NULL-группу — когда
+    пуст сам год (do_etl._periodFromRow).
     """
     spec = _periodSpec(periodColumn)
     if spec["kind"] != "single":
@@ -147,8 +151,10 @@ def _periodCond(dbType, periodColumn, truncatePeriod):
         expr = f"DATE(p.{spec['column']})" if _isPost(dbType) else f"TRUNC(p.{spec['column']})"
     else:
         expr = f"p.{spec['column']}"
-    bind = _bindName(dbType, "createdate")
-    return (f"COALESCE({expr}, {_SENTINEL}) = COALESCE({bind}, {_SENTINEL})")
+    # Справа COALESCE больше не нужен: NULL в бинд не уходит — _periodBinds
+    # подставляет сентинел сам (см. do_etl._PERIOD_SENTINEL). Так одинаково у
+    # аудита и переноса, и не надо гадать, каким типом драйвер пошлёт None.
+    return f"COALESCE({expr}, {_SENTINEL}) = " + _bindName(dbType, "createdate")
 
 
 def _buildMasterSql(cfg, selectSql, structMaster):
@@ -284,7 +290,7 @@ def _writeStatus(cfg, ctx, origPeriod, status):
         _pickSql(cfg["dbMaster"], auditUpdatePostSql, auditUpdateOrclSql),
         {"ISOKAUDIT": status,
          "TABLENAME": cfg["tableNameEtlJobs"],
-         "PERIOD": origPeriod},
+         "PERIOD": _periodBind(origPeriod)},
     )
 
 

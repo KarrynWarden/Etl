@@ -109,6 +109,9 @@ from Src.generalQueries import (
     dateSelectSlaveOrclSql,
     periodsFromIudPostSql,
     periodsFromIudOrclSql,
+    PERIOD_SENTINEL_SQL,
+    PERIOD_SENTINEL,
+    periodBind,
     markPeriodIudPostSql,
     markPeriodIudOrclSql,
     periodsIsokAudit4PostSql,
@@ -348,6 +351,33 @@ def _periodKey(value, truncatePeriod):
 #     {"year": "year", "month": "month"}            — год+месяц   -> year-month-01
 #     {"year": "y", "month": "m", "day": "d"}       — год+месяц+день
 
+# NULL — ПОЛНОПРАВНАЯ группа, а не «нет группы». У expmed поле, которое служит
+# периодом, какое-то время пустое, и это нормальное состояние данных: такие
+# строки надо переносить, сверять и учитывать в etl_jobs наравне с прочими.
+#
+# Сравнивать NULL через `=` нельзя (NULL = NULL это не TRUE), поэтому обе стороны
+# приводятся COALESCE'ом к сентинелу. Важная деталь: в БИНД NULL не уходит
+# НИКОГДА — подстановку делает Python (_periodBinds). Иначе пришлось бы гадать,
+# каким типом драйвер пошлёт None: cx_Oracle по умолчанию шлёт его строкой, и
+# COALESCE(строка, дата) падает с ORA-00932. Единственное место, где NULL уходит
+# в БД как есть, — INSERT нового периода в etl_jobs, и там стоит явный CAST.
+#
+# Сам литерал и его python-двойник живут в Src.generalQueries — там же, где
+# загружаются .sql, в которых он зашит, и оттуда же его берёт updateLog.
+_PERIOD_SENTINEL_SQL = PERIOD_SENTINEL_SQL
+_PERIOD_SENTINEL = PERIOD_SENTINEL
+# Для составного периода (year/month/day) сентинел числовой: года -1 не бывает.
+_PARTS_SENTINEL = -1
+
+
+def _periodSortKey(period):
+    """Ключ сортировки, где NULL-группа — полноправный участник (идёт последней).
+
+    Просто sorted() по смеси date и None падает с TypeError, а выкидывать None
+    из списков нельзя: группа существует и её надо видеть в логах."""
+    return (period is None, period)
+
+
 def _periodSpec(value):
     """Нормализовать значение periodColumn в описание периода.
 
@@ -397,19 +427,35 @@ def _periodCond(dbType, spec, alias=None, bind="createdate", truncate=False):
     использует индексы, в отличие от сборки даты вокруг колонок.
     """
     if spec["kind"] == "single":
-        return _periodExpr(dbType, spec, alias, truncate) + " = " + _bindName(dbType, bind)
-    parts = [f"{_qual(alias, spec['year'])} = " + _bindName(dbType, f"{bind}_y")]
+        expr = _periodExpr(dbType, spec, alias, truncate)
+        return (f"COALESCE({expr}, {_PERIOD_SENTINEL_SQL}) = "
+                + _bindName(dbType, bind))
+    parts = [f"COALESCE({_qual(alias, spec['year'])}, {_PARTS_SENTINEL}) = "
+             + _bindName(dbType, f"{bind}_y")]
     if spec["month"]:
-        parts.append(f"{_qual(alias, spec['month'])} = " + _bindName(dbType, f"{bind}_m"))
+        parts.append(f"COALESCE({_qual(alias, spec['month'])}, {_PARTS_SENTINEL}) = "
+                     + _bindName(dbType, f"{bind}_m"))
     if spec["day"]:
-        parts.append(f"{_qual(alias, spec['day'])} = " + _bindName(dbType, f"{bind}_d"))
+        parts.append(f"COALESCE({_qual(alias, spec['day'])}, {_PARTS_SENTINEL}) = "
+                     + _bindName(dbType, f"{bind}_d"))
     return " AND ".join(parts)
 
 
 def _periodBinds(spec, period, bind="createdate"):
-    """Параметры для _periodCond по значению периода (date)."""
+    """Параметры для _periodCond по значению периода (date или None).
+
+    NULL-группа биндится СЕНТИНЕЛОМ, а не None: условие в SQL уже обёрнуто
+    COALESCE'ом, и подстановка здесь избавляет от вопроса, каким типом драйвер
+    пошлёт None (см. комментарий у _PERIOD_SENTINEL)."""
     if spec["kind"] == "single":
-        return {bind: period}
+        return {bind: _PERIOD_SENTINEL if period is None else period}
+    if period is None:
+        out = {f"{bind}_y": _PARTS_SENTINEL}
+        if spec["month"]:
+            out[f"{bind}_m"] = _PARTS_SENTINEL
+        if spec["day"]:
+            out[f"{bind}_d"] = _PARTS_SENTINEL
+        return out
     period = _normalizePeriod(period)
     out = {f"{bind}_y": period.year}
     if spec["month"]:
@@ -417,6 +463,12 @@ def _periodBinds(spec, period, bind="createdate"):
     if spec["day"]:
         out[f"{bind}_d"] = period.day
     return out
+
+
+def _periodBind(period):
+    """То же для мест, где период биндится ОДНИМ параметром напрямую
+    (etl_jobs: last_success_ts / isokaudit / отметка журнала)."""
+    return periodBind(period)
 
 
 def _periodColumns(spec):
@@ -439,6 +491,9 @@ def _periodFromRow(spec, row, columnNames):
 
     if spec["kind"] == "single":
         return _normalizePeriod(_val(spec["column"]))
+    # Пустой год — это NULL-группа, а не повод падать на int(None).
+    if _val(spec["year"]) is None:
+        return None
     year = int(_val(spec["year"]))
     month = int(_val(spec["month"])) if spec["month"] else 1
     day = int(_val(spec["day"])) if spec["day"] else 1
@@ -763,7 +818,9 @@ def _registerAffectedPeriods(cursor, dbMaster, periods, tableNameEtlJobs):
     sqlTpl = _pickSql(dbMaster, registerPeriodPostSql, registerPeriodOrclSql)
     for period in periods:
         cursor.execute(sqlTpl,
-                       {"tablename": tableNameEtlJobs, "period": period})
+                       {"tablename": tableNameEtlJobs,
+                        "period": period,
+                        "period_cmp": _periodBind(period)})
 
 
 def _selectGroupsForMassUpdate(cursor, dbMaster, tableNameEtlJobs):
@@ -935,9 +992,7 @@ def _fetchSlavePeriodsById(cursorSlave, cfg, ctx, ids):
                f"FROM {tableNameSlave} WHERE {cond}")
         cursorSlave.execute(sql, params)
         for idv, period in cursorSlave.fetchall():
-            p = _normalizePeriod(period)
-            if p is not None:
-                grouped[_idKey(idv)].add(p)
+            grouped[_idKey(idv)].add(_normalizePeriod(period))
 
     if len(pkCols) == 1:
         for chunk in _chunks(ids):
@@ -947,8 +1002,7 @@ def _fetchSlavePeriodsById(cursorSlave, cfg, ctx, ids):
         for recId in ids:
             cursorSlave.execute(ctx["slavePeriodsByIdSql"],
                                 _splitPkValue(recId, len(pkCols)))
-            acc = {p for p in (_normalizePeriod(r[0])
-                               for r in cursorSlave.fetchall()) if p is not None}
+            acc = {_normalizePeriod(r[0]) for r in cursorSlave.fetchall()}
             grouped[recId] = acc
     return grouped
 
@@ -1084,7 +1138,8 @@ def _processGroupUpdate(cfg, ctx, dateGroup):
         # этой группы — они будут перезалиты вместе со всей группой.
         cursorMaster.execute(
             _pickSql(dbMaster, etlStatusChangePostSql, etlStatusChangeOrclSql),
-            {"tablename": tableNameEtlJobs, "createdate": createdate},
+            {"tablename": tableNameEtlJobs,
+             "createdate": _periodBind(createdate)},
         )
 
         # 1) удалить все записи группы из ведомой. Параметры периода зависят от
@@ -1109,7 +1164,7 @@ def _processGroupUpdate(cfg, ctx, dateGroup):
             _pickSql(dbMaster, etlUpdatePostSql, etlUpdateOrclSql),
             {"LAST_SUCCESS_TS": ctx["currDt"],
              "TABLENAME": tableNameEtlJobs,
-             "PERIOD": createdate},
+             "PERIOD": _periodBind(createdate)},
         )
 
         conMaster.commit()
@@ -1137,7 +1192,7 @@ def _processGroupUpdate(cfg, ctx, dateGroup):
         cursorMaster.execute(
             _pickSql(dbMaster, etlErrorPostSql, etlErrorOrclSql),
             {"ISOKAUDIT": -1, "tablename": tableNameEtlJobs,
-             "PERIOD": createdate},
+             "PERIOD": _periodBind(createdate)},
         )
         conMaster.commit()
         UpdateLog(tableNameEtlJobs, dbMaster, action,
@@ -1206,7 +1261,8 @@ def _processQuerySection(cfg, ctx):
         raise AirflowSkipException
 
     spec = _periodSpec(cfg["periodColumn"])
-    periods = sorted({_periodFromParts(spec, row) for row in rows})
+    periods = sorted({_periodFromParts(spec, row) for row in rows},
+                     key=_periodSortKey)
     logger.info("query_section: групп к обновлению — %d", len(periods))
 
     # Группы должны быть в etl_jobs — тогда их видит аудит и общий механизм
@@ -1394,7 +1450,7 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords):
                     _pickSql(dbMaster, etlUpdatePostSql, etlUpdateOrclSql),
                     {"LAST_SUCCESS_TS": ctx["currDt"],
                      "TABLENAME": tableNameEtlJobs,
-                     "PERIOD": groupId},
+                     "PERIOD": _periodBind(groupId)},
                 )
                 UpdateLog(tableNameEtlJobs, dbMaster, action,
                           cursorMaster, conMaster, count, groupId, 1)
@@ -1402,7 +1458,7 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords):
                 cursorMaster.execute(
                     _pickSql(dbMaster, etlErrorPostSql, etlErrorOrclSql),
                     {"ISOKAUDIT": -1, "tablename": tableNameEtlJobs,
-                     "PERIOD": groupId},
+                     "PERIOD": _periodBind(groupId)},
                 )
                 UpdateLog(tableNameEtlJobs, dbMaster, action,
                           cursorMaster, conMaster, count, groupId)
@@ -1533,7 +1589,7 @@ def _processDeleteInsert(cfg, ctx, distinctIds, iudRecords):
                         periodCount[p] += 1
                 logger.info("idrw=%s: -all/+%d строк, периоды %s",
                             recId, len(rowsDb),
-                            sorted(x for x in affected if x is not None))
+                            sorted(affected, key=_periodSortKey))
 
                 conSlave.commit()
 
@@ -1590,8 +1646,8 @@ def _processDeleteInsert(cfg, ctx, distinctIds, iudRecords):
         # источника) — затем обновить статус
         _registerAffectedPeriods(
             cursorMaster, dbMaster,
-            [p for p in (okPeriods | failPeriods) if p is not None],
-            tableNameEtlJobs,
+            # NULL-группу НЕ выбрасываем: она такая же группа, просто без даты.
+            list(okPeriods | failPeriods), tableNameEtlJobs,
         )
 
         for period in okPeriods - failPeriods:
@@ -1599,7 +1655,7 @@ def _processDeleteInsert(cfg, ctx, distinctIds, iudRecords):
                 _pickSql(dbMaster, etlUpdatePostSql, etlUpdateOrclSql),
                 {"LAST_SUCCESS_TS": ctx["currDt"],
                  "TABLENAME": tableNameEtlJobs,
-                 "PERIOD": period},
+                 "PERIOD": _periodBind(period)},
             )
             UpdateLog(tableNameEtlJobs, dbMaster, action,
                       cursorMaster, conMaster, periodCount.get(period, 0),
@@ -1608,7 +1664,7 @@ def _processDeleteInsert(cfg, ctx, distinctIds, iudRecords):
             cursorMaster.execute(
                 _pickSql(dbMaster, etlErrorPostSql, etlErrorOrclSql),
                 {"ISOKAUDIT": -1, "tablename": tableNameEtlJobs,
-                 "PERIOD": period},
+                 "PERIOD": _periodBind(period)},
             )
             UpdateLog(tableNameEtlJobs, dbMaster, action,
                       cursorMaster, conMaster, 0, period)
@@ -1649,18 +1705,18 @@ def _splitPkValue(value, pkCount):
 def _groupSummary(distinctIds):
     """[(period, count, 'ok')] — для последующего пересчёта статусов.
 
-    Записи с NULL-периодом (period is None) в сводку НЕ включаются: сами записи
-    переносятся поштучно в основном цикле, но период-статус для «пустого» периода
-    не имеет смысла. Плюс None нельзя ни сравнивать в sorted() (иначе TypeError
-    '<' not supported between datetime and NoneType), ни биндить в
-    etl_jobs.period (там NOT NULL)."""
+    NULL-период УЧАСТВУЕТ наравне с остальными. Раньше он отбрасывался, и
+    записи с пустым периодом переносились, но статус группы в etl_jobs не
+    получали — то есть аудит о них не узнавал вовсе. Для expmed это не
+    экзотика: поле-период какое-то время пустое, и это нормальное состояние
+    данных. Сортировка идёт через _periodSortKey (обычный sorted на смеси date
+    и None падает), а в SQL NULL сравнивается через COALESCE-сентинел."""
     counts = {}
     for entry in distinctIds:
         period = entry[1]
-        if period is None:
-            continue
         counts[period] = counts.get(period, 0) + 1
-    return [[period, counts[period], "ok"] for period in sorted(counts.keys())]
+    return [[period, counts[period], "ok"]
+            for period in sorted(counts.keys(), key=_periodSortKey)]
 
 
 def _markFailGroup(groupsData, period):
@@ -1725,42 +1781,50 @@ def _maxIudIdrw(cursor, dbMaster, tableNameEtlJobs):
 
 def _diffPeriods(masterRows, slaveRows, truncateLastupdate=False,
                  truncatePeriod=False):
-    """Группы, требующие обновления: нет на одной из сторон либо множества
-    lastupdate по группе отличаются.
+    """Группы, требующие обновления: нет на одной из сторон, разошлись множества
+    lastupdate ЛИБО разошлось количество записей.
 
-    Ключ-период приводится к канону через _periodKey: по флагу truncatePeriod
-    это либо день, либо точное значение со временем (см. там же — почему это
-    один и тот же флаг, что и для SQL).
+    Счётчик добавлен не для красоты: сравнение одних только lastupdate слепо к
+    целому классу расхождений. Удалили строку, которая не держала максимум
+    lastupdate, — множество значений на обеих сторонах то же самое, а данных
+    больше нет. Или строка задвоилась с тем же lastupdate. Обе стороны отдают
+    (период, lastupdate, счётчик пары) — см. DateSelectMaster*/DateSelectSlave*.
 
-    Значения lastupdate нормализуются (_normalizeCompareValue): по умолчанию —
-    с точностью timestamp (унификация типа date/datetime), а по флагу
-    truncateLastupdate — по дате. Без этого date из Postgres и datetime из
-    Oracle считаются разными и группа «отличается» бесконечно.
+    Ключ-период приводится к канону через _periodKey (по truncatePeriod — день
+    либо точное значение). Если SQL группировал точнее, чем Python (truncate
+    только здесь), несколько SQL-строк схлопываются в один ключ — поэтому
+    счётчики складываются, а не присваиваются.
+
+    NULL-период — обычный ключ словаря и обычная группа: она сравнивается и
+    обновляется наравне с датированными.
     """
     def _bucket(rows):
-        buckets = defaultdict(set)
-        for period, lu in rows:
-            buckets[_periodKey(period, truncatePeriod)].add(
-                _normalizeCompareValue(lu, truncateLastupdate))
+        buckets = {}
+        for period, lu, cnt in rows:
+            key = _periodKey(period, truncatePeriod)
+            b = buckets.setdefault(key, {"lus": set(), "cnt": 0})
+            b["cnt"] += int(cnt or 0)
+            b["lus"].add(_normalizeCompareValue(lu, truncateLastupdate))
         return buckets
 
     masterMap = _bucket(masterRows)
     slaveMap = _bucket(slaveRows)
-
-    print("masterMap", masterMap)
-    print("slaveMap", slaveMap)
 
     diff = []
     # По объединению ключей, а не только по ведущей: группа, которой в источнике
     # уже нет, а в ведомой она осталась, тоже расхождение — раньше цикл шёл по
     # masterMap и такие группы не вычищались.
     for period in masterMap.keys() | slaveMap.keys():
-        masterSet = masterMap.get(period, set())
-        slaveSet = slaveMap.get(period, set())
-
-        if masterSet != slaveSet:
+        m = masterMap.get(period)
+        sl = slaveMap.get(period)
+        if m is None or sl is None:
             diff.append(period)
-    print("diff", diff)
+            continue
+        if m["cnt"] != sl["cnt"] or m["lus"] != sl["lus"]:
+            diff.append(period)
+    if diff:
+        logger.info("section_compare: расходятся группы %s",
+                    sorted(diff, key=_periodSortKey))
     return diff
 
 
@@ -1809,7 +1873,7 @@ def _processSectionGroup(cfg, ctx, period, idrwBefore):
             markSql = _pickSql(dbMaster, markPeriodIudPostSql, markPeriodIudOrclSql)
             cursorMaster.execute(markSql, {
                 "tablename": tableNameEtlJobs,
-                "period": period,
+                "period": _periodBind(period),
                 "idrwBefore": idrwBefore,
             })
 
@@ -1818,7 +1882,7 @@ def _processSectionGroup(cfg, ctx, period, idrwBefore):
             _pickSql(dbMaster, etlUpdatePostSql, etlUpdateOrclSql),
             {"LAST_SUCCESS_TS": ctx["currDt"],
              "TABLENAME": tableNameEtlJobs,
-             "PERIOD": period},
+             "PERIOD": _periodBind(period)},
         )
 
         conMaster.commit()
@@ -1845,7 +1909,7 @@ def _processSectionGroup(cfg, ctx, period, idrwBefore):
         cursorMaster.execute(
             _pickSql(dbMaster, etlErrorPostSql, etlErrorOrclSql),
             {"ISOKAUDIT": -1, "tablename": tableNameEtlJobs,
-             "PERIOD": period},
+             "PERIOD": _periodBind(period)},
         )
         conMaster.commit()
         UpdateLog(tableNameEtlJobs, dbMaster, action,
@@ -1917,12 +1981,13 @@ def _runSectionCompare(cfg, ctx, selectSql, useIud=False):
         raise AirflowSkipException
 
     logger.info("section_compare %s: %d групп для обновления: %s",
-                tableNameEtlJobs, len(needUpdate), sorted(needUpdate))
+                tableNameEtlJobs, len(needUpdate),
+                sorted(needUpdate, key=_periodSortKey))
     _registerAffectedPeriods(
         ctx["cursorMaster"], dbMaster,
-        [p for p in needUpdate if p is not None], tableNameEtlJobs,
+        list(needUpdate), tableNameEtlJobs,
     )
-    for period in sorted(needUpdate, key=lambda x: (x is None, x)):
+    for period in sorted(needUpdate, key=_periodSortKey):
         _processSectionGroup(cfg, ctx, period, idrwBefore)
 
 
