@@ -65,6 +65,30 @@ echo "== 2b. Проверка DAG'ов =="
 rm -f "$ROOT/bin/check_dags.sh"
 echo "  проверка живёт в репозитории: deploy/check-dags.sh"
 
+echo "== 2c. Доступ пушащих к python из venv =="
+# pre-receive выполняется ОТ ТОГО, КТО ПУШИТ (devel/jupyter), и проверку дагов
+# запускает его правами. Если venv ему недоступен, ярус парсинга дагов не
+# отработает, а при строгом выборе интерпретатора (см. deploy/check-dags.sh:
+# python старше 3.10 не берётся) гейт может вообще не найти, чем проверять, и
+# отклонить любой push. Молча это выяснять дорого — проверяем при установке.
+venvOk=1
+for u in "${MEMBERS[@]}"; do
+    [[ "$u" == "$RUNAS" ]] && continue
+    id "$u" &>/dev/null || continue
+    if sudo -u "$u" "$VENV/bin/python" -c 'import airflow' >/dev/null 2>&1; then
+        echo "  ok: $u запускает $VENV/bin/python и видит airflow"
+    else
+        venvOk=0
+        echo "  !! $u НЕ может запустить $VENV/bin/python (или не видит airflow)"
+    fi
+done
+if [[ $venvOk -eq 0 ]]; then
+    echo "     Из-за этого серверная проверка дагов работать не сможет."
+    echo "     Кто закрывает путь:  namei -l $VENV/bin/python"
+    echo "     Обычно достаточно:   chmod -R a+rX $VENV"
+    echo "     (venv общий с продом — команду выполняй осознанно; сам не трогаю)"
+fi
+
 echo "== 3. bare-репозиторий =="
 if [[ ! -e "$BARE/HEAD" ]]; then
     git init --bare "$BARE" >/dev/null
