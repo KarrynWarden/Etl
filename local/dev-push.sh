@@ -41,24 +41,35 @@ cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 # с ошибкой и ждёт полминуты. Поэтому вывод ловим и по нему отличаем «сервер
 # сказал нет» от «связь оборвалась».
 REJECT_RE='pre-receive hook declined|remote rejected|\[rejected\]|non-fast-forward|protected branch|hook declined'
+# Вывод push'а идёт ЧЕРЕЗ tee, а не в переменную. Так было не всегда, и цена
+# ошибки оказалась высокой: `out=$(git push ...)` — простая команда, и при
+# неудачном push'е `set -e` убивал скрипт ПРЯМО НА НЕЙ, до единой строчки
+# диагностики. Снаружи это выглядело как «отработало без ошибок, но ничего не
+# уехало»: ни вывода push'а, ни повторов, ни обновления Jupyter-клона — скрипта
+# уже нет. Внутри `if` набор -e не действует, а tee заодно возвращает живой
+# прогресс вместо тишины на всё время передачи.
 push_retry() {
-    local remote=$1 branch=$2 delay=2 out rc
+    local remote=$1 branch=$2 delay=2 log
+    log=$(mktemp) || return 1
     for attempt in 1 2 3 4 5; do
-        out=$(git push "$remote" "$branch" 2>&1); rc=$?
-        printf '%s\n' "$out"
-        [[ $rc -eq 0 ]] && return 0
-        if grep -qE "$REJECT_RE" <<<"$out"; then
+        if git push "$remote" "$branch" 2>&1 | tee "$log"; then
+            rm -f "$log"; return 0
+        fi
+        # Отказ сервера (pre-receive), non-fast-forward и прочее «сервер сказал
+        # нет» повторять бессмысленно: через две секунды ответ будет тот же.
+        if grep -qE "$REJECT_RE" "$log"; then
             echo "!! Сервер ОТКЛОНИЛ push — это не сетевой сбой, повторять нечего."
-            return 1
+            rm -f "$log"; return 1
         fi
         if [[ $attempt -eq 5 ]]; then
             echo "!! push в $remote не удался после повторов."
-            return 1
+            rm -f "$log"; return 1
         fi
         echo "   push в $remote не прошёл, повтор через ${delay}s..."
         sleep "$delay"
         delay=$((delay * 2))
     done
+    rm -f "$log"
 }
 
 # ssh-адрес сервера (user@host) из URL remote'а server

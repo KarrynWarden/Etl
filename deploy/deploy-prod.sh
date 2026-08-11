@@ -186,20 +186,27 @@ git tag -a "$TAG" "$COMMIT" -m "$title"
 push_retry() {   # сеть иногда отваливается: 2s, 4s, 8s, 16s
     # Повторяем только СЕТЕВЫЕ сбои. Отказ pre-receive через две секунды
     # повторится слово в слово — это не «не долетело», это «сервер сказал нет».
-    local delay=2 out rc
+    # Вывод — через tee, а не в переменную: `out=$(git push ...)` под `set -e`
+    # убивает скрипт прямо на присваивании, без единой строчки диагностики
+    # (наступали, см. комментарий в local/dev-push.sh).
+    local delay=2 log
     local rejectRe='pre-receive hook declined|remote rejected|\[rejected\]|non-fast-forward|protected branch|hook declined'
+    log=$(mktemp) || return 1
     for attempt in 1 2 3 4 5; do
-        out=$(git push "$@" 2>&1); rc=$?
-        printf '%s\n' "$out"
-        [[ $rc -eq 0 ]] && return 0
-        if grep -qE "$rejectRe" <<<"$out"; then
-            echo "!! Сервер ОТКЛОНИЛ push — это не сетевой сбой, повторять нечего."
-            return 1
+        if git push "$@" 2>&1 | tee "$log"; then
+            rm -f "$log"; return 0
         fi
-        if [[ $attempt -eq 5 ]]; then echo "!! push не удался после повторов."; return 1; fi
+        if grep -qE "$rejectRe" "$log"; then
+            echo "!! Сервер ОТКЛОНИЛ push — это не сетевой сбой, повторять нечего."
+            rm -f "$log"; return 1
+        fi
+        if [[ $attempt -eq 5 ]]; then
+            echo "!! push не удался после повторов."; rm -f "$log"; return 1
+        fi
         echo "   не прошло, повтор через ${delay}s..."
         sleep "$delay"; delay=$((delay * 2))
     done
+    rm -f "$log"
 }
 
 echo "== push -> $REMOTE/$BRANCH =="
