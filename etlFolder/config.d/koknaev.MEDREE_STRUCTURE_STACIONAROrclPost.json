@@ -6,6 +6,7 @@
     "periodColumn": "dcalc",
     "slavePeriodColumn": "dcalc",
     "mode": "section_compare",
+    "groupDag": "MedreeOrclPost",
     "truncatePeriod": false
   }
 }

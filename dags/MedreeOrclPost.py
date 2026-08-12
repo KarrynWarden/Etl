@@ -1,60 +1,65 @@
-"""DAG: oracle -> postgres для medree-таблиц.
+"""DAG: составной перенос — несколько линий одним дагом.
 
-Медри — отдельная семья таблиц с собственной логикой "срезов":
-   - dcalc выступает в роли createdate (поле периода).
-   - Сравниваются массивы уникальных (dcalc, MAX(lastupdate)) на ведущей
-     и ведомой сторонах. Если для какого-то dcalc lastupdate отличается
-     или его нет на ведомой — dcalc попадает в массив на обновление.
-   - Дополнительно проверяется etl_log_iud_row: если для tablename есть
-     записи с isetl=0, их period (=dcalc) тоже попадает в массив.
-   - Для каждого dcalc из массива: полностью удаляем строки этого dcalc
-     на ведомой и перезаливаем заново из ведущей.
-   - Записи etl_log_iud_row, существовавшие на момент старта запуска,
-     помечаются isetl=1 (новые останутся для следующего запуска).
+Линии перечислены в LINES: по задаче на линию, все читают свои
+настройки из etlFolder/config.d. Так собирают линии одного источника
+(например, все doctype mocheck из общего MOCHECK.sql), чтобы не плодить
+одинаковые даги и не гонять один и тот же запрос параллельно.
 
-Всё это инкапсулировано в режиме section_compare ядра do_etl.
+Файл пишет конструктор: правки в списке линий, расписании и тегах делаются
+через него (иначе следующая дописанная линия их затрёт). Свободный текст
+ниже маркера — исключение: его конструктор переносит в новый файл как есть.
+
+─── заметка (правится руками, конструктор её сохраняет) ───
+Медри — отдельная семья таблиц с собственной логикой «срезов» (режим
+section_compare ядра do_etl, задан в config.d по линиям):
+
+  * dcalc выступает в роли createdate (поле периода);
+  * сравниваются срезы (dcalc, lastupdate, количество записей) на ведущей и
+    ведомой. Группа обновляется, если разошлись множества lastupdate ЛИБО
+    счётчики: одного lastupdate мало — удаление строки, не державшей максимум,
+    множества не меняет, а данные уже другие;
+  * дополнительно берутся группы с isokaudit = 4 в etl_jobs;
+  * каждая такая группа перезаливается целиком: DELETE строк этого dcalc в
+    ведомой + заливка из ведущей.
+
+Журнал etl_log_iud_row эти линии НЕ читают (режим section_compare, а не
+section_compare_with_iud) — триггер на ведущей им не нужен, и вкладка
+«Триггеры» его с них не спрашивает.
+
+MEDREE_PRDISP сюда не входит: у него своя механика (пересчёт джобом внутри
+Oracle + режим section) и свой даг MedreeprdispOrclPost.
 """
 import datetime as dt
 
 from airflow.models import DAG
 
-from Functions._dagHelpers import DEFAULT_ARGS, buildOperator, configureLogger, runEtl, makeEtlOperator, addFreezeWatcher
+from Functions._dagHelpers import (DEFAULT_ARGS, configureLogger, makeEtlOperator,
+                                   addFreezeWatcher, lineEnabled)
 
-
-MEDREE_TABLES = ["MEDREE_CONS", "MEDREE_CONSDET", "koknaev.MEDREE_STRUCTURE_STACIONAR"]
-
+# dagbuilder: составной даг (список линий ниже правит конструктор)
+LINES = [
+    ('MEDREE_CONS', 'Orcl', 'Post'),
+    ('MEDREE_CONSDET', 'Orcl', 'Post'),
+    ('koknaev.MEDREE_STRUCTURE_STACIONAR', 'Orcl', 'Post'),
+]
 
 with DAG(
     dag_id="MedreeOrclPost",
     default_args=DEFAULT_ARGS,
     max_active_runs=1,
-    tags=["OrclPost", "medree", "DbSync", "section"],
+    tags=['OrclPost', 'medree', 'DbSync', 'section'],
     schedule_interval=dt.timedelta(minutes=3),
     catchup=False,
 ) as dag:
     configureLogger()
-
-    previous = None
     tasks = [
         makeEtlOperator(
-            f"do_etl_{group}",
-            tableNameMaster=group, dbMaster="Orcl", dbSlave="Post",
-            tableNameEtlJobs=group, retryMode="frequent",
+            f"do_etl_{line}",
+            tableNameMaster=line, dbMaster=dbm, dbSlave=dbs,
+            tableNameEtlJobs=line, retryMode="frequent",
         )
-        for group in MEDREE_TABLES
+        for line, dbm, dbs in LINES
+        if lineEnabled(line, dbm, dbs)
     ]
-    #addPauseWatcher(tasks)
-    addFreezeWatcher(tasks, retryMode="frequent")
-    #for tableName in MEDREE_TABLES:
-    #    task = buildOperator(
-    #        f"do_etl_{tableName}",
-    #        runEtl(
-    #            tableNameMaster=tableName,
-    #            dbMaster="Orcl",
-    #            dbSlave="Post",
-    #        ),
-    #        triggerRule ="all_done"
-    #    )
-        #if previous is not None:
-        #    previous >> task
-        #previous = task
+    if tasks:
+        addFreezeWatcher(tasks, retryMode="frequent")
