@@ -28,6 +28,18 @@
 решается опцией auditExcludeFields в config.json — список колонок,
 которые аудит исключает из сравнения (join-поля из idoc/spdocper),
 не влияя на перенос.
+
+Что печатается
+--------------
+* по группе — строка с результатом, числом строк с каждой стороны и
+  РАЗБИВКОЙ ВРЕМЕНИ по фазам (запрос/выборка каждой стороны, приведение
+  типов, сравнение, запись статуса); в конце линии — сумма по фазам.
+  Это диагностика «почему аудит идёт долго»: фаза, которая не зависит от
+  размера группы, и есть фиксированная плата за группу
+  (см. README, «Аудит идёт долго: с чего начать», и tools/audit_profile.py);
+* при расхождении — записи, СОПОСТАВЛЕННЫЕ ПО ПЕРВИЧНОМУ КЛЮЧУ: для общего
+  ключа перечисляются расходящиеся колонки по именам, для ключа с одной
+  стороны так и сказано, что записи на другой стороне нет (см. _diffLines).
 """
 
 from __future__ import annotations
@@ -35,6 +47,7 @@ from __future__ import annotations
 import datetime
 import decimal
 import logging
+import time
 
 from airflow.exceptions import (
     AirflowSkipException, AirflowException, AirflowFailException,
@@ -247,13 +260,177 @@ def _printSample(prefix, rows):
         shown += 1
 
 
+# ----------------------------------------------------------------------------
+#            Отчёт о расхождениях: по первичному ключу, с именами колонок
+# ----------------------------------------------------------------------------
+# Раньше печатались просто две пачки строк-кортежей: 100 «только в ведущей» и
+# 100 «только в ведомой», в произвольном (set) порядке и без единой подписи.
+# А типовое расхождение — не «строки нет», а «строка есть, но обновилась
+# неправильно»: тогда ОДНА и та же запись лежит в обеих пачках, и найти, каким
+# полем они отличаются, можно было только глазами по длинному кортежу.
+# Поэтому расхождения сопоставляются по первичному ключу и печатаются по одной
+# записи на ключ: что за ключ, каких колонок касается расхождение и что в них с
+# каждой стороны. Ключ, которого нет на другой стороне, так и называется.
+#
+# Сам ВЕРДИКТ группы этот отчёт не трогает: статус по-прежнему решает равенство
+# множеств (см. _evaluate) — здесь только печать.
+
+def _pkPositions(struct):
+    """Позиции колонок первичного ключа в структуре аудита."""
+    return [i for i, f in enumerate(struct) if f[3] == "Primary Key"]
+
+
+def _fmt(value):
+    """Значение для лога. Строки — через repr: иначе не видно ни хвостовых
+    пробелов (частая причина расхождения CHAR/VARCHAR), ни пустой строки."""
+    if value is None:
+        return "NULL"
+    if isinstance(value, str):
+        return repr(value)
+    return str(value)
+
+
+def _sortableKey(key):
+    """Ключ сортировки PK, устойчивый к смеси типов и None.
+
+    sorted() по сырым значениям падает с TypeError, стоит в ключе оказаться
+    None или разнотипным значениям (Decimal и str в составном ключе). Здесь
+    каждое значение превращается в тройку (разряд типа, число, текст) —
+    сравнимую с любой другой, а порядок внутри одного типа остаётся
+    естественным (числа как числа, а не как строки)."""
+    out = []
+    for value in key:
+        if value is None:
+            out.append((0, 0.0, ""))
+        elif isinstance(value, bool):
+            out.append((1, float(value), ""))
+        elif isinstance(value, (int, float, decimal.Decimal)):
+            out.append((1, float(value), ""))
+        elif isinstance(value, (datetime.datetime, datetime.date)):
+            out.append((2, 0.0, value.isoformat()))
+        else:
+            out.append((3, 0.0, str(value)))
+    return out
+
+
+def _colLabel(structMaster, structSlave, i):
+    """Имя колонки для отчёта: 'IDRW' либо 'IDRW/idrw', если имена сторон
+    различаются не только регистром (в ведущей-запросе это псевдоним)."""
+    nameMaster = str(structMaster[i][0])
+    nameSlave = str(structSlave[i][0]) if i < len(structSlave) else ""
+    if nameSlave and nameSlave.lower() != nameMaster.lower():
+        return f"{nameMaster}/{nameSlave}"
+    return nameMaster
+
+
+def _keyText(struct, pkPos, key):
+    return ", ".join(f"{struct[i][0]}={_fmt(v)}" for i, v in zip(pkPos, key))
+
+
+def _rowsByKey(rows, pkPos, wanted):
+    """{ключ: [строки]} — ТОЛЬКО для ключей из wanted.
+
+    Ограничение по wanted не косметическое: расхождение бывает и на всю
+    группу (сотни тысяч строк с каждой стороны), а печатаем мы всё равно
+    первые _MAX_PRINT_DIFF ключей — незачем держать в памяти индекс по всем."""
+    out = {}
+    for row in rows:
+        key = tuple(row[i] for i in pkPos)
+        if key in wanted:
+            out.setdefault(key, []).append(row)
+    return out
+
+
+def _rowDiff(rowMaster, rowSlave, structMaster, structSlave, pkPos):
+    """[(имя колонки, значение ведущей, значение ведомой)] по расходящимся полям."""
+    skip = set(pkPos)
+    return [(_colLabel(structMaster, structSlave, i), a, b)
+            for i, (a, b) in enumerate(zip(rowMaster, rowSlave))
+            if i not in skip and a != b]
+
+
+def _diffLines(onlyMaster, onlySlave, structMaster, structSlave,
+               nameMaster, nameSlave, limit=_MAX_PRINT_DIFF):
+    """Строки отчёта о расхождениях группы (список, для лога).
+
+    onlyMaster/onlySlave — уже приведённые к общему виду записи, которых нет
+    на другой стороне (set1 - set2 и set2 - set1).
+    """
+    pkPos = _pkPositions(structMaster)
+    if not pkPos:
+        # Сопоставлять нечем (в полях аудита нет PK — так у medree). Печатаем
+        # как раньше: две пачки строк, но хотя бы с шапкой из имён колонок.
+        header = ", ".join(str(f[0]) for f in structMaster)
+        lines = [f"колонки: {header}"]
+        for prefix, rows in ((f"только в ведущей {nameMaster}", onlyMaster),
+                             (f"только в ведомой {nameSlave}", onlySlave)):
+            for row in list(rows)[:limit]:
+                lines.append(f"{prefix}: {row}")
+            if len(rows) > limit:
+                lines.append(f"{prefix}: показаны первые {limit} из {len(rows)}")
+        return lines
+
+    keysMaster = {tuple(row[i] for i in pkPos) for row in onlyMaster}
+    keysSlave = {tuple(row[i] for i in pkPos) for row in onlySlave}
+    allKeys = sorted(keysMaster | keysSlave, key=_sortableKey)
+    shown = allKeys[:limit]
+    wanted = set(shown)
+    byKeyMaster = _rowsByKey(onlyMaster, pkPos, wanted)
+    byKeySlave = _rowsByKey(onlySlave, pkPos, wanted)
+
+    both = keysMaster & keysSlave
+    lines = [
+        f"расхождение по {len(allKeys)} ключам: изменены {len(both)}, "
+        f"нет в ведомой {nameSlave} {len(keysMaster - keysSlave)}, "
+        f"нет в ведущей {nameMaster} {len(keysSlave - keysMaster)}"
+    ]
+
+    # Гистограмма «какая колонка расходится чаще» — по ПОКАЗАННЫМ ключам.
+    # Обычно ломается одно и то же поле во всех записях, и одна эта строка
+    # экономит просмотр сотни одинаковых сообщений.
+    byColumn = {}
+    body = []
+    for key in shown:
+        rowsM = byKeyMaster.get(key, [])
+        rowsS = byKeySlave.get(key, [])
+        keyStr = _keyText(structMaster, pkPos, key)
+        if rowsM and rowsS:
+            if len(rowsM) > 1 or len(rowsS) > 1:
+                body.append(f"{keyStr}: дубликаты — строк в ведущей "
+                            f"{len(rowsM)}, в ведомой {len(rowsS)}")
+                continue
+            diff = _rowDiff(rowsM[0], rowsS[0], structMaster, structSlave, pkPos)
+            for column, _a, _b in diff:
+                byColumn[column] = byColumn.get(column, 0) + 1
+            detail = "; ".join(f"{column}: ведущая {_fmt(a)} ≠ ведомая {_fmt(b)}"
+                               for column, a, b in diff)
+            body.append(f"{keyStr}: отличаются поля ({len(diff)}) — {detail}")
+        elif rowsM:
+            extra = (f" (строк с этим ключом в ведущей {len(rowsM)})"
+                     if len(rowsM) > 1 else "")
+            body.append(f"{keyStr}: нет в ведомой {nameSlave}{extra}")
+        else:
+            extra = (f" (строк с этим ключом в ведомой {len(rowsS)})"
+                     if len(rowsS) > 1 else "")
+            body.append(f"{keyStr}: нет в ведущей {nameMaster} — лишняя строка "
+                        f"в ведомой {nameSlave}")
+    if byColumn:
+        top = sorted(byColumn.items(), key=lambda kv: (-kv[1], kv[0]))
+        lines.append("чаще всего расходятся колонки: " +
+                     ", ".join(f"{c} ({n})" for c, n in top))
+    lines += body
+    if len(allKeys) > limit:
+        lines.append(f"показано ключей: {limit} из {len(allKeys)} "
+                     f"(отсортированы по первичному ключу)")
+    return lines
+
+
 def _evaluate(period, tableNameEtlJobs, tableNameSlave,
-              masterRows, slaveRows, set1, set2):
+              masterRows, slaveRows, set1, set2,
+              structMaster=None, structSlave=None):
     """Вернуть статус аудита группы: 1 (идентично) или -4 (отличия)."""
     if set1 == set2:
         if len(masterRows) == len(slaveRows) == len(set1):
-            logger.info("Период %s: %s идентична (%d строк)",
-                        period, tableNameEtlJobs, len(set1))
             return 1
         # множества равны, но есть дубликаты с одной из сторон
         if len(masterRows) > len(set1):
@@ -270,9 +447,57 @@ def _evaluate(period, tableNameEtlJobs, tableNameSlave,
         "Период %s: %s ОТЛИЧАЕТСЯ — только в ведущей %d, только в ведомой %d",
         period, tableNameEtlJobs, len(onlyMaster), len(onlySlave),
     )
-    _printSample(f"только в ведущей {tableNameEtlJobs}", onlyMaster)
-    _printSample(f"только в ведомой {tableNameSlave}", onlySlave)
+    if structMaster and structSlave:
+        for line in _diffLines(onlyMaster, onlySlave, structMaster, structSlave,
+                               tableNameEtlJobs, tableNameSlave):
+            logger.warning("  %s", line)
+    else:
+        _printSample(f"только в ведущей {tableNameEtlJobs}", onlyMaster)
+        _printSample(f"только в ведомой {tableNameSlave}", onlySlave)
     return -4
+
+
+# ----------------------------------------------------------------------------
+#                       Замеры времени по фазам (диагностика)
+# ----------------------------------------------------------------------------
+# Аудит iperson идёт часами, и до этих замеров нельзя было даже сказать, на что
+# уходит время: группа на 525 строк обрабатывается ~15 с, а на 271 184 строки —
+# ~32 с. Значит, основная часть НЕ зависит от объёма группы (иначе разница была
+# бы в сотни раз), то есть это фиксированная плата за каждую группу — и её надо
+# видеть по фазам, а не гадать. Ничего не меняя в самой проверке, замеряем
+# шесть отрезков и печатаем их по группе и суммой по линии.
+_PHASE_LABELS = (
+    ("masterExec", "запрос ведущей"),
+    ("masterFetch", "выборка ведущей"),
+    ("slaveExec", "запрос ведомой"),
+    ("slaveFetch", "выборка ведомой"),
+    ("convert", "приведение+множества"),
+    ("compare", "сравнение+отчёт"),
+    ("status", "статус+лог+коммит"),
+)
+
+
+def _newTiming():
+    timing = {name: 0.0 for name, _label in _PHASE_LABELS}
+    timing["groups"] = 0
+    timing["rows"] = 0
+    return timing
+
+
+def _addTiming(total, one, rows):
+    for name, _label in _PHASE_LABELS:
+        total[name] += one[name]
+    total["groups"] += 1
+    total["rows"] += rows
+
+
+def _timingText(timing):
+    parts = [f"{label} {timing[name]:.1f}с" for name, label in _PHASE_LABELS]
+    return ", ".join(parts)
+
+
+def _timingTotal(timing):
+    return sum(timing[name] for name, _label in _PHASE_LABELS)
 
 
 # ----------------------------------------------------------------------------
@@ -319,6 +544,16 @@ def _auditGroup(cfg, ctx, origPeriod, report):
     # совпадали — и группа помечалась как «идентична» (ложный зелёный).
     period = _periodKey(origPeriod, cfg["truncatePeriod"])
 
+    one = {}
+    mark = time.perf_counter()
+
+    def _phase(name):
+        """Закрыть отрезок замера и начать следующий."""
+        nonlocal mark
+        now = time.perf_counter()
+        one[name] = now - mark
+        mark = now
+
     try:
         # Бинды периода строятся отдельно для каждой стороны: у ведущей и
         # ведомой период может быть устроен по-разному (у одной составной
@@ -329,18 +564,24 @@ def _auditGroup(cfg, ctx, origPeriod, report):
             ctx["masterSql"],
             {**_periodBinds(_periodSpec(cfg["periodColumn"]), period),
              **filterParams})
+        _phase("masterExec")
         masterRows = cursorMaster.fetchall()
+        _phase("masterFetch")
         cursorSlave.execute(
             ctx["slaveSql"],
             _periodBinds(_periodSpec(cfg["slavePeriodColumn"]), period))
+        _phase("slaveExec")
         slaveRows = cursorSlave.fetchall()
+        _phase("slaveFetch")
 
         set1, set2 = _toComparable(dbMaster, cfg["dbSlave"], masterRows,
                                    slaveRows, ctx["structMaster"],
                                    ctx["structSlave"])
-        #print('here are sets ', set1, ' and ', set2)
+        _phase("convert")
         status = _evaluate(period, tableNameEtlJobs, tableNameSlave,
-                           masterRows, slaveRows, set1, set2)
+                           masterRows, slaveRows, set1, set2,
+                           ctx["structMaster"], ctx["structSlave"])
+        _phase("compare")
         if status != 1:
             report["differing"].append(origPeriod)
 
@@ -348,6 +589,15 @@ def _auditGroup(cfg, ctx, origPeriod, report):
         UpdateLog(tableNameEtlJobs, dbMaster, "Audit",
                   cursorMaster, conMaster, len(set1), origPeriod, status)
         conMaster.commit()
+        _phase("status")
+
+        _addTiming(report["timing"], one, len(masterRows))
+        logger.info("Период %s: %s %s — строк ведущая %d / ведомая %d; "
+                    "%.1fс (%s)",
+                    period, tableNameEtlJobs,
+                    "идентична" if status == 1 else "ОТЛИЧАЕТСЯ",
+                    len(masterRows), len(slaveRows),
+                    _timingTotal(one), _timingText(one))
     except Exception as err:
         _safeRollback(conMaster)
         _safeRollback(conSlave)
@@ -427,10 +677,12 @@ def _run(cfg):
     tableNameEtlJobs = cfg["tableNameEtlJobs"]
     tableNameSlave = cfg["tableNameSlave"]
 
+    startedAt = time.perf_counter()
     conMaster = _connect(dbMaster)
     conSlave = _connect(dbSlave)
     cursorMaster = conMaster.cursor()
     cursorSlave = conSlave.cursor()
+    connectSec = time.perf_counter() - startedAt
     try:
         # 1. Структуры + поля аудита (перенесённые минус auditExcludeFields).
         structMasterFull = _loadStructure(cfg["structureMaster"], dbMaster)
@@ -480,6 +732,8 @@ def _run(cfg):
                 f"FLK: структура ведомой {tableNameSlave} не совпадает"
             )
 
+        setupSec = time.perf_counter() - startedAt - connectSec
+
         # 4. Контекст с готовыми SQL.
         ctx = {
             "conMaster": conMaster,
@@ -493,15 +747,30 @@ def _run(cfg):
         }
 
         # 5. Группы на проверку.
+        groupsAt = time.perf_counter()
         groups = _selectGroupsToAudit(cursorMaster, dbMaster, tableNameEtlJobs)
+        groupsSec = time.perf_counter() - groupsAt
         if not groups:
             logger.info("Аудит %s: групп для проверки нет", tableNameEtlJobs)
             raise AirflowSkipException
 
-        logger.info("Аудит %s: %d групп на проверку", tableNameEtlJobs, len(groups))
-        report = {"differing": [], "errored": []}
+        logger.info("Аудит %s: %d групп на проверку (подключение %.1fс, "
+                    "структуры %.1fс, список групп %.1fс)",
+                    tableNameEtlJobs, len(groups), connectSec, setupSec, groupsSec)
+        report = {"differing": [], "errored": [], "timing": _newTiming()}
         for tablename, period in groups:
             _auditGroup(cfg, ctx, period, report)
+
+        # Свод по фазам. Ради него замеры и заведены: одна строка в конце
+        # отвечает на вопрос «что тормозит», не требуя читать лог по группам.
+        timing = report["timing"]
+        if timing["groups"]:
+            logger.info(
+                "Аудит %s: время по фазам за %d групп (%d строк ведущей) — %s; "
+                "итого в группах %.1fс, в среднем %.1fс на группу",
+                tableNameEtlJobs, timing["groups"], timing["rows"],
+                _timingText(timing), _timingTotal(timing),
+                _timingTotal(timing) / timing["groups"])
 
         differing, errored = report["differing"], report["errored"]
         if differing:
