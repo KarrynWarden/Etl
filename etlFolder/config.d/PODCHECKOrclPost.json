@@ -8,6 +8,7 @@
     "selectSql": "queries/customQueries/MOCHECK.sql",
     "filterClause": "doctype IN (5, 6)",
     "filterClauseSlave": "doctype IN (5, 6)",
-    "mode": "delete_insert"
+    "mode": "delete_insert",
+    "groupDag": "MocheckOrclPost"
   }
 }

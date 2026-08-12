@@ -1,13 +1,17 @@
 {
   "EXPMEDOrclPost": {
-    "_doc": "oracle->postgres, mocheck doctype=2,3,4 (EXPMED). Один idrw = несколько строк ведомой; mode=delete_insert удаляет все строки idrw в пределах doctype IN (2,3,4) и заливает актуальные (ловит смену doctype). conflictExtra/conflictWhere не заданы намеренно — в этом режиме заливка идёт простым INSERT без ON CONFLICT (строки уже удалены), уникальный индекс под ON CONFLICT не требуется. period в etl_log_iud_row декоративный (docexpdt, неверен для doctype=4) — реальный берётся из данных.",
+    "_doc": "oracle->postgres, mocheck doctype=2,3,4 (EXPMED). Линия живёт в составном даге MocheckOrclPost (ключ groupDag). mode=section_compare_with_iud: группа (createdate) перезаливается целиком, когда срез ведущей и ведомой разошёлся по (period, lastupdate, количество), пришёл сигнал в etl_log_iud_row или у группы стоит isokaudit=4. Прежний delete_insert ходил только по журналу и по одному idrw: правку, до которой журнал не доехал (и любое расхождение, возникшее мимо триггера), линия не видела вовсе. Один idrw даёт несколько строк ведомой и строка переезжает между doctype 2<->3<->4 — перезаливка всего среза с filterClauseSlave = doctype IN (2,3,4) снимает вопрос осиротевших строк в чужом doctype. conflictExtra/conflictWhere не заданы намеренно: заливка группы идёт простым INSERT без ON CONFLICT (строки среза уже удалены), уникальный индекс под ON CONFLICT не требуется. truncatePeriod=true: у ведущей createdate это oracle DATE (docexpdt/docpenaltydt, драйвер отдаёт datetime), у ведомой — postgres date; без приведения к дню группы не совпали бы никогда и таблица перезаливалась бы на каждом прогоне. period в etl_log_iud_row декоративный (docexpdt, неверен для doctype=4) — он лишь ускоряет реакцию, а истину даёт сравнение срезов. Пустой createdate — полноправная группа (NULL-период), а не мусор. Цена режима: каждый прогон снимает срез ведущей, то есть выполняет MOCHECK.sql (ветки doctype 2,3,4 — по фильтру линии); если станет тяжело для расписания в минуту, у дага MocheckOrclPost есть общий schedule_interval.",
     "tableNameMaster": "EXPMED",
     "tableNameSlave": "mocheck",
     "structureMaster": "structures/MOCHECK/MOCHECK.json",
     "structureSlave": "structures/MOCHECK/mocheck.json",
-    "selectSql": "queries/customQueries/MOCHECK.sql",
+    "periodColumn": "createdate",
+    "slavePeriodColumn": "createdate",
+    "mode": "section_compare_with_iud",
+    "groupDag": "MocheckOrclPost",
     "filterClause": "doctype IN (2, 3, 4)",
     "filterClauseSlave": "doctype IN (2, 3, 4)",
-    "mode": "delete_insert"
+    "truncatePeriod": true,
+    "selectSql": "queries/customQueries/MOCHECK.sql"
   }
 }

@@ -771,7 +771,7 @@ def _trigger_controls(W, out, ctx_fn, save_option=True, mode_note_fn=None,
             "journal": journal, "save": chk_save}
 
 
-def _publish_controls(W, out, do_write, message_fn, on_pushed=None):
+def _publish_controls(W, out, do_write, message_fn, on_pushed=None, report_fn=None):
     """Кнопка «создать и запушить» + подтверждение (защита от мисклика).
 
     do_write() пишет файлы линии и возвращает список абсолютных путей (может
@@ -779,6 +779,9 @@ def _publish_controls(W, out, do_write, message_fn, on_pushed=None):
     (btn_publish, confirm_box) — их размещает вызывающий UI. После подтверждения
     файлы пишутся и делается git commit + push текущей ветки (B.git_commit_push).
     on_pushed() дёргается ТОЛЬКО после успешного push (см. _push_only_controls).
+    report_fn() — необязательные строки к отчёту о записи (что не менялось, что
+    случилось с размещением линии): здесь они нужны ровно так же, как в
+    «Создать файлы», иначе выкладка молчит о том, что показывает сборка.
     """
     info = W.HTML()
     btn_yes = W.Button(description="✅ Да, выложить в git", button_style="danger",
@@ -843,6 +846,10 @@ def _publish_controls(W, out, do_write, message_fn, on_pushed=None):
             print("Файлы созданы:")
             for p in written:
                 print("  ", os.path.relpath(p, ROOT))
+            if not written:
+                print("  (ничего: все файлы линии уже такие)")
+            for row in (report_fn() if report_fn else []):
+                print(row)
             print("\n" + ("✅ Выложено в git:" if ok
                           else "⚠ Файлы созданы, но НЕ выложены:"))
             print(log)
@@ -863,6 +870,9 @@ def _complex_ui():
              "struct_master_rel": None, "struct_slave_rel": None,
              # разбор своего SELECT для триггера (кнопка «Предположить по SQL»)
              "guess": None,
+             # правка: какая линия загружена и что дала последняя запись
+             "edit_key": None, "unchanged": [], "placement_notes": [],
+             "shared_rows": [],
              "tags_auto": True, "_tags_guard": False, "_opts_guard": False}
 
     # ── режим работы ──
@@ -975,9 +985,11 @@ def _complex_ui():
         "источника, чтобы не гонять один и тот же запрос несколькими дагами "
         "параллельно. Линия дописывается в список дага; расписание и теги у "
         "существующего дага <b>не меняются</b> (они общие на все его линии). "
-        "Даги, написанные руками (<code>MocheckOrclPost</code>, "
-        "<code>MedreeOrclPost</code>), конструктор не переписывает — для них он "
-        "покажет строку, которую нужно вписать самому.</span>")
+        "Принадлежность линии дагу пишется в её конфиг (<code>groupDag</code>) — "
+        "по нему правка потом и находит, что своего дага у линии нет. "
+        "Даги, написанные руками (<code>MedreeOrclPost</code>), конструктор не "
+        "переписывает — для них он покажет строку, которую нужно вписать "
+        "самому.</span>")
     group_box = W.VBox([group_help, group_pick, group_new],
                        layout=W.Layout(display="none"))
 
@@ -1260,6 +1272,9 @@ def _complex_ui():
             # уходя из правки, забыть исходные пути структур, чтобы новая линия
             # не записалась поверх чужих файлов; вернуть авто-теги
             state["struct_master_rel"] = state["struct_slave_rel"] = None
+            # и забыть, какая линия была загружена: иначе сборка НОВОЙ линии
+            # полезла бы «переселять» даг у прежней
+            state["edit_key"] = None
             state["tags_auto"] = True
             _refresh_default_tags()
         elif m == "edit":
@@ -1503,9 +1518,12 @@ def _complex_ui():
             "retry_mode": retry.value,
             "doc": doc.value.strip() or None,
             "extra": extra,
-            "select_sql_text": f_sql.value.strip() or None,
+            # текст запросов отдаём КАК ЕСТЬ (крайние пробелы срежет сборка):
+            # отступ первой строки — часть запроса, а .strip() здесь означал,
+            # что при каждом сохранении общий .sql «менялся» первой строкой
+            "select_sql_text": f_sql.value if f_sql.value.strip() else None,
             "select_sql_name": f_sql_name.value.strip() or None,
-            "periods_sql_text": f_periods.value.strip() or None,
+            "periods_sql_text": f_periods.value if f_periods.value.strip() else None,
             "struct_master_rel": state["struct_master_rel"],
             "struct_slave_rel": state["struct_slave_rel"],
             # версионируемая копия DDL триггера (галочка в блоке «Триггер»)
@@ -1803,6 +1821,11 @@ def _complex_ui():
             state["master_cols"], state["slave_cols"] = data["master_cols"], data["slave_cols"]
             state["struct_master_rel"] = data["struct_master_rel"]
             state["struct_slave_rel"] = data["struct_slave_rel"]
+            # ключ ЗАГРУЖЕННОЙ линии: по нему при сохранении ищется прежнее
+            # размещение дага (имя линии в форме могли и переименовать)
+            state["edit_key"] = key
+            state["unchanged"] = []
+            state["placement_notes"] = []
             pair_map = dict(data["pairs"])
             pk_names = {c["column_name"] for c in data["master_cols"]
                         if c.get("is_primary_key")}
@@ -1816,13 +1839,34 @@ def _complex_ui():
         except Exception as e:
             _log(f"Ошибка загрузки линии: {type(e).__name__}: {e}")
 
+    def _shared_rows(files, only=None):
+        """Строки «этот файл общий с другими линиями» для отчёта/предпросмотра.
+
+        only — множество rel-путей, которые реально пишутся (в правке остальные
+        пропускаются, и пугать общими файлами, к которым не притронулись, незачем)."""
+        rels = [rel[len("etlFolder/"):] for rel, _c in files
+                if rel.startswith("etlFolder/") and (only is None or rel in only)]
+        key = f"{_line_name()}{dbm.value}{dbs.value}"
+        shared = B.shared_line_files(key, rels)
+        if not shared:
+            return []
+        rows = ["Общие файлы — правка достаётся и другим линиям:"]
+        for rel, users in sorted(shared.items()):
+            rows.append(f"  ~ {rel} → {', '.join(users)}")
+        return rows
+
     def on_preview(_):
         try:
             if not state["rows"]:
                 _log("Сначала сними структуры («Снять структуры из БД») или загрузи линию."); return
             files = B.build_all(_build_spec())
+            shared = _shared_rows(files)
             with out:
                 out.clear_output()
+                for row in shared:
+                    print(row)
+                if shared:
+                    print()
                 for rel, content in files:
                     print("=" * 70); print(rel); print("-" * 70); print(content)
                 # DDL триггера показываем ВСЕГДА — даже когда его не сохраняют в
@@ -1846,7 +1890,12 @@ def _complex_ui():
 
     def _write_current():
         """Собрать и записать файлы линии. Возвращает список путей. Бросает при
-        пустом сопоставлении/конфликте имён — вызывающий показывает ошибку."""
+        пустом сопоставлении/конфликте имён — вызывающий показывает ошибку.
+
+        В правке пишется только то, что РЕАЛЬНО изменилось: сборка всегда
+        отдаёт полный комплект файлов линии, а write_files пропускает совпавшие
+        с диском (иначе правка одного поля трогала бы и структуры, и даг, и
+        общий SQL). Что пропущено — видно в отчёте (`state["unchanged"]`)."""
         if not state["rows"]:
             raise RuntimeError("Сначала сними структуры («Снять структуры из БД») или загрузи линию.")
         files = B.build_all(_build_spec())
@@ -1854,9 +1903,44 @@ def _complex_ui():
         # список — это не «затирание чужого файла», ради которого стоит запрет.
         gid = _group_id()
         force = {f"dags/{gid}.py"} if gid else ()
-        # в режиме правки перезаписываем существующие файлы намеренно
-        return B.write_files(files, overwrite=(work_mode.value == "edit"),
-                             force=force)
+        edit = work_mode.value == "edit"
+        # Прежнее размещение спрашиваем ДО записи: конфиг линии сейчас будет
+        # переписан на новое, и «откуда переехали» станет неоткуда узнать.
+        placement = None
+        key = state.get("edit_key")
+        if edit and key:
+            try:
+                placement = B.line_placement(key)
+            except Exception:
+                placement = None
+        state["unchanged"] = B.unchanged_files(files)
+        skip = set(state["unchanged"])
+        state["shared_rows"] = _shared_rows(
+            files, only={rel for rel, _c in files if rel not in skip})
+        written = B.write_files(files, overwrite=edit, force=force)
+        state["placement_notes"] = []
+        if placement:
+            old_group, old_own = placement
+            try:
+                state["placement_notes"] = B.retire_old_placement(
+                    key, old_group, old_own, gid)
+            except Exception as e:
+                state["placement_notes"] = [
+                    f"прежнее размещение линии убрать не удалось "
+                    f"({type(e).__name__}: {e}) — проверь даги руками"]
+        return written
+
+    def _write_report():
+        """Строки отчёта о записи: что пропущено, что общее, что с размещением."""
+        lines = list(state.get("shared_rows") or [])
+        for note in state.get("placement_notes") or []:
+            lines.append("  · " + note)
+        skipped = state.get("unchanged") or []
+        if skipped:
+            lines.append(f"Не изменились (не переписаны): {len(skipped)}")
+            for rel in skipped:
+                lines.append("  = " + rel)
+        return lines
 
     def on_make(_):
         try:
@@ -1866,6 +1950,10 @@ def _complex_ui():
                 print("Готово (и конфиг успешно собрался):")
                 for p in written:
                     print("  ", os.path.relpath(p, ROOT))
+                if not written:
+                    print("  (ничего: все файлы линии уже такие)")
+                for row in _write_report():
+                    print(row)
                 print("\nДальше выкатить на тест:")
                 print("  sh deploy/deploy-test.sh \"новая линия\"")
                 print("(или кнопка «Создать и запушить» — сразу в git)")
@@ -1895,7 +1983,7 @@ def _complex_ui():
         commit_msg.value = ""
 
     btn_pub, pub_confirm = _publish_controls(W, out, _write_current, _commit_msg,
-                                             _clear_commit_msg)
+                                             _clear_commit_msg, _write_report)
     btn_push_only, push_only_confirm = _push_only_controls(W, out, _commit_msg,
                                                            _clear_commit_msg)
     btn_pub.layout.margin = "0 0 0 40px"   # «Создать и запушить» — сбоку, отдельно
@@ -2592,6 +2680,8 @@ def _sp_ui():
                 print(f"Готово (конфиг {SP.SP_KIND_CONFIG[kind.value]} собрался):")
                 for p in written:
                     print("  ", os.path.relpath(p, ROOT))
+                if not written:
+                    print("  (ничего: все файлы линии уже такие)")
                 print("\nДальше выкатить на тест:")
                 print("  sh deploy/deploy-test.sh \"справочник/разовый перенос\"")
                 print("(или кнопка «Создать и запушить» — сразу в git)")

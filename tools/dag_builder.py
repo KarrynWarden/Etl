@@ -420,13 +420,36 @@ with DAG(
 
 GROUP_MARK = "# dagbuilder: составной даг (список линий ниже правит конструктор)"
 GROUP_LINES_VAR = "LINES"
+# Заметка человека внутри составного дага. Всё, что в docstring ПОСЛЕ этой
+# строки, конструктор считает текстом пользователя: читает при разборе и
+# кладёт обратно при перезаписи. Без неё «объяснение, зачем этот даг» жило
+# только в дагах, написанных руками, — и стоило файлу стать машинным, как
+# первая же дописанная линия стирала его начисто.
+GROUP_NOTE_MARK = "─── заметка (правится руками, конструктор её сохраняет) ───"
+# Ключ конфига линии: в каком составном даге она перечислена. Явная запись
+# нужна потому, что обратный поиск (пробежать даги и найти линию в списке)
+# работает только для дагов НАШЕГО формата: линия в чужом даге выглядела как
+# линия вообще без дага, и правка такой линии молча заводила ей второй,
+# собственный даг — то есть тот же перенос начинал идти дважды.
+GROUP_DAG_KEY = "groupDag"
+
+
+def _note_block(note):
+    """Хвост docstring с заметкой пользователя ('' — заметки нет).
+
+    Из текста вычищаются сам маркер (иначе при следующем разборе заметка
+    «съела» бы саму себя) и тройная кавычка, которая закрыла бы docstring."""
+    note = (note or "").replace(GROUP_NOTE_MARK, "").replace('"""', "'''").strip()
+    return f"\n{GROUP_NOTE_MARK}\n{note}\n" if note else ""
 
 
 def build_group_dag_py(dag_id, lines, tags, schedule_expr="dt.timedelta(minutes=1)",
-                       retry_mode="frequent"):
+                       retry_mode="frequent", note=None):
     """DAG на НЕСКОЛЬКО линий: по задаче на каждую, общий freeze-watcher.
 
     lines — [(tableNameEtlJobs, dbMaster, dbSlave)]; порядок сохраняется.
+    note — свободный текст (зачем этот даг, что за линии): попадает в конец
+    docstring после маркера и переживает перезапись.
     Линии, убранные в архив (флаг `disabled`), даг пропускает сам —
     lineEnabled() читает конфиг в рантайме, поэтому архивация такой линии
     работает без правки файла."""
@@ -438,7 +461,11 @@ def build_group_dag_py(dag_id, lines, tags, schedule_expr="dt.timedelta(minutes=
 настройки из etlFolder/config.d. Так собирают линии одного источника
 (например, все doctype mocheck из общего MOCHECK.sql), чтобы не плодить
 одинаковые даги и не гонять один и тот же запрос параллельно.
-"""
+
+Файл пишет конструктор: правки в списке линий, расписании и тегах делаются
+через него (иначе следующая дописанная линия их затрёт). Свободный текст
+ниже маркера — исключение: его конструктор переносит в новый файл как есть.
+{_note_block(note)}"""
 import datetime as dt
 
 from airflow.models import DAG
@@ -508,8 +535,18 @@ def parse_group_dag(path):
         return None
     res = _parse_dag_file(path)
     res["lines"] = lines
+    res["note"] = _docstring_note(tree)
     res["dag_id"] = os.path.splitext(os.path.basename(path))[0]
     return res
+
+
+def _docstring_note(tree):
+    """Заметка пользователя из docstring составного дага ('' — её нет)."""
+    import ast
+    doc = ast.get_docstring(tree) or ""
+    if GROUP_NOTE_MARK not in doc:
+        return ""
+    return doc.split(GROUP_NOTE_MARK, 1)[1].strip()
 
 
 def list_group_dags(include_foreign=True):
@@ -538,8 +575,30 @@ def _looks_multiline_dag(path):
         "for " in txt and "makeEtlOperator" in txt)
 
 
+def group_dag_path(group_id):
+    """Путь файла составного дага по имени (в dags/ либо в архиве)."""
+    for base in (_dags_dir(), _archive_dir()):
+        p = os.path.join(base, f"{group_id}.py")
+        if os.path.exists(p):
+            return p
+    return os.path.join(_dags_dir(), f"{group_id}.py")
+
+
 def group_dag_of(key):
-    """В каком составном даге упомянута линия. -> (dag_id, path) или (None, None)."""
+    """В каком составном даге упомянута линия. -> (dag_id, path) или (None, None).
+
+    Источник истины — ключ `groupDag` в конфиге самой линии: он верен и для
+    дага, который конструктор не разбирает, и когда файла дага ещё нет.
+    Для линий, заведённых до появления ключа, остаётся прежний способ —
+    поиск линии в списках составных дагов нашего формата.
+    """
+    try:
+        body, _ = _find_config_body(key)
+    except (KeyError, OSError, ValueError):
+        body = {}
+    named = str(body.get(GROUP_DAG_KEY) or "").strip()
+    if named:
+        return named, group_dag_path(named)
     line, dbm, dbs = split_key(key)
     for name, (path, parsed) in list_group_dags(include_foreign=False).items():
         if (line, dbm, dbs) in parsed["lines"]:
@@ -547,20 +606,32 @@ def group_dag_of(key):
     return None, None
 
 
-def group_dag_drop_line(key):
-    """Убрать линию из составного дага (при удалении линии). -> путь или None."""
+def group_dag_drop_line(key, group_id=None):
+    """Убрать линию из списка составного дага. -> путь или None.
+
+    group_id — из какого дага убирать; по умолчанию берётся текущий (по
+    конфигу линии). Явно его передают, когда конфиг уже переписан на НОВОЕ
+    размещение, а вычеркнуть линию надо из прежнего.
+    None возвращается и когда дага нет, и когда он не нашего формата: чужой
+    файл конструктор не переписывает, про такой случай зовущий говорит вслух.
+    """
     line, dbm, dbs = split_key(key)
-    name, path = group_dag_of(key)
-    if not path:
+    if group_id:
+        name, path = group_id, group_dag_path(group_id)
+    else:
+        name, path = group_dag_of(key)
+    if not path or not os.path.exists(path):
         return None
     parsed = parse_group_dag(path)
+    if parsed is None:
+        return None
     lines = [t for t in parsed["lines"] if t != (line, dbm, dbs)]
     content = build_group_dag_py(
         name, lines, parsed["tags"],
         build_schedule_expr({"schedule_kind": parsed["schedule_kind"],
                              "schedule_minutes": parsed["schedule_minutes"],
                              "schedule_cron": parsed["schedule_cron"]}),
-        parsed["retry_mode"])
+        parsed["retry_mode"], parsed.get("note"))
     with _group_writable():
         with open(path, "w", encoding="utf-8") as fp:
             fp.write(content)
@@ -619,6 +690,7 @@ def build_all(spec):
     slave_struct_rel = spec.get("struct_slave_rel") or f"{struct_dir}/{s_bare}.json"
 
     out_files = []
+    group_id = (spec.get("group_dag_id") or "").strip()
 
     fragment = {key: {}}
     body = fragment[key]
@@ -628,38 +700,49 @@ def build_all(spec):
     body["tableNameSlave"] = ts
     body["structureMaster"] = master_struct_rel
     body["structureSlave"] = slave_struct_rel
-    body["periodColumn"] = spec["period_column"]
-    body["slavePeriodColumn"] = spec["slave_period_column"]
+    # Пустой период не пишем ВОВСЕ: рантайм подставляет 'createdate' через
+    # setdefault, а он не срабатывает на явном null — в SQL уехало бы
+    # COALESCE(None, ...). Нет значения — пусть работает умолчание.
+    if spec.get("period_column"):
+        body["periodColumn"] = spec["period_column"]
+    if spec.get("slave_period_column"):
+        body["slavePeriodColumn"] = spec["slave_period_column"]
     body["mode"] = spec.get("mode", "iud")
+    # Принадлежность линии составному дагу — в её же конфиге: по нему
+    # конструктор потом узнаёт, что своего дага у линии нет (см. group_dag_of).
+    if group_id:
+        body[GROUP_DAG_KEY] = re.sub(r"[^A-Za-z0-9_]", "", group_id)
     for k, v in (spec.get("extra") or {}).items():
         if v not in (None, "", (), [], {}):
             body[k] = v
 
     # SQL-запрос ведущей: пользователь вставляет ТЕКСТ — мы сами создаём .sql
     # и прописываем путь к нему в selectSql (а не просим указать готовый файл).
-    sql_text = (spec.get("select_sql_text") or "").strip()
-    if sql_text:
+    # Текст сохраняется как есть, нормализуется только хвост: отступ ПЕРВОЙ
+    # строки тоже принадлежит запросу (в MOCHECK.sql ветки UNION сдвинуты), а
+    # общий .strip() его срезал — и правка любой линии показывала «изменение»
+    # первой строки общего файла.
+    sql_text = spec.get("select_sql_text") or ""
+    if sql_text.strip():
         sql_name = re.sub(r"[^A-Za-z0-9_]", "", spec.get("select_sql_name") or line) or line
         sql_rel = f"queries/customQueries/{sql_name}.sql"
-        out_files.append((f"etlFolder/{sql_rel}",
-                          sql_text + ("" if sql_text.endswith("\n") else "\n")))
+        out_files.append((f"etlFolder/{sql_rel}", sql_text.rstrip() + "\n"))
         body["selectSql"] = sql_rel
 
     # periodsSql — ТОЛЬКО для режима query_section: список групп для перезаливки
     # берёт из него один этот режим (см. do_etl._runQuerySection), остальные
     # читают журнал/сравнивают срезы. Поэтому в других режимах ключ не пишется и
     # файл не создаётся, даже если текст в форме остался от предыдущего режима.
-    periods_text = (spec.get("periods_sql_text") or "").strip()
+    periods_text = spec.get("periods_sql_text") or ""
     if body["mode"] == "query_section":
-        if not periods_text:
+        if not periods_text.strip():
             raise ValueError(
                 "Режим query_section: не заполнен «SQL периодов» — без него линии "
                 "неоткуда взять список групп для перезаливки.")
         pname = re.sub(r"[^A-Za-z0-9_]", "",
                        spec.get("periods_sql_name") or f"{line}_periods") or f"{line}_periods"
         periods_rel = f"queries/customQueries/{pname}.sql"
-        out_files.append((f"etlFolder/{periods_rel}",
-                          periods_text + ("" if periods_text.endswith("\n") else "\n")))
+        out_files.append((f"etlFolder/{periods_rel}", periods_text.rstrip() + "\n"))
         body["periodsSql"] = periods_rel
 
     # DDL триггера ведущей. Сам триггер живёт в БД (его ставит кнопка «Создать
@@ -672,7 +755,6 @@ def build_all(spec):
                           trigger_text + ("" if trigger_text.endswith("\n") else "\n")))
 
     tags = spec.get("tags") or [f"{dbm}{dbs}", line, "DbSync"]
-    group_id = (spec.get("group_dag_id") or "").strip()
     if group_id:
         # Линия живёт в СОСТАВНОМ даге: своего файла у неё нет, вместо него
         # переписывается список линий общего дага (расписание и теги — его,
@@ -680,6 +762,17 @@ def build_all(spec):
         dag_rel, dag_py = _group_dag_file(group_id, line, dbm, dbs, tags, spec)
     else:
         dag_rel = f"dags/{dag_id}.py"
+        # Свой даг под именем СОСТАВНОГО затёр бы его вместе со всеми линиями,
+        # которые в нём перечислены. Это не гипотеза: имя составного дага
+        # подставляется в поле dag_id само, стоит открыть такую линию в правке.
+        exists = os.path.join(_dags_dir(), f"{dag_id}.py")
+        other = parse_group_dag(exists) if os.path.exists(exists) else None
+        if other:
+            raise ValueError(
+                f"dags/{dag_id}.py — составной даг ({len(other['lines'])} "
+                f"линий: {', '.join(l for l, _m, _s in other['lines'])}). Своим "
+                f"дагом линии он стать не может — файл был бы затёрт. Либо "
+                f"выбери «В составной даг», либо задай другой dag_id.")
         dag_py = build_dag_py(dag_id, line, tm, dbm, dbs, tags,
                               build_schedule_expr(spec),
                               spec.get("retry_mode", "frequent"))
@@ -713,9 +806,11 @@ def _group_dag_file(group_id, line, dbm, dbs, tags, spec):
     if parsed:
         # Расписание/теги/ретраи у составного дага общие — берём его, а не формы:
         # иначе правка одной линии молча меняла бы поведение всех остальных.
+        # Заметка человека в docstring по той же причине переезжает как есть.
         schedule_expr = build_schedule_expr(parsed)
         content = build_group_dag_py(group_id, lines, parsed["tags"],
-                                     schedule_expr, parsed["retry_mode"])
+                                     schedule_expr, parsed["retry_mode"],
+                                     parsed.get("note"))
     else:
         content = build_group_dag_py(group_id, lines, tags,
                                      build_schedule_expr(spec),
@@ -934,7 +1029,11 @@ def load_line(key):
     # общие с остальными линиями этого дага, и брать их надо оттуда.
     group_id, group_path = group_dag_of(key)
     if group_path:
-        dag_path, dag_id = group_path, group_id
+        # dag_id у линии в составном даге ПУСТОЙ, а не имя этого дага: поле
+        # формы «dag_id» — про СВОЙ даг линии. С именем составного там линия,
+        # переключённая на «свой даг», записала бы свой даг поверх общего —
+        # и вместе с ним потеряла бы все остальные линии этого дага.
+        dag_path, dag_id = group_path, ""
     else:
         dag_path, dag_id, _arch = _resolve_dag_path(line, table_master, dbm, dbs)
     sched = _parse_dag_file(dag_path)
@@ -1044,6 +1143,95 @@ def _line_dag_info(key):
     return _resolve_dag_path(line, tm, dbm, dbs)  # (path, dag_id, archived)
 
 
+def _is_own_dag_file(path, line, table_master=None, dbm=None, dbs=None):
+    """Файл дага обслуживает ТОЛЬКО эту линию — его можно удалить при переезде
+    линии в составной даг.
+
+    Проверка нужна, потому что _resolve_dag_path умеет отвечать «похожим»
+    файлом (совпали ведущая и направление), а сносить чужой даг из-за похожести
+    нельзя. Опознаём сборку конструктора: ровно один ВЫЗОВ makeEtlOperator (имя
+    встречается ещё и в импорте), не составной даг, и линия названа явно —
+    через tableNameEtlJobs либо, когда его нет (даг сделан до появления ключа),
+    через tableNameMaster с тем же направлением."""
+    try:
+        txt = _read_text(path)
+    except OSError:
+        return False
+    if GROUP_MARK in txt or txt.count("makeEtlOperator(") != 1:
+        return False
+    if re.search(r'tableNameEtlJobs\s*=', txt):
+        return bool(re.search(
+            r'tableNameEtlJobs\s*=\s*[\'"]%s[\'"]' % re.escape(line), txt))
+    if not table_master:
+        return False
+    return all(re.search(r'%s\s*=\s*[\'"]%s[\'"]' % (k, re.escape(v)), txt)
+               for k, v in (("tableNameMaster", table_master),
+                            ("dbMaster", dbm or ""), ("dbSlave", dbs or "")))
+
+
+def line_placement(key):
+    """Где сейчас живёт даг линии: (составной даг | None, путь своего дага | None).
+
+    Свой даг возвращается, только если файл существует и обслуживает ровно эту
+    линию (см. _is_own_dag_file)."""
+    gname, _gpath = group_dag_of(key)
+    if gname:
+        return gname, None
+    try:
+        body, _ = _find_config_body(key)
+        path, _dag_id, _arch = _line_dag_info(key)
+    except (KeyError, OSError, ValueError):
+        return None, None
+    line, dbm, dbs = split_key(key)
+    if os.path.exists(path) and _is_own_dag_file(
+            path, line, body.get("tableNameMaster", line), dbm, dbs):
+        return None, path
+    return None, None
+
+
+def retire_old_placement(key, old_group, old_own_dag, new_group):
+    """Убрать следы ПРЕЖНЕГО размещения линии после смены «свой даг ↔ составной».
+
+    Сборка линии знает только про новое размещение: она допишет линию в
+    составной даг либо создаст ей свой. Прежнее при этом никуда не девается —
+    и линия начинает переноситься ДВАЖДЫ, из двух дагов сразу. Здесь прежнее и
+    вычёркивается: линия убирается из старого составного дага, а свой даг
+    удаляется, если линия уехала в составной.
+
+    Возвращает список описаний сделанного (пусто — размещение не менялось)."""
+    notes = []
+    new_group = (new_group or "").strip()
+    old_group = (old_group or "").strip()
+    if old_group and old_group != new_group:
+        path = group_dag_drop_line(key, old_group)
+        if path:
+            notes.append(f"{os.path.relpath(path, ROOT)}: линия убрана из списка")
+        else:
+            notes.append(
+                f"dags/{old_group}.py: конструктор его не переписывает (нет "
+                f"файла либо он не нашего формата) — убери строку линии оттуда "
+                f"сам, иначе она будет переноситься дважды")
+    if new_group:
+        if old_own_dag and os.path.exists(old_own_dag):
+            with _group_writable():
+                os.remove(old_own_dag)
+            notes.append(f"{os.path.relpath(old_own_dag, ROOT)}: удалён — линия "
+                         f"переехала в составной даг {new_group}")
+        else:
+            # Файл дага у линии был, но он не только про неё (или написан не
+            # конструктором) — удалять такой нельзя, а молчать нельзя тем более.
+            try:
+                path, _dag_id, _arch = _line_dag_info(key)
+            except (KeyError, OSError, ValueError):
+                path = None
+            if path and os.path.exists(path):
+                notes.append(
+                    f"{os.path.relpath(path, ROOT)}: остался на месте — "
+                    f"конструктор его не разбирает. Проверь, не гоняет ли он ту "
+                    f"же линию: теперь она есть и в {new_group}")
+    return notes
+
+
 def line_has_own_dag(key):
     """Есть ли у линии СВОЙ файл дага. У линий mocheck-семейства (PODCHECK3 и
     т.п.) его нет — они перечислены внутри общего дага-итератора, поэтому
@@ -1114,7 +1302,49 @@ def restore_line(key):
     return dag_id
 
 
-def write_files(files, overwrite=False, validate="config", force=()):
+def _same_on_disk(path, content):
+    """Лежит ли на диске то же САМОЕ — с точностью до незначащего.
+
+    Сравнение не побайтовое, иначе «ничего не менял, а переписалось всё»:
+      * json (структуры, фрагменты конфига) — сравниваем разобранное значение.
+        Структуры mocheck набиты руками табами и пробелами вокруг двоеточий;
+        генератор пишет json.dumps(indent=2), и правка ОДНОЙ линии
+        переформатировала бы общий файл целиком, показывая в diff 150 строк
+        «изменений», которых нет;
+      * .sql — сравниваем без крайних пробелов: свой SELECT приезжает в форму
+        из файла и уезжает обратно, а конструктор нормализует хвостовой перевод
+        строки. Внутри текста ничего не трогаем.
+    """
+    if not os.path.exists(path):
+        return False
+    try:
+        old = _read_text(path)
+    except OSError:
+        return False
+    if old == content:
+        return True
+    if path.endswith(".json"):
+        try:
+            return json.loads(old) == json.loads(content)
+        except ValueError:
+            return False
+    if path.endswith(".sql"):
+        return old.strip() == content.strip()
+    return False
+
+
+def unchanged_files(files):
+    """Из [(relpath, content)] — те, что на диске УЖЕ такие же.
+
+    Спрашивать надо ДО write_files: после записи «пропущенные» от «записанных»
+    не отличить. UI печатает этот список, чтобы правка линии была видна ровно
+    в том объёме, в каком она сделана."""
+    return [rel for rel, content in files
+            if _same_on_disk(os.path.join(ROOT, rel), content)]
+
+
+def write_files(files, overwrite=False, validate="config", force=(),
+                skip_unchanged=True):
     """Записать [(relpath, content)] под ROOT. Без overwrite не трогает
     существующие файлы (чтобы не затереть чужую линию). Возвращает список
     записанных абсолютных путей. В конце валидирует сборку конфига.
@@ -1123,16 +1353,28 @@ def write_files(files, overwrite=False, validate="config", force=()):
     (сложный ETL), 'SpTableName' (справочники) или 'SpOnce' (разовый перенос).
     None — не валидировать.
     force: пути, которые перезаписываются ВСЕГДА (составной даг: новая линия
-    дописывается в существующий файл — это не «затирание чужого»)."""
+    дописывается в существующий файл — это не «затирание чужого»).
+    skip_unchanged: файл, содержимое которого уже совпадает с диском, НЕ
+    переписывается и в результат не попадает. Это и есть «правка меняет только
+    изменённое»: сборка всегда выдаёт ПОЛНЫЙ комплект файлов линии, и без этого
+    правка одного поля трогала дату у структур, дага и общего SQL, а в коммит
+    линии попадали файлы, в которых ничего не менялось (для общих — MOCHECK.sql,
+    структуры mocheck — это ещё и лишний повод для конфликта с чужой правкой).
+    Сравнение текстовое: файл, сохранённый в другой кодировке, но с тем же
+    текстом, считается неизменившимся и остаётся в своей кодировке."""
     written = []
     force = set(force or ())
     with _group_writable():
         for rel, content in files:
             path = os.path.join(ROOT, rel)
-            if os.path.exists(path) and not overwrite and rel not in force:
-                raise FileExistsError(
-                    f"Файл уже существует: {rel}. Включи overwrite или выбери другое имя."
-                )
+            if os.path.exists(path):
+                if not overwrite and rel not in force:
+                    raise FileExistsError(
+                        f"Файл уже существует: {rel}. Включи overwrite или "
+                        f"выбери другое имя."
+                    )
+                if skip_unchanged and _same_on_disk(path, content):
+                    continue
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8") as fp:
                 fp.write(content)
@@ -1331,6 +1573,29 @@ def _ref_shared(rel, exclude_key):
     return False
 
 
+def shared_line_files(key, rels):
+    """Кто ЕЩЁ ссылается на эти файлы линии. -> {rel: [ключи других линий]}.
+
+    Структуры, свой SELECT и SQL периодов у линий одного источника общие
+    (у mocheck на пяти линиях один MOCHECK.sql и одна пара структур). Правка
+    такого файла из формы одной линии достаётся всем сразу — и это ровно то,
+    ради чего его и правят, но сказать об этом надо вслух: молча переписанный
+    общий запрос выглядит как «поменял у себя»."""
+    bodies = _all_config_bodies()
+    out = {}
+    for rel in rels:
+        if not rel:
+            continue
+        users = sorted(k for k, body in bodies.items()
+                       if k != key and rel in (body.get("structureMaster"),
+                                               body.get("structureSlave"),
+                                               body.get("selectSql"),
+                                               body.get("periodsSql")))
+        if users:
+            out[rel] = users
+    return out
+
+
 def line_delete_targets(key):
     """Список путей, которые удалит delete_line(key) — для предпросмотра в UI."""
     body, path = _find_config_body(key)
@@ -1339,9 +1604,12 @@ def line_delete_targets(key):
     dagpath, _dag_id, _arch = _resolve_dag_path(line, tm, dbm, dbs)
     obj = _read_json(path)
     targets = [path if len(obj) <= 1 else f"{path} (ключ {key})"]
-    _gname, gpath = group_dag_of(key)
-    if gpath:
-        targets.append(f"{gpath} (линия будет убрана из списка, файл останется)")
+    gname, gpath = group_dag_of(key)
+    if gname:
+        targets.append(
+            f"{gpath} (линия будет убрана из списка, файл останется)"
+            if parse_group_dag(gpath) else
+            f"{gpath} — НЕ нашего формата: строку линии убери сам")
     elif os.path.exists(dagpath):
         targets.append(dagpath)
     for rel in (body.get("selectSql"), body.get("periodsSql"),
@@ -1362,6 +1630,9 @@ def delete_line(key, remove_struct=True):
     line, dbm, dbs = split_key(key)
     tm = body.get("tableNameMaster", line)
     dagpath, _dag_id, _arch = _resolve_dag_path(line, tm, dbm, dbs)
+    # Спрашиваем ДО правки конфига: принадлежность составному дагу записана в
+    # нём же (ключ groupDag), и после удаления фрагмента её было бы не узнать.
+    gname, gpath = group_dag_of(key)
     obj = _read_json(path)
     removed = []
     with _group_writable():
@@ -1376,9 +1647,10 @@ def delete_line(key, remove_struct=True):
             removed.append(f"{path} (ключ {key})")
         # Линия из составного дага: файл общий, удалять его нельзя — вычёркиваем
         # только её строку из списка линий.
-        gpath = group_dag_drop_line(key)
-        if gpath:
-            removed.append(f"{gpath} (линия убрана из списка)")
+        if gname:
+            dropped = group_dag_drop_line(key, gname)
+            removed.append(f"{dropped} (линия убрана из списка)" if dropped else
+                           f"{gpath} — не нашего формата, строку линии убери сам")
         elif os.path.exists(dagpath):
             os.remove(dagpath)
             removed.append(dagpath)
@@ -1490,6 +1762,11 @@ def _selftest():
     assert "('demo', 'Post', 'Orcl')," in gdag, gdag
     assert 'dag_id="MyGroupPostOrcl"' in gdag
     assert "lineEnabled(line, dbm, dbs)" in gdag
+    # принадлежность даге записана в конфиге линии — по ней её потом и находим
+    assert json.loads(files_g["etlFolder/config.d/demoPostOrcl.json"]) \
+        ["demoPostOrcl"][GROUP_DAG_KEY] == "MyGroupPostOrcl"
+    assert GROUP_DAG_KEY not in json.loads(
+        dict(build_all(spec))["etlFolder/config.d/demoPostOrcl.json"])["demoPostOrcl"]
     # …и он читается обратно, чтобы дописать в него следующую линию
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:
@@ -1498,9 +1775,48 @@ def _selftest():
             fp.write(gdag)
         parsed = parse_group_dag(gpath)
         assert parsed and parsed["lines"] == [("demo", "Post", "Orcl")], parsed
+        assert parsed["note"] == ""
         with open(gpath, "w", encoding="utf-8") as fp:
             fp.write("# руками написанный даг\nmakeEtlOperator()\n")
         assert parse_group_dag(gpath) is None    # чужой формат не трогаем
+
+        # заметка человека переживает перезапись дословно
+        note = "Тут про doctype:\n  * 1 — MEDCHECK;\n  * 2,3,4 — EXPMED."
+        with open(gpath, "w", encoding="utf-8") as fp:
+            fp.write(build_group_dag_py("MyGroupPostOrcl",
+                                        [("demo", "Post", "Orcl")],
+                                        ["a"], note=note))
+        parsed = parse_group_dag(gpath)
+        assert parsed["note"] == note, parsed["note"]
+        again = build_group_dag_py("MyGroupPostOrcl", parsed["lines"],
+                                   parsed["tags"], build_schedule_expr(parsed),
+                                   parsed["retry_mode"], parsed["note"])
+        assert again == _read_text(gpath)        # круг замкнулся байт в байт
+        # маркер внутри самой заметки не должен «съесть» её при следующем разборе
+        with open(gpath, "w", encoding="utf-8") as fp:
+            fp.write(build_group_dag_py("MyGroupPostOrcl", parsed["lines"], ["a"],
+                                        note=f"до {GROUP_NOTE_MARK} после"))
+        assert parse_group_dag(gpath)["note"] == "до  после"
+
+    # запись: файл с тем же содержимым не переписывается
+    with tempfile.TemporaryDirectory() as tmp:
+        rel = "etlFolder/structures/demo/demo.json"
+        p = os.path.join(tmp, rel)
+        os.makedirs(os.path.dirname(p))
+        with open(p, "w", encoding="utf-8") as fp:
+            fp.write("СТАРОЕ")
+        global ROOT
+        root_was, ROOT = ROOT, tmp
+        try:
+            assert unchanged_files([(rel, "СТАРОЕ")]) == [rel]
+            assert unchanged_files([(rel, "НОВОЕ")]) == []
+            assert write_files([(rel, "СТАРОЕ")], overwrite=True,
+                               validate=None) == []
+            assert write_files([(rel, "НОВОЕ")], overwrite=True,
+                               validate=None) == [p]
+            assert _read_text(p) == "НОВОЕ"
+        finally:
+            ROOT = root_was
 
     # приведение имени к диалекту БД
     assert to_db_case("spmkb", "Orcl") == "SPMKB"

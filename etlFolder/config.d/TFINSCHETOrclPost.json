@@ -10,6 +10,7 @@
     "filterClauseSlave": "doctype = 9",
     "conflictExtra": "doctype",
     "conflictWhere": "doctype = 9",
-    "mode": "iud"
+    "mode": "iud",
+    "groupDag": "MocheckOrclPost"
   }
 }
