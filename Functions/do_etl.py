@@ -1371,6 +1371,8 @@ def _processGroupUpdate(cfg, ctx, dateGroup):
         cursorSlave.execute(
             _pickPeriodSql(ctx["deletePeriodSql"], createdate),
             _periodBinds(_periodSpec(cfg["slavePeriodColumn"]), createdate))
+        logger.info("Ведомая: удалено %s строк группы %s",
+                    _rowcount(cursorSlave), createdate)
         phase("delete")
         # 2) выбрать актуальные записи из ведущей и залить. Бинда tablename
         # здесь больше нет: он был нужен убранному JOIN'у с etl_jobs, а лишний
@@ -1463,25 +1465,47 @@ def _bulkUpsert(cursorSlave, dbSlave, upsertSql, structSlave, records):
     Если пачка не прошла — повторяем её по строке. У Oracle-ведомой запись
     всегда идёт MERGE (см. _buildUpsertSql), то есть повтор уже применённых
     строк безопасен; зато ошибка называет конкретную строку, а не всю пачку.
+
+    По итогам пишем ОДНУ строку в лог: сколько строк ушло пачками, сколько
+    пачек пришлось повторять по одной и сколько это заняло. Без неё по фазе
+    «заливка в ведомую» нельзя отличить «пачки не работают, всё идёт по
+    строке» от «пачки работают, но столько времени тратит сама СУБД» —
+    а лечится это совершенно по-разному.
     """
-    if _isPost(dbSlave):
-        if records:
-            psycopg2.extras.execute_batch(cursorSlave, upsertSql, records,
-                                          page_size=_PG_BATCH_PAGE)
+    if not records:
         return
+    started = time.monotonic()
+
+    if _isPost(dbSlave):
+        psycopg2.extras.execute_batch(cursorSlave, upsertSql, records,
+                                      page_size=_PG_BATCH_PAGE)
+        logger.info("Заливка: %d строк пачками по %d, %.1fс (%.2f мс/строка)",
+                    len(records), _PG_BATCH_PAGE, time.monotonic() - started,
+                    (time.monotonic() - started) * 1000.0 / len(records))
+        return
+
     # Oracle: позиционные параметры :1 .. :N — те же, что и при построчной
     # записи, просто списком.
+    chunks = fellBack = rowsFellBack = 0
     for chunk in _chunks(records, _ORCL_BATCH_ROWS):
+        chunks += 1
         rows = [{str(i + 1): value for i, value in enumerate(record)}
                 for record in chunk]
         try:
             cursorSlave.executemany(upsertSql, rows)
         except Exception as err:
+            fellBack += 1
+            rowsFellBack += len(rows)
             logger.warning("Пачка из %d строк не прошла (%s: %s) — повторяю "
                            "по одной, чтобы стало видно, на какой именно",
                            len(rows), type(err).__name__, str(err)[:200])
             for params in rows:
                 cursorSlave.execute(upsertSql, params)
+    spent = time.monotonic() - started
+    logger.info("Заливка: %d строк, %d пачек по %d, повторено по строке %d "
+                "пачек (%d строк), %.1fс (%.2f мс/строка)",
+                len(records), chunks, _ORCL_BATCH_ROWS, fellBack, rowsFellBack,
+                spent, spent * 1000.0 / len(records))
 
 
 # ----------------------------------------------------------------------------
@@ -2140,6 +2164,8 @@ def _processSectionGroup(cfg, ctx, period, idrwBefore):
         cursorSlave.execute(
             _pickPeriodSql(ctx["deletePeriodSql"], period),
             _periodBinds(_periodSpec(cfg["slavePeriodColumn"]), period))
+        logger.info("Ведомая: удалено %s строк группы %s",
+                    _rowcount(cursorSlave), period)
         phase("delete")
 
         # 2) выбрать актуальные записи из ведущей и залить (про tablename —
