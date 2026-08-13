@@ -2001,10 +2001,28 @@ def _selectSlavePeriods(cursor, dbSlave, tableNameSlave,
                                       slavePeriodColumn, filterClauseSlave))
 
 
-def _selectIudPeriods(cursor, dbMaster, tableNameEtlJobs):
-    """Группы (createdate), для которых в etl_log_iud_row есть isetl=0."""
+def _selectIudPeriods(cursor, dbMaster, tableNameEtlJobs, idrwBefore):
+    """Группы, по которым в etl_log_iud_row есть необработанное (isetl = 0).
+
+    idrwBefore — ТА ЖЕ граница, по которой потом пойдёт пометка
+    (_processSectionGroup). Одна граница на оба запроса — обязательное условие,
+    иначе в работу берётся то, что помечено не будет:
+
+      1) граница = MAX(idrw) снимается в начале прогона;
+      2) журнал читается НЕСКОЛЬКИМИ запросами позже — и без этого условия
+         возвращал в том числе записи, появившиеся уже после границы;
+      3) их группы переносились;
+      4) пометка (idrw <= граница) их не трогала — они оставались isetl = 0;
+      5) следующий прогон делал те же группы второй раз.
+
+    Попасть в это окно можно было простым `update` руками: даг ходит раз в
+    минуту, и «повезло» ли изменению лечь между (1) и (2), было делом случая —
+    отсюда и «иногда группа переносится дважды, а иногда нет».
+    Записи, появившиеся после границы, теперь честно ждут следующего прогона.
+    """
     sqlTpl = _pickSql(dbMaster, periodsFromIudPostSql, periodsFromIudOrclSql)
-    rows = _executeQuery(cursor, sqlTpl, {"tablename": tableNameEtlJobs})
+    rows = _executeQuery(cursor, sqlTpl, {"tablename": tableNameEtlJobs,
+                                          "idrwBefore": idrwBefore})
     return [r[0] for r in rows]
 
 
@@ -2238,8 +2256,10 @@ def _runSectionCompare(cfg, ctx, selectSql, useIud=False):
     # 2. сигналы из etl_log_iud_row (только режим section_compare_with_iud)
     if useIud:
         iudPeriods = _selectIudPeriods(ctx["cursorMaster"], dbMaster,
-                                       tableNameEtlJobs)
+                                       tableNameEtlJobs, idrwBefore)
         needUpdate.update(_periodKey(p, truncatePeriod) for p in iudPeriods)
+        logger.info("Журнал (idrw <= %s): групп с необработанными записями %d",
+                    idrwBefore, len(set(iudPeriods)))
 
     # 3. явные группы с isokaudit=4 в etl_jobs
     sqlTpl = _pickSql(dbMaster, periodsIsokAudit4PostSql, periodsIsokAudit4OrclSql)
