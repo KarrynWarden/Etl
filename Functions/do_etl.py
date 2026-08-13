@@ -1471,6 +1471,12 @@ def _bulkUpsert(cursorSlave, dbSlave, upsertSql, structSlave, records):
     «заливка в ведомую» нельзя отличить «пачки не работают, всё идёт по
     строке» от «пачки работают, но столько времени тратит сама СУБД» —
     а лечится это совершенно по-разному.
+
+    Для Oracle к этому добавлены времена первой и последней пачки и самая
+    долгая. Все пачки одинаковые по размеру и по форме запроса, поэтому
+    ровные времена означают постоянную цену строки (упирается в диски или
+    в сопровождение индексов), а растущие от первой к последней — что цена
+    поднимается по ходу заливки самой группы.
     """
     if not records:
         return
@@ -1486,11 +1492,12 @@ def _bulkUpsert(cursorSlave, dbSlave, upsertSql, structSlave, records):
 
     # Oracle: позиционные параметры :1 .. :N — те же, что и при построчной
     # записи, просто списком.
-    chunks = fellBack = rowsFellBack = 0
+    fellBack = rowsFellBack = 0
+    times = []          # секунды на пачку, по порядку
     for chunk in _chunks(records, _ORCL_BATCH_ROWS):
-        chunks += 1
         rows = [{str(i + 1): value for i, value in enumerate(record)}
                 for record in chunk]
+        chunkStarted = time.monotonic()
         try:
             cursorSlave.executemany(upsertSql, rows)
         except Exception as err:
@@ -1501,11 +1508,14 @@ def _bulkUpsert(cursorSlave, dbSlave, upsertSql, structSlave, records):
                            len(rows), type(err).__name__, str(err)[:200])
             for params in rows:
                 cursorSlave.execute(upsertSql, params)
+        times.append(time.monotonic() - chunkStarted)
     spent = time.monotonic() - started
     logger.info("Заливка: %d строк, %d пачек по %d, повторено по строке %d "
-                "пачек (%d строк), %.1fс (%.2f мс/строка)",
-                len(records), chunks, _ORCL_BATCH_ROWS, fellBack, rowsFellBack,
-                spent, spent * 1000.0 / len(records))
+                "пачек (%d строк), %.1fс (%.2f мс/строка); пачки: первая "
+                "%.1fс, последняя %.1fс, самая долгая %.1fс",
+                len(records), len(times), _ORCL_BATCH_ROWS, fellBack,
+                rowsFellBack, spent, spent * 1000.0 / len(records),
+                times[0], times[-1], max(times))
 
 
 # ----------------------------------------------------------------------------
