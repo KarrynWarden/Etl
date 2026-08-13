@@ -66,10 +66,10 @@ from Functions.updateLog import UpdateLog
 from Functions.do_etl import (
     _connect, _isPost, _pickSql, _loadStructure, _periodKey,
     _resolveEtlPath, ShutdownRequested, isShutdown,
-    _appendFilter, _filterEtlFields, _bindName, _buildFieldsStr,
+    _appendFilter, _filterEtlFields, _buildFieldsStr,
     _executeQuery, _configKey, classifyError, _asAndClause,
     _periodSpec, _periodBinds, _periodBind,
-    _PERIOD_SENTINEL_SQL,
+    _periodSqlPair, _pickPeriodSql,
     _periodCond as _etlPeriodCond,
 )
 from Src.generalQueries import (
@@ -90,11 +90,6 @@ logger = logging.getLogger(__name__)
 
 # Сколько отличающихся записей печатать в лог на группу.
 _MAX_PRINT_DIFF = 100
-
-# Сентинел для сравнения периодов — ОДИН на аудит и перенос (do_etl). Держать
-# свою копию литерала опасно: разъедутся — NULL-группа будет находиться в одном
-# месте и не находиться в другом.
-_SENTINEL = _PERIOD_SENTINEL_SQL
 
 
 class AuditScopeError(AirflowException):
@@ -144,42 +139,35 @@ def _auditFields(jsonStructFull, etlFields, auditExcludeFields):
 #                       Построение SQL выборок за период
 # ----------------------------------------------------------------------------
 
-def _periodCond(dbType, periodColumn, truncatePeriod):
+def _periodCond(dbType, periodColumn, truncatePeriod, nullGroup=False):
     """Условие WHERE по периоду с плейсхолдером :createdate / %(createdate)s.
 
     Период — свойство таблицы, а не режима (см. README): одна колонка-дата
-    ЛИБО составной {"year": ..., "month": ...}. Составной отдаём в общую
-    сборку из do_etl — сравнение по частям (year = :createdate_y AND
-    month = :createdate_m), те же бинды, что и при переносе.
+    ЛИБО составной {"year": ..., "month": ...}. Строит его общая сборка из
+    do_etl — те же условия и те же бинды, что и при переносе, включая
+    отдельный вариант для NULL-группы (`колонка IS NULL`, без бинда).
 
-    Одиночная колонка: truncatePeriod=True (medree: dcalc содержит время) —
-    сравниваем по дате; COALESCE с сентинелом обрабатывает группы с
-    period IS NULL. Составной период тоже может дать NULL-группу — когда
-    пуст сам год (do_etl._periodFromRow).
+    Своей копии условия здесь больше нет. Она появилась ради одной строчки
+    (truncatePeriod для одиночной колонки), а стоила того, что правка
+    sargable-условия в do_etl обошла бы аудит стороной — при том, что именно
+    на аудите скан и был замечен.
     """
-    spec = _periodSpec(periodColumn)
-    if spec["kind"] != "single":
-        return _etlPeriodCond(dbType, spec, "p", "createdate", truncatePeriod)
-    if truncatePeriod:
-        expr = f"DATE(p.{spec['column']})" if _isPost(dbType) else f"TRUNC(p.{spec['column']})"
-    else:
-        expr = f"p.{spec['column']}"
-    # Справа COALESCE больше не нужен: NULL в бинд не уходит — _periodBinds
-    # подставляет сентинел сам (см. do_etl._PERIOD_SENTINEL). Так одинаково у
-    # аудита и переноса, и не надо гадать, каким типом драйвер пошлёт None.
-    return f"COALESCE({expr}, {_SENTINEL}) = " + _bindName(dbType, "createdate")
+    return _etlPeriodCond(dbType, _periodSpec(periodColumn), "p", "createdate",
+                          truncatePeriod, nullGroup)
 
 
-def _buildMasterSql(cfg, selectSql, structMaster):
+def _buildMasterSql(cfg, selectSql, structMaster, nullGroup=False):
     fieldsStr = _buildFieldsStr(cfg["dbMaster"], structMaster, cfg["periodColumn"])
-    cond = _periodCond(cfg["dbMaster"], cfg["periodColumn"], cfg["truncatePeriod"])
+    cond = _periodCond(cfg["dbMaster"], cfg["periodColumn"], cfg["truncatePeriod"],
+                       nullGroup)
     tpl = _pickSql(cfg["dbMaster"], auditRecordsMasterPostSql, auditRecordsMasterOrclSql)
     return tpl.format(fields_str=fieldsStr, select_sql=selectSql, period_cond=cond)
 
 
-def _buildSlaveSql(cfg, structSlave):
+def _buildSlaveSql(cfg, structSlave, nullGroup=False):
     fieldsStr = _buildFieldsStr(cfg["dbSlave"], structSlave, cfg["slavePeriodColumn"])
-    cond = _periodCond(cfg["dbSlave"], cfg["slavePeriodColumn"], cfg["truncatePeriod"])
+    cond = _periodCond(cfg["dbSlave"], cfg["slavePeriodColumn"],
+                       cfg["truncatePeriod"], nullGroup)
     # filterClauseSlave (тот же doctype-срез, что и при переносе) — на ведомую.
     filterClauseSlave = _asAndClause(cfg.get("filterClauseSlave"))
     if filterClauseSlave:
@@ -561,14 +549,14 @@ def _auditGroup(cfg, ctx, origPeriod, report):
         # filterParams нужны только ведущему источнику (selectSql); у ведомой
         # срез задан литеральным filterClauseSlave, лишние бинды Oracle не любит.
         cursorMaster.execute(
-            ctx["masterSql"],
+            _pickPeriodSql(ctx["masterSql"], period),
             {**_periodBinds(_periodSpec(cfg["periodColumn"]), period),
              **filterParams})
         _phase("masterExec")
         masterRows = cursorMaster.fetchall()
         _phase("masterFetch")
         cursorSlave.execute(
-            ctx["slaveSql"],
+            _pickPeriodSql(ctx["slaveSql"], period),
             _periodBinds(_periodSpec(cfg["slavePeriodColumn"]), period))
         _phase("slaveExec")
         slaveRows = cursorSlave.fetchall()
@@ -742,8 +730,13 @@ def _run(cfg):
             "cursorSlave": cursorSlave,
             "structMaster": structMaster,
             "structSlave": structSlave,
-            "masterSql": _buildMasterSql(cfg, selectSql, structMaster),
-            "slaveSql": _buildSlaveSql(cfg, structSlave),
+            # По паре запросов на сторону: обычная группа и NULL-группа —
+            # условия у них разные (см. do_etl._periodCond).
+            "masterSql": _periodSqlPair(
+                lambda nullGroup: _buildMasterSql(cfg, selectSql, structMaster,
+                                                  nullGroup)),
+            "slaveSql": _periodSqlPair(
+                lambda nullGroup: _buildSlaveSql(cfg, structSlave, nullGroup)),
         }
 
         # 5. Группы на проверку.

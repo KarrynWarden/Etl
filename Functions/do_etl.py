@@ -109,8 +109,6 @@ from Src.generalQueries import (
     dateSelectSlaveOrclSql,
     periodsFromIudPostSql,
     periodsFromIudOrclSql,
-    PERIOD_SENTINEL_SQL,
-    PERIOD_SENTINEL,
     periodBind,
     markPeriodIudPostSql,
     markPeriodIudOrclSql,
@@ -355,19 +353,30 @@ def _periodKey(value, truncatePeriod):
 # периодом, какое-то время пустое, и это нормальное состояние данных: такие
 # строки надо переносить, сверять и учитывать в etl_jobs наравне с прочими.
 #
-# Сравнивать NULL через `=` нельзя (NULL = NULL это не TRUE), поэтому обе стороны
-# приводятся COALESCE'ом к сентинелу. Важная деталь: в БИНД NULL не уходит
-# НИКОГДА — подстановку делает Python (_periodBinds). Иначе пришлось бы гадать,
-# каким типом драйвер пошлёт None: cx_Oracle по умолчанию шлёт его строкой, и
-# COALESCE(строка, дата) падает с ORA-00932. Единственное место, где NULL уходит
-# в БД как есть, — INSERT нового периода в etl_jobs, и там стоит явный CAST.
+# Сравнивать NULL через `=` нельзя (NULL = NULL это не TRUE). Способов два, и
+# место применения у них разное:
+#
+#   * ДАННЫЕ (ведущая/ведомая, миллионы строк) — отдельное условие на группу:
+#     обычная идёт как `колонка = :бинд`, NULL-группа как `колонка IS NULL`
+#     (см. _periodCond). Сентинел сюда НЕ лезет: COALESCE вокруг колонки
+#     отключает индекс по периоду, и каждая группа обходилась полным сканом
+#     (замеры аудита iperson: 11 с на группе в 2934 строки — столько же, сколько
+#     на группе в 140 тысяч);
+#   * СЛУЖЕБНЫЕ таблицы (etl_jobs, etl_log — сотни строк на линию) — прежний
+#     COALESCE с сентинелом прямо в .sql. Там скан ничего не стоит, а один
+#     запрос на оба случая проще двух.
+#
+# Важная деталь для служебных: в БИНД NULL не уходит НИКОГДА — подстановку
+# делает Python (periodBind). Иначе пришлось бы гадать, каким типом драйвер
+# пошлёт None: cx_Oracle по умолчанию шлёт его строкой, и COALESCE(строка, дата)
+# падает с ORA-00932. Единственное место, где NULL уходит в БД как есть, —
+# INSERT нового периода в etl_jobs, и там стоит явный CAST.
 #
 # Сам литерал и его python-двойник живут в Src.generalQueries — там же, где
-# загружаются .sql, в которых он зашит, и оттуда же его берёт updateLog.
-_PERIOD_SENTINEL_SQL = PERIOD_SENTINEL_SQL
-_PERIOD_SENTINEL = PERIOD_SENTINEL
-# Для составного периода (year/month/day) сентинел числовой: года -1 не бывает.
-_PARTS_SENTINEL = -1
+# загружаются .sql, в которых он зашит, и оттуда же его берёт updateLog
+# (periodBind). Локальных копий здесь больше нет: после перехода данных на
+# `= :бинд` / `IS NULL` сентинел нужен только служебным .sql, а лишний алиас
+# — это ещё одно место, где литерал может разъехаться.
 
 
 def _periodSortKey(period):
@@ -420,42 +429,62 @@ def _periodExpr(dbType, spec, alias=None, truncate=False):
             f" || '-' || LPAD(TO_CHAR({d}), 2, '0'), 'YYYY-MM-DD')")
 
 
-def _periodCond(dbType, spec, alias=None, bind="createdate", truncate=False):
+def _periodCond(dbType, spec, alias=None, bind="createdate", truncate=False,
+                nullGroup=False):
     """Условие WHERE «период = заданный».
 
     parts сравнивается ПО ЧАСТЯМ (year = :y AND month = :m) — это sargable и
     использует индексы, в отличие от сборки даты вокруг колонок.
+
+    nullGroup=True — условие для NULL-ГРУППЫ: `колонка IS NULL`, БЕЗ бинда
+    (для составного периода — все части IS NULL).
+
+    ПОЧЕМУ ДВА ВАРИАНТА, А НЕ ОДИН С COALESCE. NULL-группа — полноправная
+    группа, и когда-то она была сделана самым коротким способом: обе стороны
+    под COALESCE с сентинелом, тогда `= :период` ловит и её. Стоило это
+    индексов: колонка под функцией, и обычный индекс по периоду не применяется
+    ни в Oracle, ни в Postgres — каждая группа обходилась полным сканом
+    таблицы. Замеры аудита iperson: выборка ведомой 11.1 с на группе в 2934
+    строки и 14.2 с на группе в 140 406 — время почти не зависит от объёма,
+    то есть это скан, а не чтение строк.
+
+    Поэтому условие теперь строится ПОД ГРУППУ: для обычной — голое
+    `колонка = :бинд` (индекс работает), для NULL-группы — `колонка IS NULL`
+    (бинда нет вовсе, и вопрос «каким типом драйвер пошлёт None» не
+    возникает). Оба запроса готовятся один раз на линию, выбор — по значению
+    периода (_pickPeriodSql), так что лишних разборов SQL не появляется.
+
+    Смысл не изменился: COALESCE(x, s) = s ⟺ x IS NULL, а для непустого
+    периода COALESCE(x, s) = v ⟺ x = v (сентинел в данных не встречается).
     """
     if spec["kind"] == "single":
+        if nullGroup:
+            # именно КОЛОНКА, а не TRUNC(колонка): TRUNC(NULL) это тоже NULL,
+            # но под функцией индекс снова не применится
+            return f"{_qual(alias, spec['column'])} IS NULL"
         expr = _periodExpr(dbType, spec, alias, truncate)
-        return (f"COALESCE({expr}, {_PERIOD_SENTINEL_SQL}) = "
-                + _bindName(dbType, bind))
-    parts = [f"COALESCE({_qual(alias, spec['year'])}, {_PARTS_SENTINEL}) = "
-             + _bindName(dbType, f"{bind}_y")]
+        return f"{expr} = " + _bindName(dbType, bind)
+    columns = [(spec["year"], "y")]
     if spec["month"]:
-        parts.append(f"COALESCE({_qual(alias, spec['month'])}, {_PARTS_SENTINEL}) = "
-                     + _bindName(dbType, f"{bind}_m"))
+        columns.append((spec["month"], "m"))
     if spec["day"]:
-        parts.append(f"COALESCE({_qual(alias, spec['day'])}, {_PARTS_SENTINEL}) = "
-                     + _bindName(dbType, f"{bind}_d"))
-    return " AND ".join(parts)
+        columns.append((spec["day"], "d"))
+    if nullGroup:
+        return " AND ".join(f"{_qual(alias, col)} IS NULL" for col, _s in columns)
+    return " AND ".join(f"{_qual(alias, col)} = " + _bindName(dbType, f"{bind}_{s}")
+                        for col, s in columns)
 
 
 def _periodBinds(spec, period, bind="createdate"):
     """Параметры для _periodCond по значению периода (date или None).
 
-    NULL-группа биндится СЕНТИНЕЛОМ, а не None: условие в SQL уже обёрнуто
-    COALESCE'ом, и подстановка здесь избавляет от вопроса, каким типом драйвер
-    пошлёт None (см. комментарий у _PERIOD_SENTINEL)."""
-    if spec["kind"] == "single":
-        return {bind: _PERIOD_SENTINEL if period is None else period}
+    Для NULL-группы параметров НЕТ вовсе: её условие — `IS NULL`, плейсхолдера
+    в SQL нет, а лишние бинды Oracle не принимает (ORA-01036). Значит и
+    вопроса, каким типом драйвер пошлёт None, больше не существует."""
     if period is None:
-        out = {f"{bind}_y": _PARTS_SENTINEL}
-        if spec["month"]:
-            out[f"{bind}_m"] = _PARTS_SENTINEL
-        if spec["day"]:
-            out[f"{bind}_d"] = _PARTS_SENTINEL
-        return out
+        return {}
+    if spec["kind"] == "single":
+        return {bind: period}
     period = _normalizePeriod(period)
     out = {f"{bind}_y": period.year}
     if spec["month"]:
@@ -706,11 +735,32 @@ def _buildSlavePeriodsByIdSql(dbSlave, tableNameSlave, pkColsSlave,
                          primary_cond=primaryCond)
 
 
+def _periodSqlPair(build):
+    """Пара готовых SQL: {'row': для обычной группы, 'null': для NULL-группы}.
+
+    Условие по периоду у них разное (`= :бинд` против `IS NULL`, см.
+    _periodCond), поэтому один текст на оба случая не годится. Готовятся оба
+    сразу, один раз на линию — выбор делает _pickPeriodSql по значению группы.
+    """
+    return {"row": build(False), "null": build(True)}
+
+
+def _pickPeriodSql(pair, period):
+    """Взять из пары запрос под эту группу (period=None -> вариант IS NULL).
+
+    Терпит и одиночный текст: линию могли собрать до появления пары."""
+    if not isinstance(pair, dict):
+        return pair
+    return pair["null" if period is None else "row"]
+
+
 def _buildDeletePeriodSql(dbSlave, tableNameSlave, slavePeriodColumn,
-                          filterClauseSlave, truncatePeriod=False):
+                          filterClauseSlave, truncatePeriod=False,
+                          nullGroup=False):
     """SQL для удаления записей группы по периоду (одиночному или составному)."""
     spec = _periodSpec(slavePeriodColumn)
-    cond = _periodCond(dbSlave, spec, None, "createdate", truncatePeriod)
+    cond = _periodCond(dbSlave, spec, None, "createdate", truncatePeriod,
+                       nullGroup)
     fcs = _asAndClause(filterClauseSlave)
     if fcs:
         cond += f" AND ({fcs})"
@@ -758,7 +808,8 @@ def _buildRecordByIdSql(dbMaster, selectSql, structMaster, pkColsMaster,
 
 
 def _buildRecordGroupSql(dbMaster, selectSql, structMaster, periodColumn,
-                         filterClauseMaster, truncatePeriod=False):
+                         filterClauseMaster, truncatePeriod=False,
+                         nullGroup=False):
     """Собрать SQL для выбора группы записей по периоду.
 
     truncatePeriod: если True, для Oracle применяется TRUNC(period),
@@ -768,7 +819,8 @@ def _buildRecordGroupSql(dbMaster, selectSql, structMaster, periodColumn,
     """
     fieldsStr = _buildFieldsStr(dbMaster, structMaster, periodColumn)
     spec = _periodSpec(periodColumn)
-    cond = _periodCond(dbMaster, spec, "p", "createdate", truncatePeriod)
+    cond = _periodCond(dbMaster, spec, "p", "createdate", truncatePeriod,
+                       nullGroup)
     fcm = _asAndClause(filterClauseMaster)
     if fcm:
         cond += f" AND ({fcm})"
@@ -1143,13 +1195,14 @@ def _processGroupUpdate(cfg, ctx, dateGroup):
         )
 
         # 1) удалить все записи группы из ведомой. Параметры периода зависят от
-        # того, одиночная колонка-дата или составная (year/month/day).
+        # того, одиночная колонка-дата или составная (year/month/day), а сам
+        # запрос — от того, обычная это группа или NULL (см. _periodCond).
         cursorSlave.execute(
-            ctx["deletePeriodSql"],
+            _pickPeriodSql(ctx["deletePeriodSql"], createdate),
             _periodBinds(_periodSpec(cfg["slavePeriodColumn"]), createdate))
         # 2) выбрать актуальные записи из ведущей и залить
         cursorMaster.execute(
-            ctx["recordGroupSql"],
+            _pickPeriodSql(ctx["recordGroupSql"], createdate),
             {"tablename": tableNameEtlJobs,
              **_periodBinds(_periodSpec(cfg["periodColumn"]), createdate),
              **(cfg.get("filterParams") or {})})
@@ -1849,15 +1902,14 @@ def _processSectionGroup(cfg, ctx, period, idrwBefore):
         conSlave = _connect(dbSlave)
         cursorSlave = conSlave.cursor()
 
-        # 1) удалить группу на стороне ведомой
+        # 1) удалить группу на стороне ведомой (для NULL-группы — свой запрос)
         cursorSlave.execute(
-            ctx["deletePeriodSql"],
+            _pickPeriodSql(ctx["deletePeriodSql"], period),
             _periodBinds(_periodSpec(cfg["slavePeriodColumn"]), period))
-        print(ctx["deletePeriodSql"], _periodBinds(_periodSpec(cfg["slavePeriodColumn"]), period))
 
         # 2) выбрать актуальные записи из ведущей и залить
         cursorMaster.execute(
-            ctx["recordGroupSql"],
+            _pickPeriodSql(ctx["recordGroupSql"], period),
             {"tablename": tableNameEtlJobs,
              **_periodBinds(_periodSpec(cfg["periodColumn"]), period),
              **(cfg.get("filterParams") or {})},
@@ -2134,12 +2186,14 @@ def _run(cfg):
                 cfg.get("filterClauseSlave"),
                 cfg.get("truncatePeriod"),
             ),
-            "deletePeriodSql": _buildDeletePeriodSql(
+            # Пара запросов на группу: обычную и NULL-группу (см. _periodCond).
+            "deletePeriodSql": _periodSqlPair(lambda nullGroup: _buildDeletePeriodSql(
                 dbSlave, cfg["tableNameSlave"],
                 cfg["slavePeriodColumn"],
                 cfg.get("filterClauseSlave"),
-                cfg.get("truncatePeriod"),  # <-- ДОБАВЛЕНО
-            ),
+                cfg.get("truncatePeriod"),
+                nullGroup,
+            )),
             "recordByIdSql": _buildRecordByIdSql(
                 dbMaster, selectSql, structMaster,
                 _primaryKeys(structMaster),
@@ -2147,12 +2201,13 @@ def _run(cfg):
                 cfg.get("filterClauseMaster"),
                 cfg.get("truncatePeriod"),  # <-- ДОБАВЛЕНО
             ),
-            "recordGroupSql": _buildRecordGroupSql(
+            "recordGroupSql": _periodSqlPair(lambda nullGroup: _buildRecordGroupSql(
                 dbMaster, selectSql, structMaster,
                 cfg["periodColumn"],
                 cfg.get("filterClauseMaster"),
-                cfg.get("truncatePeriod"),  # <-- ДОБАВЛЕНО
-            ),
+                cfg.get("truncatePeriod"),
+                nullGroup,
+            )),
         }
 
         # 6. Диспатч по режиму

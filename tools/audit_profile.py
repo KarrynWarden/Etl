@@ -53,8 +53,10 @@ from Functions.functionsFile.takeOneQuery import TakeOneQuery  # noqa: E402
 from Functions import do_audit as A  # noqa: E402
 from Functions.do_etl import (  # noqa: E402
     _connect, _isPost, _pickSql, _loadStructure, _periodKey, _resolveEtlPath,
-    _appendFilter, _executeQuery, _periodSpec, _periodBinds,
+    _appendFilter, _executeQuery, _periodSpec, _periodBinds, _periodSqlPair,
+    _pickPeriodSql,
 )
+from Src.generalQueries import PERIOD_SENTINEL_SQL  # noqa: E402
 from Src.generalQueries import (  # noqa: E402
     structureEmptyQuerySql, getBadAuditPostSql, getBadAuditOrclSql,
 )
@@ -158,39 +160,20 @@ def _countSql(dbType, sql):
     return f"SELECT COUNT(*) FROM (\n{sql}\n) prof"
 
 
-def _dropCoalesce(sql, sentinel=A._SENTINEL):
-    """Снять обёртку COALESCE(<выражение>, <сентинел>) -> <выражение>.
+def _legacyCond(cond):
+    """Прежний вид условия по периоду: COALESCE(<колонка>, <сентинел>) = <бинд>.
 
-    Только для ПРОБЫ. Условие по периоду обёрнуто в COALESCE, чтобы NULL-группа
-    сравнивалась как обычная (см. do_etl._periodCond). Побочный эффект: под
-    функцией обычный индекс по колонке периода не применим — планировщику
-    нужен индекс по тому же выражению. Проба выполняет тот же запрос без
-    обёртки и показывает разницу во времени: если она в разы, узкое место
-    найдено (и чинить его надо не здесь, а в сборке условия).
-    Для NULL-группы проба бессмысленна — там без COALESCE ничего не найдётся.
+    Только для ПРОБЫ «сколько стоила обёртка». Так условие строилось, пока
+    NULL-группа обрабатывалась одним запросом на все случаи: колонка уходила
+    под функцию, и индекс по периоду переставал применяться. Проба выполняет
+    тот же запрос в старом виде и показывает разницу во времени.
+    None — пробы не будет: у составного периода (year/month) условие из
+    нескольких частей, и подменять его построчно смысла нет.
     """
-    needle = "COALESCE("
-    tail = ", " + sentinel
-    out, i = [], 0
-    while True:
-        start = sql.find(needle, i)
-        if start < 0:
-            out.append(sql[i:])
-            return "".join(out)
-        depth, k = 1, start + len(needle)
-        while k < len(sql) and depth:
-            if sql[k] == "(":
-                depth += 1
-            elif sql[k] == ")":
-                depth -= 1
-            k += 1
-        inner = sql[start + len(needle):k - 1]
-        if depth == 0 and inner.endswith(tail):
-            out.append(sql[i:start])
-            out.append(inner[:-len(tail)])
-        else:
-            out.append(sql[i:k])
-        i = k
+    if " AND " in cond or cond.count(" = ") != 1:
+        return None
+    expr, _, bind = cond.partition(" = ")
+    return f"COALESCE({expr}, {PERIOD_SENTINEL_SQL}) = {bind}"
 
 
 def _timeIt(fn):
@@ -274,18 +257,21 @@ def _selftest():
                                    "MEDREE_CONS", "medree_cons"))
     assert body3.startswith("колонки: DCALC, VAL"), body3
 
-    # снятие COALESCE для пробы: и простая колонка, и выражение под TRUNC/DATE
-    sent = A._SENTINEL
-    got = _dropCoalesce(f"WHERE COALESCE(p.createdate, {sent}) = :createdate")
-    assert got == "WHERE p.createdate = :createdate", got
-    got = _dropCoalesce(f"WHERE COALESCE(DATE(p.dcalc), {sent}) = %(createdate)s")
-    assert got == "WHERE DATE(p.dcalc) = %(createdate)s", got
-    # чужой COALESCE (не про период) проба не трогает
-    keep = "SELECT COALESCE(a, b) FROM t"
-    assert _dropCoalesce(keep) == keep
-    # составной период — обёртки нет, запрос остаётся как есть
-    parts = "WHERE COALESCE(p.year, -1) = :createdate_y"
-    assert _dropCoalesce(parts) == parts
+    # условие по периоду: рабочий вид и «старый» для пробы
+    sent = PERIOD_SENTINEL_SQL
+    assert A._periodCond("Post", "createdate", False) == \
+        "p.createdate = %(createdate)s"
+    assert A._periodCond("Orcl", "createdate", False) == "p.createdate = :createdate"
+    assert A._periodCond("Orcl", "dcalc", True) == "TRUNC(p.dcalc) = :createdate"
+    # NULL-группа: без бинда и БЕЗ функции вокруг колонки
+    assert A._periodCond("Orcl", "dcalc", True, True) == "p.dcalc IS NULL"
+    assert A._periodCond("Post", {"year": "y", "month": "m"}, False, True) == \
+        "p.y IS NULL AND p.m IS NULL"
+    assert _legacyCond("p.createdate = :createdate") == \
+        f"COALESCE(p.createdate, {sent}) = :createdate"
+    assert _legacyCond("TRUNC(p.dcalc) = %(createdate)s") == \
+        f"COALESCE(TRUNC(p.dcalc), {sent}) = %(createdate)s"
+    assert _legacyCond("p.y = :createdate_y AND p.m = :createdate_m") is None
     print("\nselftest OK")
 
 
@@ -326,8 +312,13 @@ def main(argv):
         else:
             selectSql = structureEmptyQuerySql.format(cfg["tableNameMaster"])
         selectSql = _appendFilter(selectSql, cfg.get("filterClause"))
-        masterSql = A._buildMasterSql(cfg, selectSql, structMaster)
-        slaveSql = A._buildSlaveSql(cfg, structSlave)
+        # По паре запросов на сторону — как в самом аудите (обычная группа и
+        # NULL-группа): условия у них разные, см. do_etl._periodCond.
+        masterPair = _periodSqlPair(
+            lambda nullGroup: A._buildMasterSql(cfg, selectSql, structMaster,
+                                                nullGroup))
+        slavePair = _periodSqlPair(
+            lambda nullGroup: A._buildSlaveSql(cfg, structSlave, nullGroup))
         excluded = A._asNameSet(cfg["auditExcludeFields"])
         print(f"Полей аудита: {len(structMaster)}"
               + (f" (исключены из сравнения: {', '.join(sorted(excluded))})"
@@ -354,8 +345,10 @@ def main(argv):
             bindsMaster = {**_periodBinds(specMaster, period),
                            **(cfg.get("filterParams") or {})}
             bindsSlave = _periodBinds(specSlave, period)
+            masterSql = _pickPeriodSql(masterPair, period)
+            slaveSql = _pickPeriodSql(slavePair, period)
             print("\n" + "=" * 70)
-            print(f"Группа {period}")
+            print(f"Группа {period}" + (" (NULL-группа)" if period is None else ""))
 
             one = {}
             _, one["masterExec"] = _timeIt(
@@ -391,29 +384,34 @@ def main(argv):
                 print(f"  проба: повтор того же запроса ведущей — {sec2:.2f}с "
                       f"(было {masterFull:.2f}с; разница — кэш, а не работа)")
                 if period is None:
-                    print("  проба без COALESCE пропущена: группа NULL — без "
-                          "обёртки условие не нашло бы ничего")
+                    print("  проба со старым условием пропущена: у NULL-группы "
+                          "его и не было — она и раньше шла через COALESCE")
                 else:
-                    for label, cur, sql, binds, was in (
+                    for label, cur, sql, binds, was, col, trunc, db in (
                             ("ведущей", cursorMaster, masterSql, bindsMaster,
-                             masterFull),
+                             masterFull, cfg["periodColumn"],
+                             cfg["truncatePeriod"], dbMaster),
                             ("ведомой", cursorSlave, slaveSql, bindsSlave,
-                             slaveFull)):
-                        plain = _dropCoalesce(sql)
-                        if plain == sql:
+                             slaveFull, cfg["slavePeriodColumn"],
+                             cfg["truncatePeriod"], dbSlave)):
+                        cond = A._periodCond(db, col, trunc)
+                        legacy = _legacyCond(cond)
+                        if not legacy or cond not in sql:
                             continue
+                        old = sql.replace(cond, legacy, 1)
                         try:
-                            _, sec3 = _timeIt(lambda: cur.execute(plain, binds))
+                            _, sec3 = _timeIt(lambda: cur.execute(old, binds))
                             rows = cur.fetchall()
                         except Exception as err:
-                            print(f"  проба без COALESCE ({label}) не удалась: "
-                                  f"{type(err).__name__}: {str(err)[:150]}")
+                            print(f"  проба со старым условием ({label}) не "
+                                  f"удалась: {type(err).__name__}: "
+                                  f"{str(err)[:150]}")
                             continue
-                        print(f"  проба: запрос {label} БЕЗ обёртки COALESCE "
-                              f"вокруг периода — {sec3:.2f}с на {len(rows)} "
-                              f"строк (с обёрткой было {was:.2f}с). Разница в "
-                              f"разы = условие не даёт использовать индекс по "
-                              f"колонке периода")
+                        print(f"  проба: запрос {label} со СТАРЫМ условием "
+                              f"(COALESCE вокруг периода) — {sec3:.2f}с на "
+                              f"{len(rows)} строк; сейчас {was:.2f}с. Разница "
+                              f"в разы = дело было в том, что под функцией не "
+                              f"применялся индекс по колонке периода")
 
             if args.explain:
                 _explain(cursorMaster, dbMaster, masterSql, bindsMaster,
