@@ -69,7 +69,7 @@ from Functions.do_etl import (
     _appendFilter, _filterEtlFields, _buildFieldsStr,
     _executeQuery, _configKey, classifyError, _asAndClause,
     _periodSpec, _periodBinds, _periodBind,
-    _periodSqlPair, _pickPeriodSql,
+    _periodSqlPair, _pickPeriodSql, logStatements,
     _phaseTimer, _newPhases, _addPhases, _phasesText, _phasesTotal,
     _periodCond as _etlPeriodCond,
 )
@@ -723,6 +723,16 @@ def _run(cfg):
             "slaveSql": _periodSqlPair(
                 lambda nullGroup: _buildSlaveSql(cfg, structSlave, nullGroup)),
         }
+
+        # Один раз за прогон — что именно уйдёт в БД. Сравнение с теми же
+        # строками из лога переноса сразу показывает, чем запросы отличаются
+        # (у аудита нет колонок из auditExcludeFields — и это меняет план).
+        logStatements(
+            f"Аудит {tableNameEtlJobs} ({dbMaster}->{dbSlave}): запросы этого "
+            f"прогона. Значения уходят биндами; для NULL-группы условие "
+            f"периода — `IS NULL` вместо `= бинд`.",
+            [("выборка группы из ведущей", ctx["masterSql"]["row"]),
+             ("выборка группы из ведомой", ctx["slaveSql"]["row"])])
 
         # 5. Группы на проверку.
         groupsAt = time.perf_counter()

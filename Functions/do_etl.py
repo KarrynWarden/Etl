@@ -764,6 +764,65 @@ def _buildSlavePeriodsByIdSql(dbSlave, tableNameSlave, pkColsSlave,
 # печатают, сколько заняла каждая фаза. Тот же приём уже окупился в аудите —
 # именно так нашлось, что условие по периоду прячет колонку под функцию.
 
+def logStatements(title, statements):
+    """Напечатать ОДИН РАЗ за прогон, какой SQL реально уйдёт в БД.
+
+    Печатается собранный текст с плейсхолдерами, без подстановки значений:
+    вопрос, на который это отвечает, — «какой запрос выполняется», а не «с
+    какими данными». Значения всё равно уходят биндами, и подставлять их в
+    текст пришлось бы вручную и с риском переврать.
+
+    Зачем. Запрос собирается из пяти кусков (шаблон, список полей, свой
+    SELECT источника, условие периода, фильтр линии) — и понять по коду, что
+    в итоге получилось, стоит дороже, чем прочитать готовый текст. На iperson
+    именно так стало видно, чем выборка группы в переносе отличается от
+    выборки аудита: списком полей, а из-за него планировщик по-разному
+    обходится с соединением внутри источника.
+
+    statements — [(подпись, sql)]; пустые пропускаются.
+    """
+    blocks = []
+    for label, sql in statements:
+        if not sql:
+            continue
+        blocks.append(f"--- {label} ---\n{_stripLeadingComments(sql)}")
+    if blocks:
+        logger.info("%s\n%s", title, "\n".join(blocks))
+
+
+def _stripLeadingComments(sql):
+    """Убрать шапку из `--`-комментариев шаблона: в файле она объясняет запрос,
+    в логе — только мешает читать сам запрос."""
+    lines = str(sql).strip().splitlines()
+    while lines and (not lines[0].strip() or lines[0].lstrip().startswith("--")):
+        lines.pop(0)
+    return "\n".join(lines).strip()
+
+
+# Что показывать из ctx и как подписывать. Порядок — как в работе линии.
+_CTX_SQL_LABELS = (
+    ("recordByIdSql", "выборка записи ведущей по ключу (iud / delete_insert)"),
+    ("recordGroupSql", "выборка группы из ведущей"),
+    ("deleteByIdSql", "удаление записи в ведомой по ключу"),
+    ("deletePeriodSql", "удаление группы в ведомой"),
+    ("slavePeriodsByIdSql", "группы ведомой по ключу (delete_insert)"),
+    ("upsertSql", "запись строки в ведомую"),
+)
+
+
+def _ctxStatements(ctx, labels=_CTX_SQL_LABELS):
+    """[(подпись, sql)] из ctx. У пар (обычная группа / NULL-группа) берётся
+    вариант обычной — у NULL-группы отличается только условие периода."""
+    out = []
+    for key, label in labels:
+        sql = ctx.get(key)
+        if isinstance(sql, dict):
+            out.append((label, sql.get("row")))
+        else:
+            out.append((label, sql))
+    return out
+
+
 def _phaseTimer():
     """(marks, phase): словарь замеров и функция-отсечка `phase('имя')`."""
     marks = {}
@@ -1880,31 +1939,42 @@ def _markFailGroup(groupsData, period):
 #         Режим section_compare (mocheck / medree): сравнение master vs slave
 # ----------------------------------------------------------------------------
 
+def _buildMasterPeriodsSql(dbMaster, selectSql, periodColumn):
+    """SQL среза ведущей: (период, lastupdate, счётчик)."""
+    sqlTpl = _pickSql(dbMaster, dateSelectMasterPostSql, dateSelectMasterOrclSql)
+    return sqlTpl.format(
+        select_sql=selectSql,
+        period_expr=_periodExpr(dbMaster, _periodSpec(periodColumn), "p"),
+    )
+
+
+def _buildSlavePeriodsSql(dbSlave, tableNameSlave, slavePeriodColumn,
+                          filterClauseSlave):
+    """SQL среза ведомой — то же, что у ведущей, плюс фильтр линии."""
+    sqlTpl = _pickSql(dbSlave, dateSelectSlavePostSql, dateSelectSlaveOrclSql)
+    return sqlTpl.format(
+        tablename=tableNameSlave,
+        period_expr=_periodExpr(dbSlave, _periodSpec(slavePeriodColumn)),
+        filter=_asAndClause(filterClauseSlave) or "1=1",
+    )
+
+
 def _selectMasterPeriods(cursor, dbMaster, selectSql, periodColumn):
     """Уникальные (createdate, max(lastupdate)) на стороне ведущей.
 
     periodColumn — имя колонки группировки в источнике (createdate / dcalc /
     reqdt и т.п.).
     """
-    sqlTpl = _pickSql(dbMaster, dateSelectMasterPostSql, dateSelectMasterOrclSql)
-    sql = sqlTpl.format(
-        select_sql=selectSql,
-        period_expr=_periodExpr(dbMaster, _periodSpec(periodColumn), "p"),
-    )
-    return _executeQuery(cursor, sql)
+    return _executeQuery(
+        cursor, _buildMasterPeriodsSql(dbMaster, selectSql, periodColumn))
 
 
 def _selectSlavePeriods(cursor, dbSlave, tableNameSlave,
                         slavePeriodColumn, filterClauseSlave):
     """Уникальные (createdate, max(lastupdate)) на стороне ведомой."""
-    sqlTpl = _pickSql(dbSlave, dateSelectSlavePostSql, dateSelectSlaveOrclSql)
-    filterSql = _asAndClause(filterClauseSlave) or "1=1"
-    sql = sqlTpl.format(
-        tablename=tableNameSlave,
-        period_expr=_periodExpr(dbSlave, _periodSpec(slavePeriodColumn)),
-        filter=filterSql,
-    )
-    return _executeQuery(cursor, sql)
+    return _executeQuery(
+        cursor, _buildSlavePeriodsSql(dbSlave, tableNameSlave,
+                                      slavePeriodColumn, filterClauseSlave))
 
 
 def _selectIudPeriods(cursor, dbMaster, tableNameEtlJobs):
@@ -2105,6 +2175,16 @@ def _runSectionCompare(cfg, ctx, selectSql, useIud=False):
     idrwBefore = (_maxIudIdrw(ctx["cursorMaster"], dbMaster, tableNameEtlJobs)
                   if useIud else None)
 
+    # Срезы строятся здесь, а не в ctx, — покажем их тем же способом.
+    logStatements(
+        f"Линия {tableNameEtlJobs}: запросы сравнения срезов",
+        [("срез ведущей (период, lastupdate, счётчик)",
+          _buildMasterPeriodsSql(dbMaster, selectSql, cfg["periodColumn"])),
+         ("срез ведомой",
+          _buildSlavePeriodsSql(dbSlave, cfg["tableNameSlave"],
+                                cfg["slavePeriodColumn"],
+                                cfg.get("filterClauseSlave")))])
+
     # 1. master vs slave по (createdate, max(lastupdate))
     conSlave = _connect(dbSlave)
     try:
@@ -2200,7 +2280,6 @@ def Do_etl(tableNameMaster, tableNameSlave=None, structureMaster=None,
     # По умолчанию False — lastupdate сравнивается с точностью timestamp.
     config.setdefault("truncateLastupdate", False)
     config.update(overrides)
-    print('caps name ', tableNameEtlJobs or config["tableNameMaster"] or tableNameMaster, tableNameEtlJobs,' or ', config["tableNameMaster"], ' or ', tableNameMaster)
     return _run(config)
 
 
@@ -2320,6 +2399,13 @@ def _run(cfg):
                 nullGroup,
             )),
         }
+
+        # 5a. Один раз за прогон — что именно уйдёт в БД.
+        logStatements(
+            f"Линия {tableNameEtlJobs} ({dbMaster}->{dbSlave}), режим "
+            f"{cfg['mode']}: запросы этого прогона. Значения уходят биндами; "
+            f"для NULL-группы условие периода — `IS NULL` вместо `= бинд`.",
+            _ctxStatements(ctx))
 
         # 6. Диспатч по режиму
         mode = cfg["mode"]
