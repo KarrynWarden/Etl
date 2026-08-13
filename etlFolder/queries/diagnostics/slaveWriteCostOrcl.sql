@@ -103,18 +103,58 @@ ORDER  BY elapsed_time DESC;
 -- SELECT * FROM TABLE(dbms_xplan.display_cursor('<sql_id>', <child_number>,
 --                                               'ALLSTATS LAST'));
 
--- 6. На чём ждала сессия переноса. Здесь видно, диски это ('db file sequential
---    read'), журнал ('log file sync') или блокировки ('enq: TX - ...').
---    Подставить sid сессии переноса (v$session по osuser/program/module).
--- SELECT * FROM (
---     SELECT event,
---            total_waits,
---            ROUND(time_waited_micro / 1e6, 1) AS waited_s
---     FROM   v$session_event
---     WHERE  sid = <sid>
---     AND    wait_class <> 'Idle'
---     ORDER  BY time_waited_micro DESC
--- ) WHERE rownum <= 15;
+-- 6. На чём ждали сессии переноса — sid искать не надо, они отбираются по
+--    имени программы. Здесь видно, диски это ('db file sequential read'),
+--    журнал ('log file sync', 'log file switch (checkpoint incomplete)'),
+--    буферный кэш ('free buffer waits') или блокировки ('enq: TX - ...').
+--    Запускать ВО ВРЕМЯ прогона дага: после отключения сессии строки уходят.
+SELECT * FROM (
+    SELECT s.sid,
+           e.event,
+           e.total_waits,
+           ROUND(e.time_waited_micro / 1e6, 1) AS waited_s
+    FROM   v$session_event e
+    JOIN   v$session s ON s.sid = e.sid
+    WHERE  e.wait_class <> 'Idle'
+    AND    (LOWER(s.program) LIKE '%python%' OR LOWER(s.module) LIKE '%python%')
+    ORDER  BY e.time_waited_micro DESC
+) WHERE rownum <= 20;
+
+-- 7. Журнал повторного выполнения. Перезаливка группы (удалить всё, вставить
+--    всё) при большом числе индексов порождает очень много redo. Если групп
+--    журнала мало и они мелкие, переключение упирается в контрольную точку, и
+--    запись встаёт целиком — ровно так выглядит одна пачка на 90 секунд при
+--    остальных по секунде.
+SELECT group#, thread#, ROUND(bytes / 1024 / 1024) AS mb, members, status
+FROM   v$log
+ORDER  BY group#;
+
+-- Как часто переключались за последние сутки (норма — не чаще, чем раз в
+-- 15-20 минут; несколько раз в минуту означает, что журналы малы).
+SELECT TO_CHAR(first_time, 'YYYY-MM-DD HH24') AS hour, COUNT(*) AS switches
+FROM   v$log_history
+WHERE  first_time > SYSDATE - 1
+GROUP  BY TO_CHAR(first_time, 'YYYY-MM-DD HH24')
+ORDER  BY 1;
+
+-- Ожидания по всей базе — сюда попадут и те, что случились до подключения.
+SELECT * FROM (
+    SELECT event, total_waits, ROUND(time_waited_micro / 1e6, 1) AS waited_s
+    FROM   v$system_event
+    WHERE  wait_class <> 'Idle'
+    ORDER  BY time_waited_micro DESC
+) WHERE rownum <= 20;
+
+-- 8. Какими индексами вообще пользуются. У ведомой IPERSON их 21 штука, и
+--    КАЖДЫЙ сопровождается и на удалении строки, и на вставке — это и есть
+--    основная цена перезаливки. Индексы на копии нужны только тем, кто эту
+--    копию читает; неиспользуемый индекс здесь стоит дороже, чем на источнике.
+--    Включить наблюдение (по одному разу на индекс), дать поработать день,
+--    потом смотреть USED.
+--       ALTER INDEX &&owner..IPERSON013 MONITORING USAGE;
+SELECT index_name, table_name, monitoring, used, start_monitoring
+FROM   v$object_usage
+ORDER  BY used, index_name;
 
 --------------------------------------------------------------------------------
 -- Отдельно: MERGE в этой схеме НЕ лишний, убирать его в пользу простого INSERT
