@@ -913,8 +913,6 @@ def _buildRecordGroupSql(dbMaster, selectSql, structMaster, periodColumn,
     return sqlTpl.format(
         fields_str=fieldsStr,
         select_sql=selectSql,
-        # выражение периода для JOIN etl_jobs (составной период собирается в дату)
-        period_expr=_periodExpr(dbMaster, spec, "p", truncatePeriod),
         period_cond=cond,
     )
 
@@ -1291,11 +1289,12 @@ def _processGroupUpdate(cfg, ctx, dateGroup):
             _pickPeriodSql(ctx["deletePeriodSql"], createdate),
             _periodBinds(_periodSpec(cfg["slavePeriodColumn"]), createdate))
         phase("delete")
-        # 2) выбрать актуальные записи из ведущей и залить
+        # 2) выбрать актуальные записи из ведущей и залить. Бинда tablename
+        # здесь больше нет: он был нужен убранному JOIN'у с etl_jobs, а лишний
+        # бинд Oracle не принимает (ORA-01036).
         cursorMaster.execute(
             _pickPeriodSql(ctx["recordGroupSql"], createdate),
-            {"tablename": tableNameEtlJobs,
-             **_periodBinds(_periodSpec(cfg["periodColumn"]), createdate),
+            {**_periodBinds(_periodSpec(cfg["periodColumn"]), createdate),
              **(cfg.get("filterParams") or {})})
         phase("masterExec")
         records = cursorMaster.fetchall()
@@ -2008,11 +2007,11 @@ def _processSectionGroup(cfg, ctx, period, idrwBefore):
             _periodBinds(_periodSpec(cfg["slavePeriodColumn"]), period))
         phase("delete")
 
-        # 2) выбрать актуальные записи из ведущей и залить
+        # 2) выбрать актуальные записи из ведущей и залить (про tablename —
+        # см. тот же шаг в _processGroupUpdate)
         cursorMaster.execute(
             _pickPeriodSql(ctx["recordGroupSql"], period),
-            {"tablename": tableNameEtlJobs,
-             **_periodBinds(_periodSpec(cfg["periodColumn"]), period),
+            {**_periodBinds(_periodSpec(cfg["periodColumn"]), period),
              **(cfg.get("filterParams") or {})},
         )
         phase("masterExec")
