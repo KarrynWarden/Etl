@@ -1439,26 +1439,49 @@ def _processGroupUpdate(cfg, ctx, dateGroup):
 
 # Сколько строк psycopg2 склеивает в один запрос к серверу (execute_batch).
 _PG_BATCH_PAGE = 1000
+# Сколько строк уходит в Oracle одним executemany (array DML).
+_ORCL_BATCH_ROWS = 1000
 
 
 def _bulkUpsert(cursorSlave, dbSlave, upsertSql, structSlave, records):
-    """Вставка/обновление пачки записей в ведомой.
+    """Вставка/обновление пачки записей в ведомой — ПАЧКОЙ, а не по строке.
 
     Postgres: execute_batch вместо executemany. psycopg2.executemany гоняет
     ОТДЕЛЬНЫЙ round-trip на каждую строку — на группах в ~90 тыс. строк
     (medree_prdisp) это часы вместо минут. execute_batch склеивает по
     _PG_BATCH_PAGE операторов в один запрос; SQL и параметры те же, поэтому
     работает одинаково и с INSERT, и с INSERT ... ON CONFLICT.
+
+    Oracle: executemany (array DML) — один round-trip на пачку. Здесь был цикл
+    по строкам, и замер это показал: заливка 29 999 записей iperson занимала
+    106.7 с при том, что сама выборка группы — 0.4 с. Это ~3.5 мс на строку,
+    то есть чистая сетевая цена round-trip, а не работа БД.
+
+    Пачки по _ORCL_BATCH_ROWS: cx_Oracle под executemany выделяет буферы на всю
+    пачку сразу, и группа в сотни тысяч строк одним вызовом съела бы память.
+
+    Если пачка не прошла — повторяем её по строке. У Oracle-ведомой запись
+    всегда идёт MERGE (см. _buildUpsertSql), то есть повтор уже применённых
+    строк безопасен; зато ошибка называет конкретную строку, а не всю пачку.
     """
     if _isPost(dbSlave):
         if records:
             psycopg2.extras.execute_batch(cursorSlave, upsertSql, records,
                                           page_size=_PG_BATCH_PAGE)
         return
-    # Oracle: позиционные параметры :1 .. :N
-    for record in records:
-        params = {str(i + 1): value for i, value in enumerate(record)}
-        cursorSlave.execute(upsertSql, params)
+    # Oracle: позиционные параметры :1 .. :N — те же, что и при построчной
+    # записи, просто списком.
+    for chunk in _chunks(records, _ORCL_BATCH_ROWS):
+        rows = [{str(i + 1): value for i, value in enumerate(record)}
+                for record in chunk]
+        try:
+            cursorSlave.executemany(upsertSql, rows)
+        except Exception as err:
+            logger.warning("Пачка из %d строк не прошла (%s: %s) — повторяю "
+                           "по одной, чтобы стало видно, на какой именно",
+                           len(rows), type(err).__name__, str(err)[:200])
+            for params in rows:
+                cursorSlave.execute(upsertSql, params)
 
 
 # ----------------------------------------------------------------------------
