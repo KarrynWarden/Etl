@@ -70,6 +70,7 @@ from Functions.do_etl import (
     _executeQuery, _configKey, classifyError, _asAndClause,
     _periodSpec, _periodBinds, _periodBind,
     _periodSqlPair, _pickPeriodSql,
+    _phaseTimer, _newPhases, _addPhases, _phasesText, _phasesTotal,
     _periodCond as _etlPeriodCond,
 )
 from Src.generalQueries import (
@@ -448,12 +449,12 @@ def _evaluate(period, tableNameEtlJobs, tableNameSlave,
 # ----------------------------------------------------------------------------
 #                       Замеры времени по фазам (диагностика)
 # ----------------------------------------------------------------------------
-# Аудит iperson идёт часами, и до этих замеров нельзя было даже сказать, на что
-# уходит время: группа на 525 строк обрабатывается ~15 с, а на 271 184 строки —
-# ~32 с. Значит, основная часть НЕ зависит от объёма группы (иначе разница была
-# бы в сотни раз), то есть это фиксированная плата за каждую группу — и её надо
-# видеть по фазам, а не гадать. Ничего не меняя в самой проверке, замеряем
-# шесть отрезков и печатаем их по группе и суммой по линии.
+# Аудит iperson шёл часами, и до этих замеров нельзя было даже сказать, на что
+# уходит время: группа на 2934 строки проверялась 14 с, а на 140 406 строк —
+# 24 с. Основная часть НЕ зависела от объёма группы, то есть это была
+# фиксированная плата за группу — и увидеть её удалось только по фазам. Так и
+# нашлось, что COALESCE вокруг колонки периода отключал индекс (см.
+# do_etl._periodCond). Механика замеров общая с переносом — она в do_etl.
 _PHASE_LABELS = (
     ("masterExec", "запрос ведущей"),
     ("masterFetch", "выборка ведущей"),
@@ -466,26 +467,19 @@ _PHASE_LABELS = (
 
 
 def _newTiming():
-    timing = {name: 0.0 for name, _label in _PHASE_LABELS}
-    timing["groups"] = 0
-    timing["rows"] = 0
-    return timing
+    return _newPhases(_PHASE_LABELS)
 
 
 def _addTiming(total, one, rows):
-    for name, _label in _PHASE_LABELS:
-        total[name] += one[name]
-    total["groups"] += 1
-    total["rows"] += rows
+    _addPhases(total, one, _PHASE_LABELS, rows)
 
 
 def _timingText(timing):
-    parts = [f"{label} {timing[name]:.1f}с" for name, label in _PHASE_LABELS]
-    return ", ".join(parts)
+    return _phasesText(timing, _PHASE_LABELS)
 
 
 def _timingTotal(timing):
-    return sum(timing[name] for name, _label in _PHASE_LABELS)
+    return _phasesTotal(timing, _PHASE_LABELS)
 
 
 # ----------------------------------------------------------------------------
@@ -532,16 +526,7 @@ def _auditGroup(cfg, ctx, origPeriod, report):
     # совпадали — и группа помечалась как «идентична» (ложный зелёный).
     period = _periodKey(origPeriod, cfg["truncatePeriod"])
 
-    one = {}
-    mark = time.perf_counter()
-
-    def _phase(name):
-        """Закрыть отрезок замера и начать следующий."""
-        nonlocal mark
-        now = time.perf_counter()
-        one[name] = now - mark
-        mark = now
-
+    one, _phase = _phaseTimer()
     try:
         # Бинды периода строятся отдельно для каждой стороны: у ведущей и
         # ведомой период может быть устроен по-разному (у одной составной

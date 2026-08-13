@@ -1,2 +1,8 @@
+-- Отметить обработанными записи журнала этой группы (её сейчас перезальют).
+-- Условие по периоду подставляет Python: у обычной группы это `period = бинд`,
+-- у NULL-группы `period IS NULL`. Раньше здесь стоял COALESCE с сентинелом —
+-- один запрос на оба случая, но колонка под функцией, и индекс по периоду не
+-- применялся. etl_log_iud_row — самая большая из служебных таблиц (строка на
+-- каждое изменение ведущей), так что скан по ней стоит дорого.
 UPDATE etl_log_iud_row SET isetl = 1
-WHERE isetl = 0 AND COALESCE(period, TO_DATE('1900-01-01', 'YYYY-MM-DD')) = %(createdate)s AND tablename = %(tablename)s
+WHERE isetl = 0 AND {period_cond} AND tablename = %(tablename)s

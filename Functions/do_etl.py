@@ -42,6 +42,7 @@ from __future__ import annotations
 import datetime
 import logging
 import os
+import time
 from collections import defaultdict
 from decimal import Decimal
 
@@ -496,8 +497,27 @@ def _periodBinds(spec, period, bind="createdate"):
 
 def _periodBind(period):
     """То же для мест, где период биндится ОДНИМ параметром напрямую
-    (etl_jobs: last_success_ts / isokaudit / отметка журнала)."""
+    (etl_jobs: last_success_ts / isokaudit)."""
     return periodBind(period)
+
+
+def _journalPeriodCond(dbType, period, bind="createdate"):
+    """Условие по периоду для ЖУРНАЛА etl_log_iud_row.
+
+    Отдельно от etl_jobs: журнал — не «маленькая служебная таблица», в нём
+    строка на каждое изменение ведущей, и COALESCE вокруг period обходился ему
+    так же дорого, как таблицам данных (см. _periodCond). etl_jobs и etl_log
+    остаются на сентинеле: там сотни строк на линию.
+    """
+    if period is None:
+        return "period IS NULL"
+    return "period = " + _bindName(dbType, bind)
+
+
+def _journalPeriodBind(period, bind="createdate"):
+    """Бинд к _journalPeriodCond: у NULL-группы плейсхолдера нет, и лишний
+    параметр Oracle не примет (ORA-01036)."""
+    return {} if period is None else {bind: period}
 
 
 def _periodColumns(spec):
@@ -733,6 +753,71 @@ def _buildSlavePeriodsByIdSql(dbSlave, tableNameSlave, pkColsSlave,
     sqlTpl = _pickSql(dbSlave, slavePeriodsByIdPostSql, slavePeriodsByIdOrclSql)
     return sqlTpl.format(period_expr=periodExpr, tablename=tableNameSlave,
                          primary_cond=primaryCond)
+
+
+# ----------------------------------------------------------------------------
+#                     Замеры времени по фазам (диагностика)
+# ----------------------------------------------------------------------------
+# Один прогон по группе — это пять-шесть разных обращений к двум БД, а в логе
+# между «обработка группы» и «найдено N записей» была одна пауза без единой
+# подсказки, из чего она состоит. Замеры ничего не меняют в работе: только
+# печатают, сколько заняла каждая фаза. Тот же приём уже окупился в аудите —
+# именно так нашлось, что условие по периоду прячет колонку под функцию.
+
+def _phaseTimer():
+    """(marks, phase): словарь замеров и функция-отсечка `phase('имя')`."""
+    marks = {}
+    state = {"at": time.perf_counter()}
+
+    def phase(name):
+        now = time.perf_counter()
+        marks[name] = marks.get(name, 0.0) + (now - state["at"])
+        state["at"] = now
+
+    return marks, phase
+
+
+def _phasesText(marks, labels):
+    """'запрос ведущей 3.1с, выборка ведущей 0.0с, ...' по списку (имя, подпись).
+
+    Фазы, которых в замерах нет, пропускаются: список фаз общий на несколько
+    путей, и «проверка структуры 0.0с» там, где её не делают, читалась бы как
+    «сделали мгновенно»."""
+    return ", ".join(f"{label} {marks[name]:.1f}с"
+                     for name, label in labels if name in marks)
+
+
+def _phasesTotal(marks, labels):
+    return sum(marks.get(name, 0.0) for name, _label in labels)
+
+
+def _newPhases(labels):
+    """Аккумулятор сумм по фазам (для свода в конце прогона)."""
+    total = {name: 0.0 for name, _label in labels}
+    total["groups"] = 0
+    total["rows"] = 0
+    return total
+
+
+def _addPhases(total, marks, labels, rows=0):
+    for name, _label in labels:
+        total[name] += marks.get(name, 0.0)
+    total["groups"] += 1
+    total["rows"] += rows
+
+
+# Фазы перезаливки ОДНОЙ группы — общие для массового обновления (isokaudit=4)
+# и для section_compare: обе делают одно и то же в одном порядке.
+_GROUP_PHASE_LABELS = (
+    ("connect", "подключение к ведомой"),
+    ("structCheck", "проверка структуры ведомой"),
+    ("journal", "отметка журнала"),
+    ("delete", "удаление группы в ведомой"),
+    ("masterExec", "запрос группы к ведущей"),
+    ("masterFetch", "выборка группы"),
+    ("upsert", "заливка в ведомую"),
+    ("commit", "etl_jobs+etl_log+коммит"),
+)
 
 
 def _periodSqlPair(build):
@@ -1170,9 +1255,11 @@ def _processGroupUpdate(cfg, ctx, dateGroup):
     logger.info("Обработка группы %s (массовое обновление)", createdate)
 
     conSlave = None
+    marks, phase = _phaseTimer()
     try:
         conSlave = _connect(dbSlave)
         cursorSlave = conSlave.cursor()
+        phase("connect")
 
         if not StructCheckDataBase(
             ctx["structSlave"], cursorSlave,
@@ -1185,14 +1272,17 @@ def _processGroupUpdate(cfg, ctx, dateGroup):
             raise AirflowFailException(
                 f"FLK: структура ведомой {cfg['tableNameSlave']} не совпадает с json-эталоном"
             )
+        phase("structCheck")
 
         # isetl: 0 -> 1 в etl_log_iud_row для уже зафиксированных записей
         # этой группы — они будут перезалиты вместе со всей группой.
         cursorMaster.execute(
-            _pickSql(dbMaster, etlStatusChangePostSql, etlStatusChangeOrclSql),
+            _pickSql(dbMaster, etlStatusChangePostSql, etlStatusChangeOrclSql)
+            .format(period_cond=_journalPeriodCond(dbMaster, createdate)),
             {"tablename": tableNameEtlJobs,
-             "createdate": _periodBind(createdate)},
+             **_journalPeriodBind(createdate)},
         )
+        phase("journal")
 
         # 1) удалить все записи группы из ведомой. Параметры периода зависят от
         # того, одиночная колонка-дата или составная (year/month/day), а сам
@@ -1200,17 +1290,21 @@ def _processGroupUpdate(cfg, ctx, dateGroup):
         cursorSlave.execute(
             _pickPeriodSql(ctx["deletePeriodSql"], createdate),
             _periodBinds(_periodSpec(cfg["slavePeriodColumn"]), createdate))
+        phase("delete")
         # 2) выбрать актуальные записи из ведущей и залить
         cursorMaster.execute(
             _pickPeriodSql(ctx["recordGroupSql"], createdate),
             {"tablename": tableNameEtlJobs,
              **_periodBinds(_periodSpec(cfg["periodColumn"]), createdate),
              **(cfg.get("filterParams") or {})})
+        phase("masterExec")
         records = cursorMaster.fetchall()
+        phase("masterFetch")
         logger.info("Найдено %d записей для группы %s", len(records), createdate)
 
         _bulkUpsert(cursorSlave, dbSlave, ctx["upsertSql"],
                     ctx["structSlave"], records)
+        phase("upsert")
 
         # 3) обновить etl_jobs (last_success_ts, isokaudit=0)
         cursorMaster.execute(
@@ -1224,7 +1318,11 @@ def _processGroupUpdate(cfg, ctx, dateGroup):
         conSlave.commit()
         UpdateLog(tableNameEtlJobs, dbMaster, action,
                   cursorMaster, conMaster, len(records), createdate)
-        logger.info("Группа %s успешно обработана", createdate)
+        phase("commit")
+        logger.info("Группа %s успешно обработана: %d записей, %.1fс (%s)",
+                    createdate, len(records),
+                    _phasesTotal(marks, _GROUP_PHASE_LABELS),
+                    _phasesText(marks, _GROUP_PHASE_LABELS))
     except Exception as err:
         if isShutdown(err):
             # SIGTERM — не ошибка группы. Статус НЕ трогаем: группа остаётся
@@ -1898,14 +1996,17 @@ def _processSectionGroup(cfg, ctx, period, idrwBefore):
     logger.info("section_compare: группа %s (%s)", period, tableNameEtlJobs)
 
     conSlave = None
+    marks, phase = _phaseTimer()
     try:
         conSlave = _connect(dbSlave)
         cursorSlave = conSlave.cursor()
+        phase("connect")
 
         # 1) удалить группу на стороне ведомой (для NULL-группы — свой запрос)
         cursorSlave.execute(
             _pickPeriodSql(ctx["deletePeriodSql"], period),
             _periodBinds(_periodSpec(cfg["slavePeriodColumn"]), period))
+        phase("delete")
 
         # 2) выбрать актуальные записи из ведущей и залить
         cursorMaster.execute(
@@ -1914,20 +2015,27 @@ def _processSectionGroup(cfg, ctx, period, idrwBefore):
              **_periodBinds(_periodSpec(cfg["periodColumn"]), period),
              **(cfg.get("filterParams") or {})},
         )
+        phase("masterExec")
         records = cursorMaster.fetchall()
+        phase("masterFetch")
         logger.info("Найдено %d записей для %s", len(records), period)
         _bulkUpsert(cursorSlave, dbSlave, ctx["upsertSql"],
                     ctx["structSlave"], records)
+        phase("upsert")
 
         # 3) пометить обработанными те записи журнала, что существовали
         # на момент старта (новые останутся для следующего запуска)
         if idrwBefore is not None:
-            markSql = _pickSql(dbMaster, markPeriodIudPostSql, markPeriodIudOrclSql)
-            cursorMaster.execute(markSql, {
-                "tablename": tableNameEtlJobs,
-                "period": _periodBind(period),
-                "idrwBefore": idrwBefore,
-            })
+            markSql = _pickSql(dbMaster, markPeriodIudPostSql,
+                               markPeriodIudOrclSql)
+            cursorMaster.execute(
+                markSql.format(
+                    period_cond=_journalPeriodCond(dbMaster, period, "period")),
+                {"tablename": tableNameEtlJobs,
+                 "idrwBefore": idrwBefore,
+                 **_journalPeriodBind(period, "period")},
+            )
+        phase("journal")
 
         # 4) обновить etl_jobs.last_success_ts
         cursorMaster.execute(
@@ -1941,7 +2049,11 @@ def _processSectionGroup(cfg, ctx, period, idrwBefore):
         conSlave.commit()
         UpdateLog(tableNameEtlJobs, dbMaster, action,
                   cursorMaster, conMaster, len(records), period)
-        logger.info("Группа %s обработана (section_compare)", period)
+        phase("commit")
+        logger.info("Группа %s обработана (section_compare): %d записей, "
+                    "%.1fс (%s)", period, len(records),
+                    _phasesTotal(marks, _GROUP_PHASE_LABELS),
+                    _phasesText(marks, _GROUP_PHASE_LABELS))
     except Exception as err:
         if isShutdown(err):
             # SIGTERM — не ошибка группы, статус не трогаем: расхождение
