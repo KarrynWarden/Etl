@@ -501,23 +501,44 @@ def _periodBind(period):
     return periodBind(period)
 
 
-def _journalPeriodCond(dbType, period, bind="createdate"):
+def _journalPeriodCond(dbType, period, bind="createdate", truncate=False):
     """Условие по периоду для ЖУРНАЛА etl_log_iud_row.
 
     Отдельно от etl_jobs: журнал — не «маленькая служебная таблица», в нём
     строка на каждое изменение ведущей, и COALESCE вокруг period обходился ему
     так же дорого, как таблицам данных (см. _periodCond). etl_jobs и etl_log
     остаются на сентинеле: там сотни строк на линию.
+
+    truncate — ГРАНУЛЯРНОСТЬ ГРУППЫ, и она обязана совпадать с той, по которой
+    группу выбрали (_periodKey). Иначе получается тихий вечный цикл: группу
+    берут как TRUNC(period) журнала, а помечают обработанной по
+    `period = <день>` — строка журнала со временем внутри дня под условие не
+    попадает, остаётся isetl = 0, на следующем прогоне снова даёт ту же группу,
+    и линия переносит её раз за разом. Ровно этот риск появился у expmed после
+    перевода на section_compare_with_iud: truncatePeriod = true, а period в
+    журнале — docexpdt как есть.
     """
     if period is None:
         return "period IS NULL"
-    return "period = " + _bindName(dbType, bind)
+    expr = "period"
+    if truncate:
+        expr = "DATE(period)" if _isPost(dbType) else "TRUNC(period)"
+    return f"{expr} = " + _bindName(dbType, bind)
 
 
 def _journalPeriodBind(period, bind="createdate"):
     """Бинд к _journalPeriodCond: у NULL-группы плейсхолдера нет, и лишний
     параметр Oracle не примет (ORA-01036)."""
     return {} if period is None else {bind: period}
+
+
+def _rowcount(cursor):
+    """Сколько строк задел последний DML ('?' — драйвер не сказал)."""
+    try:
+        count = cursor.rowcount
+    except Exception:
+        return "?"
+    return count if isinstance(count, int) and count >= 0 else "?"
 
 
 def _periodColumns(spec):
@@ -1335,10 +1356,13 @@ def _processGroupUpdate(cfg, ctx, dateGroup):
         # этой группы — они будут перезалиты вместе со всей группой.
         cursorMaster.execute(
             _pickSql(dbMaster, etlStatusChangePostSql, etlStatusChangeOrclSql)
-            .format(period_cond=_journalPeriodCond(dbMaster, createdate)),
+            .format(period_cond=_journalPeriodCond(
+                dbMaster, createdate, truncate=cfg.get("truncatePeriod"))),
             {"tablename": tableNameEtlJobs,
              **_journalPeriodBind(createdate)},
         )
+        logger.info("Журнал: отмечено обработанными %s строк группы %s",
+                    _rowcount(cursorMaster), createdate)
         phase("journal")
 
         # 1) удалить все записи группы из ведомой. Параметры периода зависят от
@@ -2098,12 +2122,18 @@ def _processSectionGroup(cfg, ctx, period, idrwBefore):
             markSql = _pickSql(dbMaster, markPeriodIudPostSql,
                                markPeriodIudOrclSql)
             cursorMaster.execute(
-                markSql.format(
-                    period_cond=_journalPeriodCond(dbMaster, period, "period")),
+                markSql.format(period_cond=_journalPeriodCond(
+                    dbMaster, period, "period",
+                    truncate=cfg.get("truncatePeriod"))),
                 {"tablename": tableNameEtlJobs,
                  "idrwBefore": idrwBefore,
                  **_journalPeriodBind(period, "period")},
             )
+            # Сколько строк журнала закрыто — единственный способ заметить, что
+            # условие пометки разошлось с условием выбора группы: тогда здесь
+            # будет 0, а группа вернётся на следующем прогоне.
+            logger.info("Журнал: отмечено обработанными %s строк группы %s",
+                        _rowcount(cursorMaster), period)
         phase("journal")
 
         # 4) обновить etl_jobs.last_success_ts
