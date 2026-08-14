@@ -237,13 +237,23 @@ def _selftest():
     assert "ACCNO: ведущая 'A-5' ≠ ведомая 'A-5 '" in body
     assert "расходятся колонки (по всем 3 изменённым ключам" in body
     assert "SUMCHECK (2)" in body and "ACCNO (1)" in body
-    # подробности — только по изменённым ключам, по возрастанию PK
-    order = [l.split(":")[0] for l in lines if l.startswith("IDRW=")]
+    # здесь у каждого из 3 изменённых ключей свой набор колонок, поэтому все
+    # три и оказались примерами; примеры идут первыми и помечены
+    order = [l.split(": ", 1)[1].split(":")[0] for l in lines
+             if l.startswith("пример ")]
     assert order == ["IDRW=101", "IDRW=102", "IDRW=105"], order
+
+    # бюджет limit считает ВСЕ строки с записями: диапазоны, примеры и
+    # обычные подробности вместе. Итоговые строки в него не входят.
     short = A._diffLines(onlyMaster, onlySlave, structM, structS,
-                         "EXPMED", "mocheck", limit=2)
-    assert sum(1 for l in short if l.startswith("IDRW=")) == 2
-    assert "показано изменённых ключей: 2 из 3" in "\n".join(short)
+                         "EXPMED", "mocheck", limit=3)
+    records = [l for l in short if l.startswith(("IDRW=", "пример ", "нет в "))]
+    assert len(records) == 3, records
+    # диапазоны резервируются первыми: без них о неперенесённых ключах не
+    # осталось бы ни слова, а они дешевле подробностей
+    assert sum(1 for l in records if l.startswith("нет в ")) == 2, records
+    assert sum(1 for l in records if l.startswith("пример ")) == 1, records
+    assert "показано изменённых ключей: 1 из 3" in "\n".join(short)
 
     # Случай, ради которого всё это и делалось: 300 расхождений при лимите 100.
     #   1..100   — не перенеслись (заняли бы весь лимит целиком)
@@ -267,15 +277,22 @@ def _selftest():
     assert "нет в ведомой mocheck — ключей 100: с IDRW=1 по IDRW=100 (100)" \
         in text, text
     assert "ACCNO (100)" in text and "SUMCHECK (100)" in text, text
-    assert "IDRW=101: отличаются поля (1) — ACCNO" in text, text
-    assert "IDRW=201: отличаются поля (1) — SUMCHECK" in text, text
-    # ни один печатаемый слот не потрачен на односторонние ключи
+    # оба вида поломки — примерами, первыми строками и с пометкой
+    assert "пример 1/2: IDRW=101: отличаются поля (1) — ACCNO" in text, text
+    assert "пример 2/2: IDRW=201: отличаются поля (1) — SUMCHECK" in text, text
+    assert bulk[2].startswith("пример 1/2") and bulk[3].startswith("пример 2/2")
+    # ни один печатаемый слот не потрачен на односторонние ключи по одному
     assert "IDRW=1:" not in text and "IDRW=50:" not in text, text
-    assert sum(1 for l in bulk if l.startswith("IDRW=")) == 100
-    assert "показано изменённых ключей: 100 из 200" in text, text
-    assert "наборов расходящихся колонок 2, каждый показан" in text, text
-    # весь отчёт укладывается в сотню подробностей плюс несколько шапок
-    assert len(bulk) <= 105, len(bulk)
+    # строго limit строк с записями: 2 примера + 1 диапазон + 97 подробностей
+    records = [l for l in bulk if l.startswith(("IDRW=", "пример ", "нет в "))]
+    assert len(records) == 100, len(records)
+    assert sum(1 for l in records if l.startswith("пример ")) == 2
+    assert sum(1 for l in records if l.startswith("нет в ")) == 1
+    assert sum(1 for l in records if l.startswith("IDRW=")) == 97
+    assert "показано изменённых ключей: 99 из 200" in text, text
+    assert "видов расхождения 2, каждый показан примером" in text, text
+    # сверх бюджета — только итоговые строки
+    assert len(bulk) == 103, len(bulk)
 
     # разрыв рвёт диапазон: «с 1 по 3» не должно означать «и 5 тоже»
     gapMaster = [(D(str(i)), D("1.00"), lu1, "A") for i in (1, 2, 3, 5)]

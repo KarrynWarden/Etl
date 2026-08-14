@@ -457,47 +457,65 @@ def _diffLines(onlyMaster, onlySlave, structMaster, structSlave,
                      f"ключам, по убыванию частоты): " +
                      ", ".join(f"{c} ({n})" for c, n in top))
 
-    # Односторонние ключи — диапазонами, а не по одному на строку. Их обычно
-    # много и они идут подряд (не доехала целая пачка), а информации в каждом
-    # ровно столько же, сколько в его номере. Зато перечислены ВСЕ: печатаемый
-    # лимит на них больше не тратится и до изменённых записей отчёт доходит.
-    for keys, text in ((missing, f"нет в ведомой {nameSlave}"),
-                       (extraneous, f"нет в ведущей {nameMaster} (лишние "
-                                    f"в ведомой {nameSlave})")):
-        if keys:
-            lines.append(f"{text} — ключей {len(keys)}: "
-                         + _rangesText(structMaster, pkPos, keys, limit))
-
-    # Показательные записи: по одной на КАЖДЫЙ набор расходящихся колонок.
-    # Без этого набор, встретившийся у ключей за пределами лимита, в отчёте
-    # не виден вовсе — а именно он и отвечает на вопрос «что сломалось».
-    # Если наборов больше лимита, берутся самые частые.
-    order = sorted(kinds.values(), key=lambda kv: (-kv[0], _sortableKey(kv[1])))
-    samples = {key for _count, key in order[:limit]}
-    rest = [key for key in sorted(both, key=_sortableKey) if key not in samples]
-    shown = sorted(samples | set(rest[:max(0, limit - len(samples))]),
-                   key=_sortableKey)
-
-    for key in shown:
+    def changedLine(key):
+        """Строка про один изменённый ключ."""
         rowsM = byKeyMaster.get(key, [])
         rowsS = byKeySlave.get(key, [])
         keyStr = _keyText(structMaster, pkPos, key)
         if len(rowsM) > 1 or len(rowsS) > 1:
-            lines.append(f"{keyStr}: дубликаты — строк в ведущей "
-                         f"{len(rowsM)}, в ведомой {len(rowsS)}")
-            continue
+            return (f"{keyStr}: дубликаты — строк в ведущей {len(rowsM)}, "
+                    f"в ведомой {len(rowsS)}")
         diff = _rowDiff(rowsM[0], rowsS[0], structMaster, structSlave, pkPos)
         detail = "; ".join(f"{column}: ведущая {_fmt(a)} ≠ ведомая {_fmt(b)}"
                            for column, a, b in diff)
-        lines.append(f"{keyStr}: отличаются поля ({len(diff)}) — {detail}")
+        return f"{keyStr}: отличаются поля ({len(diff)}) — {detail}"
 
-    if len(both) > len(shown):
-        note = (f"показано изменённых ключей: {len(shown)} из {len(both)}; "
-                f"наборов расходящихся колонок {len(kinds)}")
-        if len(kinds) > limit:
-            note += f", показаны {limit} самых частых"
-        else:
-            note += ", каждый показан хотя бы одной записью"
+    # limit — бюджет на строки С ЗАПИСЯМИ: диапазоны односторонних ключей,
+    # примеры и обычные подробности вместе. Итоговые строки (сколько чего
+    # разошлось, какие колонки, сколько показано) записей не содержат и в
+    # бюджет не входят. Порядок трат важен: сначала резервируются диапазоны,
+    # потом примеры, остаток добивается по возрастанию ключа.
+
+    # Односторонние ключи — диапазонами, а не по одному на строку. Их обычно
+    # много и они идут подряд (не доехала целая пачка), а информации в каждом
+    # ровно столько же, сколько в его номере. Зато перечислены ВСЕ, и стоит
+    # это одну-две строки вместо сотни.
+    rangeLines = []
+    for keys, text in ((missing, f"нет в ведомой {nameSlave}"),
+                       (extraneous, f"нет в ведущей {nameMaster} (лишние "
+                                    f"в ведомой {nameSlave})")):
+        if keys:
+            rangeLines.append(f"{text} — ключей {len(keys)}: "
+                              + _rangesText(structMaster, pkPos, keys, limit))
+    rangeLines = rangeLines[:limit]
+    budget = limit - len(rangeLines)
+
+    # Примеры: по одной записи на КАЖДЫЙ вид расхождения (вид = набор
+    # расходящихся колонок). Идут ПЕРВЫМИ и помечены, потому что отвечают на
+    # вопрос «что сломалось», а разглядеть их среди сотни однообразных
+    # подробностей нельзя. Без них вид, чьи ключи начинаются за пределами
+    # бюджета, в отчёт не попадал бы вовсе. Видов больше бюджета — берутся
+    # самые частые.
+    order = sorted(kinds.values(), key=lambda kv: (-kv[0], _sortableKey(kv[1])))
+    sampleKeys = [key for _count, key in order[:max(0, budget)]]
+    samples = set(sampleKeys)
+    for number, key in enumerate(sampleKeys, start=1):
+        lines.append(f"пример {number}/{len(kinds)}: " + changedLine(key))
+    budget -= len(sampleKeys)
+
+    lines += rangeLines
+
+    rest = [key for key in sorted(both, key=_sortableKey)
+            if key not in samples][:max(0, budget)]
+    lines += [changedLine(key) for key in rest]
+
+    shownCount = len(sampleKeys) + len(rest)
+    if len(both) > shownCount:
+        note = (f"показано изменённых ключей: {shownCount} из {len(both)}; "
+                f"видов расхождения {len(kinds)}")
+        note += (f", показаны {len(sampleKeys)} самых частых"
+                 if len(kinds) > len(sampleKeys)
+                 else ", каждый показан примером")
         lines.append(note)
     return lines
 
