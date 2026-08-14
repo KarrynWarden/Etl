@@ -320,8 +320,9 @@ def _rowsByKey(rows, pkPos, wanted):
     """{ключ: [строки]} — ТОЛЬКО для ключей из wanted.
 
     Ограничение по wanted не косметическое: расхождение бывает и на всю
-    группу (сотни тысяч строк с каждой стороны), а печатаем мы всё равно
-    первые _MAX_PRINT_DIFF ключей — незачем держать в памяти индекс по всем."""
+    группу (сотни тысяч строк с каждой стороны), а индекс нужен не по всем
+    ключам — см. _diffLines, где wanted собирается из изменённых ключей и
+    печатаемых."""
     out = {}
     for row in rows:
         key = tuple(row[i] for i in pkPos)
@@ -363,21 +364,38 @@ def _diffLines(onlyMaster, onlySlave, structMaster, structSlave,
     keysSlave = {tuple(row[i] for i in pkPos) for row in onlySlave}
     allKeys = sorted(keysMaster | keysSlave, key=_sortableKey)
     shown = allKeys[:limit]
-    wanted = set(shown)
+    both = keysMaster & keysSlave
+    # Индекс нужен по изменённым ключам (для перечня колонок — он считается по
+    # ВСЕМ таким ключам) и по печатаемым (для подробностей). Односторонние
+    # ключи за пределами shown в индекс не попадают: про них и сказать нечего,
+    # кроме «нет на другой стороне».
+    wanted = both | set(shown)
     byKeyMaster = _rowsByKey(onlyMaster, pkPos, wanted)
     byKeySlave = _rowsByKey(onlySlave, pkPos, wanted)
 
-    both = keysMaster & keysSlave
     lines = [
         f"расхождение по {len(allKeys)} ключам: изменены {len(both)}, "
         f"нет в ведомой {nameSlave} {len(keysMaster - keysSlave)}, "
         f"нет в ведущей {nameMaster} {len(keysSlave - keysMaster)}"
     ]
 
-    # Гистограмма «какая колонка расходится чаще» — по ПОКАЗАННЫМ ключам.
-    # Обычно ломается одно и то же поле во всех записях, и одна эта строка
-    # экономит просмотр сотни одинаковых сообщений.
+    # Перечень расходящихся колонок — по ВСЕМ изменённым ключам, а не только по
+    # печатаемым. Иначе он врал бы ровно в том случае, ради которого нужен:
+    # если первая сотня ключей по PK — это «нет в ведомой», то колонки,
+    # ломающиеся у ключей за сотней, не попали бы в отчёт вовсе, и по логу
+    # выходило бы, что расходящихся колонок нет.
+    # Печатаются ВСЕ колонки, у которых есть хоть одно расхождение; порядок —
+    # по убыванию частоты, отсечения по количеству нет.
     byColumn = {}
+    for key in both:
+        rowsM = byKeyMaster.get(key, [])
+        rowsS = byKeySlave.get(key, [])
+        if len(rowsM) != 1 or len(rowsS) != 1:
+            continue        # дубликаты: сравнивать построчно нечего
+        for column, _a, _b in _rowDiff(rowsM[0], rowsS[0],
+                                       structMaster, structSlave, pkPos):
+            byColumn[column] = byColumn.get(column, 0) + 1
+
     body = []
     for key in shown:
         rowsM = byKeyMaster.get(key, [])
@@ -389,8 +407,6 @@ def _diffLines(onlyMaster, onlySlave, structMaster, structSlave,
                             f"{len(rowsM)}, в ведомой {len(rowsS)}")
                 continue
             diff = _rowDiff(rowsM[0], rowsS[0], structMaster, structSlave, pkPos)
-            for column, _a, _b in diff:
-                byColumn[column] = byColumn.get(column, 0) + 1
             detail = "; ".join(f"{column}: ведущая {_fmt(a)} ≠ ведомая {_fmt(b)}"
                                for column, a, b in diff)
             body.append(f"{keyStr}: отличаются поля ({len(diff)}) — {detail}")
@@ -405,7 +421,8 @@ def _diffLines(onlyMaster, onlySlave, structMaster, structSlave,
                         f"в ведомой {nameSlave}")
     if byColumn:
         top = sorted(byColumn.items(), key=lambda kv: (-kv[1], kv[0]))
-        lines.append("чаще всего расходятся колонки: " +
+        lines.append(f"расходятся колонки (по всем {len(both)} изменённым "
+                     f"ключам, по убыванию частоты): " +
                      ", ".join(f"{c} ({n})" for c, n in top))
     lines += body
     if len(allKeys) > limit:

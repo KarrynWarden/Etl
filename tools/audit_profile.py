@@ -233,7 +233,8 @@ def _selftest():
     assert "IDRW=104: нет в ведущей EXPMED" in body
     # строки печатаются через repr — иначе хвостовой пробел не отличить
     assert "ACCNO: ведущая 'A-5' ≠ ведомая 'A-5 '" in body
-    assert "чаще всего расходятся колонки: SUMCHECK (2)" in body
+    assert "расходятся колонки (по всем 3 изменённым ключам" in body
+    assert "SUMCHECK (2)" in body and "ACCNO (1)" in body
     order = [l.split(":")[0] for l in lines if l.startswith("IDRW=")]
     assert order == ["IDRW=101", "IDRW=102", "IDRW=103", "IDRW=104",
                      "IDRW=105"], order
@@ -241,6 +242,31 @@ def _selftest():
                          "EXPMED", "mocheck", limit=2)
     assert sum(1 for l in short if l.startswith("IDRW=")) == 2
     assert "показано ключей: 2 из 5" in "\n".join(short)
+
+    # Перечень колонок считается по ВСЕМ изменённым ключам, а не по печатаемым.
+    # Случай, ради которого это важно: первые ключи по PK — односторонние
+    # («нет в ведомой»), они занимают весь печатаемый лимит, а изменённые
+    # ключи идут после них. Раньше отчёт про колонки в этом случае молчал.
+    farMaster = [(D(str(i)), D("1.00"), lu1, "A") for i in range(1, 121)]
+    farSlave = []
+    for i in range(200, 260):
+        farMaster.append((D(str(i)), D("1.00"), lu1, f"A{i}"))
+        # у всех расходится ACCNO, ровно у одного — ещё и SUMCHECK
+        farSlave.append((D(str(i)), D("9.00" if i == 205 else "1.00"), lu1,
+                         f"B{i}"))
+    farLines = A._diffLines(farMaster, farSlave, structM, structS,
+                            "EXPMED", "mocheck")
+    columns = [l for l in farLines if l.startswith("расходятся колонки")][0]
+    assert "по всем 60 изменённым ключам" in columns, columns
+    assert "ACCNO (60)" in columns, columns
+    # колонка с ЕДИНСТВЕННЫМ расхождением обязана быть в списке, и не первой:
+    # порядок по убыванию частоты, но отсечения по количеству нет
+    assert "SUMCHECK (1)" in columns, columns
+    assert columns.index("ACCNO") < columns.index("SUMCHECK"), columns
+    # при этом подробности по-прежнему урезаны лимитом и до изменённых ключей
+    # в этом наборе не доходят — тем нужнее строка выше
+    assert all("отличаются поля" not in l for l in farLines), farLines
+    assert "показано ключей: 100 из 180" in "\n".join(farLines)
 
     # составной ключ, NULL в ключе и дубликаты по ключу
     structM2 = [("YEAR", "NUMBER", 0, "Primary Key"),
