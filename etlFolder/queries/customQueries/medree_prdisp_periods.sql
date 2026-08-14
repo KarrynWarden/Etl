@@ -1,3 +1,9 @@
+-- ЗАПАСНОЙ ВАРИАНТ, СЕЙЧАС НЕ ПОДКЛЮЧЁН. Линия MEDREE_PRDISPOrclPost работает в
+-- режиме `section`: список пересчитанных периодов ей передаёт часть 1 через
+-- ETL_JOBS.ISOKAUDIT = 4, и вычислять его запросом не нужно. Файл оставлен на
+-- случай, если от ночного джоба откажутся: тогда в конфиг возвращаются
+-- "mode": "query_section" и "periodsSql": "queries/customQueries/medree_prdisp_periods.sql".
+--
 -- periodsSql для линии MEDREE_PRDISPOrclPost (режим query_section).
 -- Выполняется на ВЕДУЩЕЙ (Oracle) и возвращает пары (year, month) — группы,
 -- которые ETL перезальёт в Postgres полной перезаписью (DELETE группы + заливка).

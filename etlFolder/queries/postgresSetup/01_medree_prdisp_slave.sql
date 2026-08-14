@@ -1,20 +1,26 @@
 --------------------------------------------------------------------------------
--- Medree_prdisp: подготовка ВЕДОМОЙ таблицы в PostgreSQL под часть 2 ETL.
+-- Medree_prdisp: ВЕДОМАЯ таблица в PostgreSQL под часть 2 ETL.
 --
--- Сама таблица уже создана:
---   create table medree_prdisp (
---       id        bigint   not null,   -- идентификатор ЗЛ (IPerson.ID)
---       groupcode smallint not null,   -- 1 дисп. / 2 проф. / 3 центр здоровья
---       year      integer  not null,
---       month     integer
---   );
---   create index ix_medree_prdisp on medree_prdisp (id, year, groupcode);
---   alter table medree_prdisp add column idrw integer;
---   alter table medree_prdisp alter column idrw set not null;
---   alter table medree_prdisp add primary key (idrw);
+-- Скрипт идемпотентный — можно прогонять повторно.
 --
--- Ниже — то, чего таблице не хватает для ETL. Скрипт идемпотентный.
+-- Порядок колонок здесь тот же, что в json-эталоне
+-- (structures/MEDREE_PRDISP/medree_prdisp.json): idrw, id, groupcode, year,
+-- month. Самой сверке структур порядок безразличен (она сравнивает по имени),
+-- но ведущая и ведомая сопоставляются по ПОРЯДКУ колонок в json — держать
+-- таблицу в том же порядке дешевле, чем потом выяснять, почему поехали данные.
 --------------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS medree_prdisp (
+    idrw      integer  NOT NULL,   -- суррогатный PK, переносится из Oracle КАК ЕСТЬ
+    id        bigint   NOT NULL,   -- идентификатор ЗЛ (IPerson.ID)
+    groupcode smallint NOT NULL,   -- 1 дисп. / 2 проф. / 3 центр здоровья
+    year      integer  NOT NULL,
+    month     integer,             -- nullable намеренно, см. oracleSetup/04
+    CONSTRAINT medree_prdisp_pkey PRIMARY KEY (idrw)
+);
+
+-- Индекс из постановки: поиск ЗЛ по году и группе.
+CREATE INDEX IF NOT EXISTS ix_medree_prdisp ON medree_prdisp (id, year, groupcode);
 
 
 --------------------------------------------------------------------------------
