@@ -672,83 +672,160 @@ def guess_columns(guess):
 
 # ─────────────────────────── генерация DDL ───────────────────────────
 
-def _orcl_ddl(name, table, tablename, journal, period_column, pk_columns):
+def _period_vars(targets):
+    """Имена PL/SQL-переменных под период — по одной на целевую линию.
+
+    Одна линия — `p_period`, как было всегда (тела уже установленных триггеров
+    от этого не меняются). Несколько — с номерами."""
+    if len(targets) == 1:
+        return ["p_period"]
+    return [f"p_period{i}" for i in range(1, len(targets) + 1)]
+
+
+def _decl_width(names):
+    return max(len(n) for n in names)
+
+
+def _assign(name, value, width, indent=8):
+    return f"{' ' * indent}{name:<{width}} := {value};"
+
+
+def _target_note(targets):
+    """Пояснение в шапке DDL, если триггер обслуживает несколько линий."""
+    if len(targets) < 2:
+        return ""
+    listed = ", ".join(f"{tn} (период {pc})" for tn, pc in targets)
+    return (f"-- Одна ведущая — несколько линий: {listed}.\n"
+            f"-- Триггер пишет в журнал по строке НА КАЖДУЮ линию, одинаково и\n"
+            f"-- безусловно: разбирать, какая строка к какой линии относится, он\n"
+            f"-- не должен и не умеет. Лишняя запись стоит одной проверки среза\n"
+            f"-- у чужой линии и ничего не портит; отсутствующая стоила бы\n"
+            f"-- потерянного изменения.\n")
+
+
+def _orcl_ddl(name, table, journal, targets, pk_columns):
     pk_new, pk_old = _pk_expr("Orcl", pk_columns, "new"), _pk_expr("Orcl", pk_columns, "old")
-    per_new, per_old = _period_expr("Orcl", period_column, "new"), \
-        _period_expr("Orcl", period_column, "old")
+    variables = _period_vars(targets)
+    width = _decl_width(["p_id", "p_oper"] + variables)
+    periods = [(_period_expr("Orcl", pc, "new"), _period_expr("Orcl", pc, "old"))
+               for _tn, pc in targets]
     # Сравнение периодов через NVL: NULL <> NULL в Oracle не TRUE, иначе смена
     # периода с NULL на дату не породила бы 'D' по старой группе.
     zero = "TO_DATE('1900-01-01', 'YYYY-MM-DD')"
+
+    declare = "\n".join([f"    {'p_id':<{width}} VARCHAR2(200);",
+                         f"    {'p_oper':<{width}} VARCHAR2(2);"]
+                        + [f"    {v:<{width}} DATE;" for v in variables])
+
+    def assigns(side):
+        out = [_assign("p_id", pk_new if side == "new" else pk_old, width),
+               _assign("p_oper", "'IU'" if side == "new" else "'D'", width)]
+        out += [_assign(v, per[0] if side == "new" else per[1], width)
+                for v, per in zip(variables, periods)]
+        return "\n".join(out)
+
+    # Смена ключа или периода — по КАЖДОЙ линии своя проверка: у линий разные
+    # колонки периода, и переехать строка может в одной, оставшись на месте в
+    # другой.
+    changed = []
+    for (tablename, _pc), (per_new, per_old) in zip(targets, periods):
+        label = (f"        -- {tablename}: сменился PK или период — старую "
+                 f"строку ведомой нужно удалить.\n") if len(targets) > 1 else \
+                ("        -- Сменился PK или период — старую строку ведомой "
+                 "нужно удалить.\n")
+        changed.append(
+            label +
+            f"        IF {pk_old} <> {pk_new}\n"
+            f"           OR NVL({per_old}, {zero}) <> NVL({per_new}, {zero}) THEN\n"
+            f"            INSERT INTO {journal}(tablename, timeoper, oper, period, id, isetl)\n"
+            f"            VALUES ('{tablename}', systimestamp, 'D', {per_old}, {pk_old}, 0);\n"
+            f"        END IF;")
+
+    final = "\n".join(
+        f"    INSERT INTO {journal}(tablename, timeoper, oper, period, id, isetl)\n"
+        f"    VALUES ('{tablename}', systimestamp, p_oper, {v}, p_id, 0);"
+        for (tablename, _pc), v in zip(targets, variables))
+
     return f"""CREATE OR REPLACE TRIGGER {name}
 AFTER INSERT OR UPDATE OR DELETE ON {table}
 FOR EACH ROW
 DECLARE
-    p_id     VARCHAR2(200);
-    p_oper   VARCHAR2(2);
-    p_period DATE;
+{declare}
 BEGIN
     IF INSERTING THEN
-        p_id     := {pk_new};
-        p_oper   := 'IU';
-        p_period := {per_new};
+{assigns("new")}
     ELSIF UPDATING THEN
-        p_id     := {pk_new};
-        p_oper   := 'IU';
-        p_period := {per_new};
-        -- Сменился PK или период — старую строку ведомой нужно удалить.
-        IF {pk_old} <> {pk_new}
-           OR NVL({per_old}, {zero}) <> NVL({per_new}, {zero}) THEN
-            INSERT INTO {journal}(tablename, timeoper, oper, period, id, isetl)
-            VALUES ('{tablename}', systimestamp, 'D', {per_old}, {pk_old}, 0);
-        END IF;
+{assigns("new")}
+{chr(10).join(changed)}
     ELSIF DELETING THEN
-        p_id     := {pk_old};
-        p_oper   := 'D';
-        p_period := {per_old};
+{assigns("old")}
     END IF;
 
-    INSERT INTO {journal}(tablename, timeoper, oper, period, id, isetl)
-    VALUES ('{tablename}', systimestamp, p_oper, p_period, p_id, 0);
+{final}
 END;"""
 
 
-def _post_ddl(name, func, table, tablename, journal, period_column, pk_columns):
+def _post_ddl(name, func, table, journal, targets, pk_columns):
     pk_new, pk_old = _pk_expr("Post", pk_columns, "new"), _pk_expr("Post", pk_columns, "old")
-    per_new, per_old = _period_expr("Post", period_column, "new"), \
-        _period_expr("Post", period_column, "old")
     # SECURITY DEFINER: журнал обычно в чужой схеме (etl_user), а писать в него
     # должен любой, кто меняет ведущую. RETURN NULL — для AFTER-триггера
     # возвращаемое значение игнорируется.
+    variables = _period_vars(targets)
+    width = _decl_width(["p_id", "p_oper"] + variables)
+    periods = [(_period_expr("Post", pc, "new"), _period_expr("Post", pc, "old"))
+               for _tn, pc in targets]
+
+    declare = "\n".join([f"    {'p_id':<{width}} text;",
+                         f"    {'p_oper':<{width}} varchar(2);"]
+                        + [f"    {v:<{width}} date;" for v in variables])
+
+    def assigns(side):
+        out = [_assign("p_id", pk_new if side == "new" else pk_old, width),
+               _assign("p_oper", "'IU'" if side == "new" else "'D'", width)]
+        out += [_assign(v, per[0] if side == "new" else per[1], width)
+                for v, per in zip(variables, periods)]
+        return "\n".join(out)
+
+    # Смена ключа или периода — по КАЖДОЙ линии своя проверка: у линий разные
+    # колонки периода, и переехать строка может в одной, оставшись на месте в
+    # другой.
+    changed = []
+    for (tablename, _pc), (per_new, per_old) in zip(targets, periods):
+        label = (f"        -- {tablename}: сменился PK или период — старую "
+                 f"строку ведомой нужно удалить.\n") if len(targets) > 1 else \
+                ("        -- Сменился PK или период — старую строку ведомой "
+                 "нужно удалить.\n")
+        changed.append(
+            label +
+            f"        IF TG_OP = 'UPDATE'\n"
+            f"           AND ({pk_old} <> {pk_new}\n"
+            f"                OR coalesce({per_old}, '1900-01-01'::date)\n"
+            f"                <> coalesce({per_new}, '1900-01-01'::date)) THEN\n"
+            f"            INSERT INTO {journal}(tablename, timeoper, oper, period, id, isetl)\n"
+            f"            VALUES ('{tablename}', clock_timestamp(), 'D', {per_old}, {pk_old}, 0);\n"
+            f"        END IF;")
+
+    final = "\n".join(
+        f"    INSERT INTO {journal}(tablename, timeoper, oper, period, id, isetl)\n"
+        f"    VALUES ('{tablename}', clock_timestamp(), p_oper, {v}, p_id, 0);"
+        for (tablename, _pc), v in zip(targets, variables))
+
     fn = f"""CREATE OR REPLACE FUNCTION {func}()
  RETURNS trigger
  LANGUAGE plpgsql
  SECURITY DEFINER
 AS $function$
 DECLARE
-    p_id     text;
-    p_oper   varchar(2);
-    p_period date;
+{declare}
 BEGIN
     IF TG_OP = 'DELETE' THEN
-        p_id     := {pk_old};
-        p_oper   := 'D';
-        p_period := {per_old};
+{assigns("old")}
     ELSE
-        p_id     := {pk_new};
-        p_oper   := 'IU';
-        p_period := {per_new};
-        -- Сменился PK или период — старую строку ведомой нужно удалить.
-        IF TG_OP = 'UPDATE'
-           AND ({pk_old} <> {pk_new}
-                OR coalesce({per_old}, '1900-01-01'::date)
-                <> coalesce({per_new}, '1900-01-01'::date)) THEN
-            INSERT INTO {journal}(tablename, timeoper, oper, period, id, isetl)
-            VALUES ('{tablename}', clock_timestamp(), 'D', {per_old}, {pk_old}, 0);
-        END IF;
+{assigns("new")}
+{chr(10).join(changed)}
     END IF;
 
-    INSERT INTO {journal}(tablename, timeoper, oper, period, id, isetl)
-    VALUES ('{tablename}', clock_timestamp(), p_oper, p_period, p_id, 0);
+{final}
     RETURN NULL;
 END;
 $function$"""
@@ -760,7 +837,8 @@ $function$"""
     return [fn, drop, trg]
 
 
-def build_trigger(db, table, tablename, period_column, pk_columns, journal=None):
+def build_trigger(db, table, tablename, period_column, pk_columns, journal=None,
+                  targets=None):
     """Собрать DDL триггера IUD. Возвращает dict:
 
         name       — имя триггера
@@ -769,6 +847,17 @@ def build_trigger(db, table, tablename, period_column, pk_columns, journal=None)
         statements — список ОТДЕЛЬНЫХ операторов (их и выполняет apply_trigger)
         text       — тот же DDL для показа/сохранения в .sql (Oracle-блоки
                      разделены '/', как ждут SQL*Plus и DBeaver)
+
+    targets — [(tablename, period_column), ...], если на ОДНОЙ ведущей живёт
+    несколько линий с РАЗНЫМИ колонками периода. Так у EXPMED: линия по doctype
+    2,3 группируется по docexpdt, а по doctype 4 — по docpenaltydt. Триггер при
+    этом остаётся один и остаётся глупым: он пишет строку журнала на каждую
+    линию, ничего не разбирая. Второй триггер на ту же таблицу не нужен, а
+    условие «если doctype = 4, то писать docpenaltydt» в него не попадает —
+    именно этого требовалось избежать.
+
+    Без targets поведение прежнее: одна линия, одна колонка периода, и текст
+    DDL получается тот же, что и раньше.
     """
     if db not in ("Orcl", "Post"):
         raise ValueError(f"Неизвестная БД: {db!r}.")
@@ -779,22 +868,34 @@ def build_trigger(db, table, tablename, period_column, pk_columns, journal=None)
     if not tablename:
         raise ValueError("Не задано имя линии (tablename) — триггеру нечего писать "
                          "в журнал.")
+    if targets is None:
+        targets = [(tablename, period_column)]
+    targets = [((tn or "").strip(), pc) for tn, pc in targets]
+    if not targets or any(not tn for tn, _pc in targets):
+        raise ValueError("В targets есть линия без имени (tablename) — "
+                         "триггеру нечего писать в журнал.")
+    seen = [tn for tn, _pc in targets]
+    if len(set(seen)) != len(seen):
+        raise ValueError(f"Имена линий в targets повторяются: {seen}. Триггер "
+                         f"писал бы по две одинаковых записи журнала.")
     journal = (journal or JOURNAL_DEFAULT[db]).strip()
     name = trigger_name(tablename, db)
     if db == "Orcl":
-        stmts = [_orcl_ddl(name, table, tablename, journal, period_column, pk_columns)]
+        stmts = [_orcl_ddl(name, table, journal, targets, pk_columns)]
         text = stmts[0] + "\n/\n"
         func = None
     else:
         func = function_name(tablename)
-        stmts = _post_ddl(name, func, table, tablename, journal,
-                          period_column, pk_columns)
+        stmts = _post_ddl(name, func, table, journal, targets, pk_columns)
         text = ";\n\n".join(stmts) + ";\n"
-    header = (f"-- Триггер IUD для линии {tablename} ({db}).\n"
+    lines = ", ".join(tn for tn, _pc in targets)
+    header = (f"-- Триггер IUD для лини{'й' if len(targets) > 1 else 'и'} "
+              f"{lines} ({db}).\n"
               f"-- Ведущая: {table}; журнал: {journal}.\n"
+              + _target_note(targets) +
               f"-- Сгенерирован конструктором (tools/trigger_builder.py); правки\n"
               f"-- руками при пересборке линии будут перезаписаны.\n")
-    return {"name": name, "func": func, "journal": journal,
+    return {"name": name, "func": func, "journal": journal, "targets": targets,
             "statements": stmts, "text": header + text}
 
 
@@ -1597,6 +1698,45 @@ def _selftest():
     assert "make_date(new.y::int, coalesce(new.m, 1)::int, coalesce(new.d, 1)::int)" \
         in t3b["statements"][0]
     assert "new.a::text || '/' || new.b::text" in t3b["statements"][0]
+
+    # 3b) одна ведущая — несколько линий с РАЗНЫМИ колонками периода (EXPMED:
+    #     doctype 2,3 группируются по docexpdt, doctype 4 — по docpenaltydt).
+    #     Триггер остаётся ОДИН и остаётся глупым: пишет по строке журнала на
+    #     каждую линию, ничего не разбирая. Условия «если doctype = 4, то
+    #     docpenaltydt» в нём быть не должно — это прямое требование заказчика.
+    split = build_trigger("Orcl", "EXPMED", "EXPMED", "docexpdt", ["idrw"],
+                          targets=[("EXPMED23", "docexpdt"),
+                                   ("EXPMED4", "docpenaltydt")])
+    body = split["statements"][0]
+    assert split["name"] == "tr_expmed_after_iud", split["name"]   # имя прежнее
+    assert "doctype" not in body.lower(), "в триггер просочился разбор doctype"
+    # финальная запись — по одной на линию, каждая со своим периодом
+    assert "VALUES ('EXPMED23', systimestamp, p_oper, p_period1, p_id, 0)" in body
+    assert "VALUES ('EXPMED4', systimestamp, p_oper, p_period2, p_id, 0)" in body
+    assert "p_period1 := :new.docexpdt;" in body
+    assert "p_period2 := :new.docpenaltydt;" in body
+    assert "p_period1 := :old.docexpdt;" in body
+    # смена группы проверяется по КАЖДОЙ линии своей колонкой
+    assert "'D', :old.docexpdt, TO_CHAR(:old.idrw)" in body
+    assert "'D', :old.docpenaltydt, TO_CHAR(:old.idrw)" in body
+    assert body.count("INSERT INTO") == 4, body     # 2 на смену группы + 2 итог
+    # одна линия — текст ровно тот же, что и до появления targets
+    assert build_trigger("Orcl", "EXPMED", "EXPMED", "docexpdt", ["idrw"])["text"] \
+        == build_trigger("Orcl", "EXPMED", "EXPMED", "docexpdt", ["idrw"],
+                         targets=[("EXPMED", "docexpdt")])["text"]
+    # то же на Postgres
+    splitPost = build_trigger("Post", "public.expmed", "EXPMED", "docexpdt",
+                              ["idrw"], targets=[("A", "d1"), ("B", "d2")])
+    fn = splitPost["statements"][0]
+    assert "p_period1 := new.d1;" in fn and "p_period2 := new.d2;" in fn
+    assert fn.count("INSERT INTO") == 4, fn
+    # повтор линии — ошибка, а не две одинаковых записи журнала на событие
+    try:
+        build_trigger("Orcl", "t", "t", "c", ["id"],
+                      targets=[("A", "c1"), ("A", "c2")])
+        raise AssertionError("ожидалась ошибка про повтор линии в targets")
+    except ValueError as e:
+        assert "повторяются" in str(e), e
 
     # 4) длинные имена: Oracle обрезается до 30, Postgres — нет
     long_name = "medree_structure_stacionar"

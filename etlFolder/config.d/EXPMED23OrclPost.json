@@ -1,0 +1,17 @@
+{
+  "EXPMED23OrclPost": {
+    "_doc": "oracle->postgres, mocheck doctype=2,3 (EXPMED). Половина бывшей линии EXPMED: та, у которой группа считается по DOCEXPDT. Вторая половина — EXPMED4OrclPost по DOCPENALTYDT. Разделение сделано потому, что у одной ведущей EXPMED две РАЗНЫЕ колонки периода, а группа у линии может быть только одна: пока doctype 2,3,4 жили в одной линии, period в etl_log_iud_row для doctype=4 был декоративным (триггер писал туда docexpdt), и старая группа записи 4-го типа находилась только сравнением срезов, у которого есть слепое пятно — если у среза не изменились ни MAX(lastupdate), ни количество строк, расхождение не видно. Теперь у каждой линии свой честный период. Триггер на EXPMED при этом ОДИН и остался глупым: он пишет по строке журнала на каждую линию (tablename EXPMED23 и EXPMED4) со своей колонкой периода, ничего не разбирая — см. queries/triggers/EXPMEDOrclPost.sql. Лишняя запись журнала стоит одной проверки среза у чужой линии и ничего не портит. Линия живёт в составном даге MocheckOrclPost (ключ groupDag). mode=section_compare_with_iud: группа перезаливается целиком, когда срез ведущей и ведомой разошёлся по (period, lastupdate, количество), пришёл сигнал в etl_log_iud_row или у группы стоит isokaudit=4. Строка переезжает между doctype 2<->3 внутри линии, поэтому перезаливается весь срез, а не правится точечно; переезд 3<->4 теперь виден обеим линиям (одна перестаёт отдавать строку в своём срезе, другая начинает). conflictExtra/conflictWhere не заданы намеренно: заливка группы идёт простым INSERT без ON CONFLICT (строки среза уже удалены). truncatePeriod=true: у ведущей createdate это oracle DATE, у ведомой — postgres date; без приведения к дню группы не совпали бы никогда. Пустой createdate — полноправная группа (NULL-период), а не мусор.",
+    "tableNameMaster": "EXPMED",
+    "tableNameSlave": "mocheck",
+    "structureMaster": "structures/MOCHECK/MOCHECK.json",
+    "structureSlave": "structures/MOCHECK/mocheck.json",
+    "periodColumn": "createdate",
+    "slavePeriodColumn": "createdate",
+    "mode": "section_compare_with_iud",
+    "groupDag": "MocheckOrclPost",
+    "filterClause": "doctype IN (2, 3)",
+    "filterClauseSlave": "doctype IN (2, 3)",
+    "truncatePeriod": true,
+    "selectSql": "queries/customQueries/MOCHECK.sql"
+  }
+}

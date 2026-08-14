@@ -1,0 +1,17 @@
+{
+  "EXPMED4OrclPost": {
+    "_doc": "oracle->postgres, mocheck doctype=4 (EXPMED, штрафы). Вторая половина бывшей линии EXPMED: та, у которой группа считается по DOCPENALTYDT (в MOCHECK.sql ветка doctype=4 отдаёт его как createdate). Первая половина — EXPMED23OrclPost по DOCEXPDT. Почему разделили: у одной ведущей EXPMED две РАЗНЫЕ колонки периода, а группа у линии может быть только одна. Пока doctype 2,3,4 жили в одной линии, period в etl_log_iud_row для doctype=4 был декоративным (триггер писал туда docexpdt, а группа считалась по docpenaltydt), и старая группа записи 4-го типа находилась только сравнением срезов — у которого есть слепое пятно: если у среза не изменились ни MAX(lastupdate), ни количество строк, расхождения не видно. Триггер на EXPMED остался ОДИН и остался глупым: пишет по строке журнала на каждую линию (tablename EXPMED23 и EXPMED4) со своей колонкой периода, без разбора doctype — начальство именно этого и требовало, см. queries/triggers/EXPMEDOrclPost.sql. Линия живёт в составном даге MocheckOrclPost (ключ groupDag). mode=section_compare_with_iud: группа перезаливается целиком, когда срез ведущей и ведомой разошёлся по (period, lastupdate, количество), пришёл сигнал в etl_log_iud_row или у группы стоит isokaudit=4. Переезд строки 3<->4 виден обеим линиям: EXPMED23 перестаёт отдавать её в своём срезе и удаляет, EXPMED4 начинает отдавать и вставляет. conflictExtra/conflictWhere не заданы намеренно: заливка группы идёт простым INSERT без ON CONFLICT (строки среза уже удалены). truncatePeriod=true: у ведущей createdate это oracle DATE, у ведомой — postgres date. Пустой docpenaltydt — полноправная группа (NULL-период): у записей 4-го типа он бывает не заполнен.",
+    "tableNameMaster": "EXPMED",
+    "tableNameSlave": "mocheck",
+    "structureMaster": "structures/MOCHECK/MOCHECK.json",
+    "structureSlave": "structures/MOCHECK/mocheck.json",
+    "periodColumn": "createdate",
+    "slavePeriodColumn": "createdate",
+    "mode": "section_compare_with_iud",
+    "groupDag": "MocheckOrclPost",
+    "filterClause": "doctype = 4",
+    "filterClauseSlave": "doctype = 4",
+    "truncatePeriod": true,
+    "selectSql": "queries/customQueries/MOCHECK.sql"
+  }
+}

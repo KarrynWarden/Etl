@@ -298,7 +298,7 @@ COALESCE(p.createdate, …)`. Джойн не делал **ничего** — в
 **Что осталось и чего замеры пока не касались:**
 
 - **`truncatePeriod` по-прежнему не sargable.** У линий с этим флагом
-  (`iprkdept`, `EXPMED`) условие остаётся `TRUNC(col) = :период` /
+  (`iprkdept`, `EXPMED23`, `EXPMED4`) условие остаётся `TRUNC(col) = :период` /
   `DATE(col) = :период` — под функцией, то есть со сканом. Лечится переходом на
   полуинтервал `col >= :период AND col < :период + 1 день` (для дат это
   тождественная замена), но это второй бинд и отдельная проверка — не делалось
@@ -541,37 +541,43 @@ DELETE FROM IPERSON WHERE createdate = :createdate
 
    ```sql
    SELECT idrw, oper, period, isetl FROM koknaev.etl_log_iud_row
-   WHERE tablename = 'EXPMED' ORDER BY idrw DESC FETCH FIRST 10 ROWS ONLY;
+   WHERE tablename IN ('EXPMED23', 'EXPMED4')
+   ORDER BY idrw DESC FETCH FIRST 10 ROWS ONLY;
    ```
 
    Две строки (`D` со старым периодом и `IU` с новым) — триггер верный; одна —
    «переезд» строки между группами линия узнаёт только через срез.
 
-   У `EXPMED` триггер как раз однострочный (пишет только `:new.docexpdt`), и
-   менять его на «умный» нельзя по требованию заказчика — в триггере не должно
-   быть логики про `doctype` и выбор между `docexpdt`/`docpenaltydt`. Значит
-   старую группу даёт только сравнение срезов, а у него есть слепое пятно:
-   строка ведущей ушла из группы, но агрегат по `(mo, docexp, docexpdt, …)`
-   в ней остался, и если максимум `lastupdate` держит другая строка, срез
-   группы `(период, lastupdate, количество)` не меняется — расхождение не
-   видно, пока в группе не поменяется что-то ещё. Записать в журнал СТАРЫЙ
-   период можно и «глупым» триггером — это не логика про doctype, а тот же
-   шаблон `oracleSetup/02_trigger_template.sql`:
+   **У `EXPMED` это решено разделением линии, а не умным триггером.** Группа
+   у него считалась по разным колонкам: `doctype 2,3` — по `docexpdt`,
+   `doctype 4` — по `docpenaltydt`, а период у линии может быть только один.
+   Поэтому для 4-го типа `period` в журнале был декоративным, и старую группу
+   давало только сравнение срезов — со слепым пятном: строка ушла из группы, но
+   агрегат по `(mo, docexp, docexpdt, …)` в ней остался, и если максимум
+   `lastupdate` держит другая строка, срез `(период, lastupdate, количество)`
+   не меняется, расхождения не видно.
+
+   Линия разделена на `EXPMED23` (`doctype IN (2,3)`) и `EXPMED4`
+   (`doctype = 4`) — у каждой теперь свой честный период. Требование заказчика
+   «в триггере не должно быть логики про `doctype` и выбор между
+   `docexpdt`/`docpenaltydt`» при этом соблюдено буквально: **триггер остался
+   один и остался глупым**. Он пишет по строке журнала НА КАЖДУЮ линию,
+   одинаково и безусловно:
 
    ```sql
-   ELSIF UPDATING THEN
-       p_id := TO_CHAR(:new.idrw); p_oper := 'IU'; p_period := :new.docexpdt;
-       IF NVL(:old.docexpdt, DATE '1900-01-01')
-          <> NVL(:new.docexpdt, DATE '1900-01-01') THEN
-           INSERT INTO etl_log_iud_row(tablename, timeoper, oper, period, id, isetl)
-           VALUES ('EXPMED', systimestamp, 'D', :old.docexpdt,
-                   TO_CHAR(:old.idrw), 0);
-       END IF;
+   INSERT INTO etl_log_iud_row(...) VALUES ('EXPMED23', ..., :new.docexpdt, ...);
+   INSERT INTO etl_log_iud_row(...) VALUES ('EXPMED4',  ..., :new.docpenaltydt, ...);
    ```
 
-   Для `doctype = 4` период всё равно останется декоративным (там настоящий
-   период — `docpenaltydt`), но для 2 и 3 старая группа станет известна сразу,
-   а не «когда-нибудь через срез».
+   Никакого разбора, какая строка к какой линии относится, в нём нет: лишняя
+   запись стоит одной проверки среза у чужой линии и ничего не портит,
+   отсутствующая стоила бы потерянного изменения. Генерирует такой триггер
+   `build_trigger(..., targets=[('EXPMED23', 'docexpdt'), ('EXPMED4',
+   'docpenaltydt')])`; готовый DDL — `queries/triggers/EXPMEDOrclPost.sql`,
+   порядок установки и перевод журнала — `oracleSetup/10_expmed_split.sql`.
+
+   Переезд строки `3↔4` теперь видят обе линии: `EXPMED23` перестаёт отдавать
+   её в своём срезе и удаляет, `EXPMED4` начинает отдавать и вставляет.
 
    Раньше это был один режим `section_compare`: журнал опрашивали у всех, хотя
    пишут в него единицы, и линии вроде `medree_cons` (у которых и первичного
@@ -627,15 +633,16 @@ DELETE FROM IPERSON WHERE createdate = :createdate
    `periodColumn` в строке). Объединение помечается `isokaudit=0` для
    перепроверки аудитом.
 
-   **`EXPMED` из этого режима переведён в `section_compare_with_iud`.**
+   **`EXPMED` из этого режима переведён в `section_compare_with_iud`** (и с тех
+   пор разделён на `EXPMED23` и `EXPMED4` — см. «Триггеры»).
    `delete_insert` ходит только по журналу и только по конкретному `idrw`:
    расхождение, возникшее мимо триггера (или до того, как журнал доехал),
    линия не видит вовсе — сравнивать ей нечего. Срезовый режим сверяет
    `(период, lastupdate, количество)` на обеих сторонах и перезаливает
    разошедшуюся группу целиком, а журнал остаётся как ускоритель реакции.
-   Переезд строки между `doctype 2↔3↔4` он переживает так же: `filterClause` /
-   `filterClauseSlave` = `doctype IN (2,3,4)` держат срез, и группа
-   перезаливается вся, а не построчно. У линии стоит `truncatePeriod`: у
+   Переезд строки между `doctype 2↔3` он переживает так же: `filterClause` /
+   `filterClauseSlave` держат срез, и группа перезаливается вся, а не
+   построчно; переезд `3↔4` виден обеим половинам линии. У линии стоит `truncatePeriod`: у
    ведущей `createdate` — oracle `DATE` (`docexpdt`/`docpenaltydt`, драйвер
    отдаёт `datetime`), у ведомой — postgres `date`; без приведения к дню
    группы не совпали бы никогда и таблица перезаливалась бы на каждом прогоне.
@@ -706,7 +713,7 @@ Oracle `DATE` и Postgres `timestamp` сравниваются корректн�
 | Составной PK | разделитель `'/'` в `etl_log_iud_row.id` (см. триггер) |
 | Doctype-split (mocheck) | `filterClause` (фильтрует источник) + `filterClauseSlave` (фильтрует DELETE / SELECT по ведомой) + `conflictExtra="doctype"` (для частичного индекса; в `delete_insert` не нужен). Все эти ключи — строки (`filterClause*` могут содержать AND/OR, `conflictExtra` — колонки через запятую); список тоже принимается (легаси, склеивается через AND). |
 | Разные фильтры у сторон | `filterClause` и `filterClauseSlave` независимы, любой можно ставить в одиночку — см. «Фильтры сторон» ниже |
-| 9 doctype mocheck из 6 oracle-таблиц | один общий `MOCHECK.sql` UNION ALL + линии в `config.d` (по одной на группу doctype), DAG итерирует по ним. Группа = один doctype либо несколько, если строки между ними переезжают: `EXPMED` (2,3,4) — `section_compare_with_iud`, `PODCHECK` (5,6) — `delete_insert` |
+| 9 doctype mocheck из 6 oracle-таблиц | один общий `MOCHECK.sql` UNION ALL + линии в `config.d` (по одной на группу doctype), DAG итерирует по ним. Группа = один doctype либо несколько, если строки между ними переезжают: `EXPMED23` (2,3) и `EXPMED4` (4) — `section_compare_with_iud`, `PODCHECK` (5,6) — `delete_insert` |
 | medree-стиль срезов (dcalc + lastupdate) | `mode: section_compare`, `periodColumn: dcalc` |
 | Master = SQL-запрос | `selectSql`. Тогда `periodColumn` и PK — **псевдонимы запроса**, а не колонки ведущей (в `MOCHECK.sql` `createdate` у TFINSCHET это `dschet`, `idrw` у PODCHECK — `id`). Триггер пишется по колонкам ведущей; конструктор разбирает запрос сам — см. «Триггеры: линия на своём SELECT» |
 | Несколько направлений у одной таблицы | разные `tableNameEtlJobs` + по триггеру на каждое |
@@ -942,7 +949,7 @@ Oracle `DATE` и Postgres `timestamp` сравниваются корректн�
   другими линиями (общие — не трогаются). В отличие от архива — насовсем.
 - **Составной даг: несколько линий одним файлом.** Переключатель «Свой даг на
   линию / В составной даг» в форме сборки. Одна ведущая-запрос часто кормит
-  сразу несколько линий (mocheck: `MEDCHECK`, `EXPMED`, `PODCHECK`,
+  сразу несколько линий (mocheck: `MEDCHECK`, `EXPMED23`, `EXPMED4`, `PODCHECK`,
   `TFOUTSCHET`, `TFINSCHET` из общего `MOCHECK.sql`) — отдельный даг на каждую
   означал бы N параллельных прогонов по одному источнику. Раньше сложить их в
   один даг можно было только руками; теперь конструктор пишет составной даг сам:
@@ -951,7 +958,7 @@ Oracle `DATE` и Postgres `timestamp` сравниваются корректн�
   # dagbuilder: составной даг (список линий ниже правит конструктор)
   LINES = [
       ('MEDCHECK', 'Orcl', 'Post'),
-      ('EXPMED',   'Orcl', 'Post'),
+      ('EXPMED23', 'Orcl', 'Post'),
   ]
   ```
 
@@ -965,7 +972,7 @@ Oracle `DATE` и Postgres `timestamp` сравниваются корректн�
   **Принадлежность линии даге записана в её конфиге** — ключ `groupDag`:
 
   ```json
-  "EXPMEDOrclPost": { "...": "...", "groupDag": "MocheckOrclPost" }
+  "EXPMED23OrclPost": { "...": "...", "groupDag": "MocheckOrclPost" }
   ```
 
   Раньше её искали обратным ходом — пробегали даги и смотрели, в чьём списке
@@ -1014,10 +1021,10 @@ Oracle `DATE` и Postgres `timestamp` сравниваются корректн�
 
   Отдельной строкой отчёт называет **общие файлы**: `MOCHECK.sql` и структуры
   `structures/MOCHECK/*` — одни на пять линий mocheck, и правка запроса из формы
-  `EXPMED` меняет запрос **всем** (это и требуется — линии различаются только
+  `EXPMED23` меняет запрос **всем** (это и требуется — линии различаются только
   фильтром по doctype, — но знать об этом надо до нажатия кнопки).
 - **Архив линий без своего дага.** У линий mocheck- и medree-семейств
-  (`PODCHECK`, `EXPMED`, `MEDREE_CONS`, …) нет отдельного файла дага — они
+  (`PODCHECK`, `EXPMED23`, `MEDREE_CONS`, …) нет отдельного файла дага — они
   перечислены внутри составного. Для них «в архив» = флаг
   `disabled` в конфиге (+`skipAudit`), а даг-итератор такие линии пропускает
   (`_dagHelpers.lineEnabled`). Удаление линии насовсем такой даг не сносит —

@@ -14,7 +14,8 @@ mocheck на postgres — сводная таблица с 9 типами doctyp
 переносит в неё данные из Oracle:
 
     doctype 1     MEDCHECK
-    doctype 2,3,4 EXPMED
+    doctype 2,3   EXPMED23  (группа по DOCEXPDT)
+    doctype 4     EXPMED4   (группа по DOCPENALTYDT)
     doctype 5,6   PODCHECK + SPPODNORM
     doctype 8     TFOUTSCHET
     doctype 9     TFINSCHET
@@ -26,13 +27,19 @@ REQPREPMOOrclPost — в архиве (disabled + skipAudit), её конфиг 
 
 Источник для всех — общий MOCHECK.sql (UNION ALL, в каждой ветке свой
 doctype). Логические группы различаются filterClause/filterClauseSlave по
-doctype и собственным tableNameEtlJobs (MEDCHECK, EXPMED, PODCHECK,
-TFOUTSCHET, TFINSCHET) для отслеживания в etl_jobs.
+doctype и собственным tableNameEtlJobs (MEDCHECK, EXPMED23, EXPMED4,
+PODCHECK, TFOUTSCHET, TFINSCHET) для отслеживания в etl_jobs.
 
-EXPMED и PODCHECK — по одной линии на НЕСКОЛЬКО doctype: их строки переезжают
-между doctype (expmed 2<->3<->4, podcheck 5<->6 при смене typehelp), и линия,
+EXPMED23 и PODCHECK — по одной линии на НЕСКОЛЬКО doctype: их строки переезжают
+между doctype (expmed 2<->3, podcheck 5<->6 при смене typehelp), и линия,
 видящая только свой doctype, оставляла бы в mocheck осиротевшую строку в
 чужом. Поэтому обе перезаливают срез целиком, а не правят строку точечно.
+
+EXPMED разделён на две линии не по этой причине, а потому, что группа у него
+считается по РАЗНЫМ колонкам: doctype 2,3 — по DOCEXPDT, doctype 4 — по
+DOCPENALTYDT, а периодов у линии может быть только один. Переезд 3<->4 виден
+обеим линиям: одна перестаёт отдавать строку в своём срезе, другая начинает.
+Триггер на EXPMED при этом ОДИН и пишет по строке журнала на каждую линию.
 
 Режимы переноса заданы в config.d по линиям, а не здесь.
 """
@@ -46,7 +53,8 @@ from Functions._dagHelpers import (DEFAULT_ARGS, configureLogger, makeEtlOperato
 # dagbuilder: составной даг (список линий ниже правит конструктор)
 LINES = [
     ('MEDCHECK', 'Orcl', 'Post'),
-    ('EXPMED', 'Orcl', 'Post'),
+    ('EXPMED23', 'Orcl', 'Post'),
+    ('EXPMED4', 'Orcl', 'Post'),
     ('PODCHECK', 'Orcl', 'Post'),
     ('TFOUTSCHET', 'Orcl', 'Post'),
     ('TFINSCHET', 'Orcl', 'Post'),
