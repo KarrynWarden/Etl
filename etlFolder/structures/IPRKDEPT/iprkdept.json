@@ -1,10 +1,16 @@
 {
   "data": [
     {
+      "column_name": "createdate",
+      "data_type": "date",
+      "data_scale": null,
+      "is_primary_key": null
+    },
+    {
       "column_name": "dbeg",
       "data_type": "date",
       "data_scale": null,
-      "is_primary_key": "Primary Key"
+      "is_primary_key": null
     },
     {
       "column_name": "ddepart",
@@ -34,7 +40,7 @@
       "column_name": "id",
       "data_type": "bigint",
       "data_scale": 0,
-      "is_primary_key": "Primary Key"
+      "is_primary_key": null
     },
     {
       "column_name": "idlogbeg",
@@ -52,7 +58,7 @@
       "column_name": "idrw",
       "data_type": "bigint",
       "data_scale": 0,
-      "is_primary_key": null
+      "is_primary_key": "Primary Key"
     },
     {
       "column_name": "lastupdate",
@@ -106,7 +112,7 @@
       "column_name": "typeprk",
       "data_type": "smallint",
       "data_scale": 0,
-      "is_primary_key": "Primary Key"
+      "is_primary_key": null
     }
   ]
 }

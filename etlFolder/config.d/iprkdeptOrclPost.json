@@ -1,12 +1,12 @@
 {
   "iprkdeptOrclPost": {
+    "_doc": "oracle->postgres, точечный перенос по журналу (mode=iud). Раньше линия шла section_compare с группировкой по DBEG — бизнес-дате начала, которая вдобавок входила в первичный ключ. Под iud заведена отдельная колонка createdate (oracleSetup/11_iprkdept_createdate.sql, postgresSetup/04_iprkdept_createdate.sql): у существующих строк это TRUNC(lastupdate), у новых TRUNC(SYSDATE) от триггера koknaev.iprkdept_bi. Времени в ней нет ни у старых строк, ни у новых, поэтому truncatePeriod НЕ нужен: условие периода остаётся `createdate = :период` и использует индекс, а не прячет колонку под TRUNC. Первичный ключ переехал со связки (DBEG, ID, TYPEPRK) на IDRW: журнальный триггер кладёт ключ в etl_log_iud_row одним значением, а составной ключ с датой пришлось бы гнать через TO_CHAR, то есть через NLS_DATE_FORMAT сессии — у триггера и у переноса он может различаться. Ключ линии в etl_jobs пишется СТРОЧНЫМИ ('iprkdept', как tableNameEtlJobs в даге) — ровно эту строку пишет и триггер, сравнение регистрозависимое. Строки с пустым lastupdate уехали в NULL-группу; это полноправная группа.",
     "tableNameMaster": "IPRKDEPT",
     "tableNameSlave": "iprkdept",
     "structureMaster": "structures/IPRKDEPT/IPRKDEPT.json",
     "structureSlave": "structures/IPRKDEPT/iprkdept.json",
-    "periodColumn": "DBEG",
-    "slavePeriodColumn": "dbeg",
-    "mode": "section_compare",
-    "truncatePeriod": true
+    "periodColumn": "CREATEDATE",
+    "slavePeriodColumn": "createdate",
+    "mode": "iud"
   }
 }

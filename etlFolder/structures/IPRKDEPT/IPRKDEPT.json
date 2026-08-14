@@ -1,10 +1,16 @@
 {
   "data": [
     {
+      "COLUMN_NAME": "CREATEDATE",
+      "DATA_TYPE": "DATE",
+      "DATA_SCALE": null,
+      "IS_PRIMARY_KEY": null
+    },
+    {
       "COLUMN_NAME": "DBEG",
       "DATA_TYPE": "DATE",
       "DATA_SCALE": null,
-      "IS_PRIMARY_KEY": "Primary Key"
+      "IS_PRIMARY_KEY": null
     },
     {
       "COLUMN_NAME": "DDEPART",
@@ -34,7 +40,7 @@
       "COLUMN_NAME": "ID",
       "DATA_TYPE": "NUMBER",
       "DATA_SCALE": 0,
-      "IS_PRIMARY_KEY": "Primary Key"
+      "IS_PRIMARY_KEY": null
     },
     {
       "COLUMN_NAME": "IDLOGBEG",
@@ -52,7 +58,7 @@
       "COLUMN_NAME": "IDRW",
       "DATA_TYPE": "NUMBER",
       "DATA_SCALE": 0,
-      "IS_PRIMARY_KEY": null
+      "IS_PRIMARY_KEY": "Primary Key"
     },
     {
       "COLUMN_NAME": "LASTUPDATE",
@@ -106,7 +112,7 @@
       "COLUMN_NAME": "TYPEPRK",
       "DATA_TYPE": "NUMBER",
       "DATA_SCALE": 0,
-      "IS_PRIMARY_KEY": "Primary Key"
+      "IS_PRIMARY_KEY": null
     }
   ]
 }
