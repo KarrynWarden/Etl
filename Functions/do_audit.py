@@ -316,6 +316,56 @@ def _keyText(struct, pkPos, key):
     return ", ".join(f"{struct[i][0]}={_fmt(v)}" for i, v in zip(pkPos, key))
 
 
+def _intKey(key):
+    """Целое значение одноколоночного ключа — или None, если ключ не такой.
+
+    Нужно, чтобы понять, идут ли ключи подряд: только тогда их можно свернуть
+    в диапазон «с 123 по 435». Составной ключ, строка или дробное число подряд
+    идти не могут, и сворачивать их нельзя."""
+    if len(key) != 1:
+        return None
+    value = key[0]
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, decimal.Decimal) and value == value.to_integral_value():
+        return int(value)
+    return None
+
+
+def _keyRuns(keys):
+    """Ключи, свёрнутые в диапазоны подряд идущих: [(первый, последний, N)].
+
+    Сворачиваются ТОЛЬКО подряд идущие целые (123, 124, 125 -> 123..125).
+    Разрыв рвёт диапазон, поэтому «с 123 по 435» означает, что все ключи
+    между ними тоже в этом списке, а не просто что это первый и последний."""
+    runs = []          # [первый, последний, номер последнего, сколько]
+    for key in sorted(keys, key=_sortableKey):
+        num = _intKey(key)
+        last = runs[-1] if runs else None
+        if last and num is not None and last[2] is not None and num == last[2] + 1:
+            last[1], last[2], last[3] = key, num, last[3] + 1
+        else:
+            runs.append([key, key, num, 1])
+    return [(first, last, count) for first, last, _num, count in runs]
+
+
+def _rangesText(struct, pkPos, keys, limit):
+    """Ключи одним текстом, подряд идущие — диапазонами."""
+    runs = _keyRuns(keys)
+    parts = []
+    for first, last, count in runs[:limit]:
+        if count == 1:
+            parts.append(_keyText(struct, pkPos, first))
+        else:
+            parts.append(f"с {_keyText(struct, pkPos, first)} по "
+                         f"{_keyText(struct, pkPos, last)} ({count})")
+    if len(runs) > limit:
+        parts.append(f"и ещё диапазонов: {len(runs) - limit}")
+    return "; ".join(parts)
+
+
 def _rowsByKey(rows, pkPos, wanted):
     """{ключ: [строки]} — ТОЛЬКО для ключей из wanted.
 
@@ -362,72 +412,93 @@ def _diffLines(onlyMaster, onlySlave, structMaster, structSlave,
 
     keysMaster = {tuple(row[i] for i in pkPos) for row in onlyMaster}
     keysSlave = {tuple(row[i] for i in pkPos) for row in onlySlave}
-    allKeys = sorted(keysMaster | keysSlave, key=_sortableKey)
-    shown = allKeys[:limit]
+    allKeys = keysMaster | keysSlave
     both = keysMaster & keysSlave
-    # Индекс нужен по изменённым ключам (для перечня колонок — он считается по
-    # ВСЕМ таким ключам) и по печатаемым (для подробностей). Односторонние
-    # ключи за пределами shown в индекс не попадают: про них и сказать нечего,
-    # кроме «нет на другой стороне».
-    wanted = both | set(shown)
-    byKeyMaster = _rowsByKey(onlyMaster, pkPos, wanted)
-    byKeySlave = _rowsByKey(onlySlave, pkPos, wanted)
+    missing = keysMaster - keysSlave          # нет в ведомой
+    extraneous = keysSlave - keysMaster       # лишние в ведомой
+    # Строки нужны только по ИЗМЕНЁННЫМ ключам: про односторонние и сказать
+    # нечего, кроме «нет на другой стороне», а держать их в памяти на группе,
+    # разошедшейся целиком, незачем.
+    byKeyMaster = _rowsByKey(onlyMaster, pkPos, both)
+    byKeySlave = _rowsByKey(onlySlave, pkPos, both)
 
     lines = [
         f"расхождение по {len(allKeys)} ключам: изменены {len(both)}, "
-        f"нет в ведомой {nameSlave} {len(keysMaster - keysSlave)}, "
-        f"нет в ведущей {nameMaster} {len(keysSlave - keysMaster)}"
+        f"нет в ведомой {nameSlave} {len(missing)}, "
+        f"нет в ведущей {nameMaster} {len(extraneous)}"
     ]
 
-    # Перечень расходящихся колонок — по ВСЕМ изменённым ключам, а не только по
-    # печатаемым. Иначе он врал бы ровно в том случае, ради которого нужен:
-    # если первая сотня ключей по PK — это «нет в ведомой», то колонки,
-    # ломающиеся у ключей за сотней, не попали бы в отчёт вовсе, и по логу
-    # выходило бы, что расходящихся колонок нет.
-    # Печатаются ВСЕ колонки, у которых есть хоть одно расхождение; порядок —
-    # по убыванию частоты, отсечения по количеству нет.
+    # Один проход по ВСЕМ изменённым ключам даёт сразу две вещи:
+    #   * сколько раз расходится каждая колонка;
+    #   * какие вообще бывают НАБОРЫ расходящихся колонок и первый ключ
+    #     каждого набора — это будущие показательные записи.
+    # И то, и другое считается по всем ключам, а не по печатаемым. Иначе отчёт
+    # врал бы ровно в том случае, ради которого нужен: если первая сотня ключей
+    # по PK — это «нет в ведомой», то про колонки, ломающиеся у ключей за
+    # сотней, в логе не было бы ни слова.
     byColumn = {}
-    for key in both:
+    kinds = {}         # набор колонок -> [сколько ключей, первый ключ]
+    for key in sorted(both, key=_sortableKey):
         rowsM = byKeyMaster.get(key, [])
         rowsS = byKeySlave.get(key, [])
         if len(rowsM) != 1 or len(rowsS) != 1:
-            continue        # дубликаты: сравнивать построчно нечего
-        for column, _a, _b in _rowDiff(rowsM[0], rowsS[0],
-                                       structMaster, structSlave, pkPos):
-            byColumn[column] = byColumn.get(column, 0) + 1
-
-    body = []
-    for key in shown:
-        rowsM = byKeyMaster.get(key, [])
-        rowsS = byKeySlave.get(key, [])
-        keyStr = _keyText(structMaster, pkPos, key)
-        if rowsM and rowsS:
-            if len(rowsM) > 1 or len(rowsS) > 1:
-                body.append(f"{keyStr}: дубликаты — строк в ведущей "
-                            f"{len(rowsM)}, в ведомой {len(rowsS)}")
-                continue
-            diff = _rowDiff(rowsM[0], rowsS[0], structMaster, structSlave, pkPos)
-            detail = "; ".join(f"{column}: ведущая {_fmt(a)} ≠ ведомая {_fmt(b)}"
-                               for column, a, b in diff)
-            body.append(f"{keyStr}: отличаются поля ({len(diff)}) — {detail}")
-        elif rowsM:
-            extra = (f" (строк с этим ключом в ведущей {len(rowsM)})"
-                     if len(rowsM) > 1 else "")
-            body.append(f"{keyStr}: нет в ведомой {nameSlave}{extra}")
+            signature = ("дубликаты по ключу",)
         else:
-            extra = (f" (строк с этим ключом в ведомой {len(rowsS)})"
-                     if len(rowsS) > 1 else "")
-            body.append(f"{keyStr}: нет в ведущей {nameMaster} — лишняя строка "
-                        f"в ведомой {nameSlave}")
+            diff = _rowDiff(rowsM[0], rowsS[0], structMaster, structSlave, pkPos)
+            for column, _a, _b in diff:
+                byColumn[column] = byColumn.get(column, 0) + 1
+            signature = tuple(column for column, _a, _b in diff)
+        kind = kinds.setdefault(signature, [0, key])   # ключи идут по возр.,
+        kind[0] += 1                                   # первый и остаётся первым
+
     if byColumn:
         top = sorted(byColumn.items(), key=lambda kv: (-kv[1], kv[0]))
         lines.append(f"расходятся колонки (по всем {len(both)} изменённым "
                      f"ключам, по убыванию частоты): " +
                      ", ".join(f"{c} ({n})" for c, n in top))
-    lines += body
-    if len(allKeys) > limit:
-        lines.append(f"показано ключей: {limit} из {len(allKeys)} "
-                     f"(отсортированы по первичному ключу)")
+
+    # Односторонние ключи — диапазонами, а не по одному на строку. Их обычно
+    # много и они идут подряд (не доехала целая пачка), а информации в каждом
+    # ровно столько же, сколько в его номере. Зато перечислены ВСЕ: печатаемый
+    # лимит на них больше не тратится и до изменённых записей отчёт доходит.
+    for keys, text in ((missing, f"нет в ведомой {nameSlave}"),
+                       (extraneous, f"нет в ведущей {nameMaster} (лишние "
+                                    f"в ведомой {nameSlave})")):
+        if keys:
+            lines.append(f"{text} — ключей {len(keys)}: "
+                         + _rangesText(structMaster, pkPos, keys, limit))
+
+    # Показательные записи: по одной на КАЖДЫЙ набор расходящихся колонок.
+    # Без этого набор, встретившийся у ключей за пределами лимита, в отчёте
+    # не виден вовсе — а именно он и отвечает на вопрос «что сломалось».
+    # Если наборов больше лимита, берутся самые частые.
+    order = sorted(kinds.values(), key=lambda kv: (-kv[0], _sortableKey(kv[1])))
+    samples = {key for _count, key in order[:limit]}
+    rest = [key for key in sorted(both, key=_sortableKey) if key not in samples]
+    shown = sorted(samples | set(rest[:max(0, limit - len(samples))]),
+                   key=_sortableKey)
+
+    for key in shown:
+        rowsM = byKeyMaster.get(key, [])
+        rowsS = byKeySlave.get(key, [])
+        keyStr = _keyText(structMaster, pkPos, key)
+        if len(rowsM) > 1 or len(rowsS) > 1:
+            lines.append(f"{keyStr}: дубликаты — строк в ведущей "
+                         f"{len(rowsM)}, в ведомой {len(rowsS)}")
+            continue
+        diff = _rowDiff(rowsM[0], rowsS[0], structMaster, structSlave, pkPos)
+        detail = "; ".join(f"{column}: ведущая {_fmt(a)} ≠ ведомая {_fmt(b)}"
+                           for column, a, b in diff)
+        lines.append(f"{keyStr}: отличаются поля ({len(diff)}) — {detail}")
+
+    if len(both) > len(shown):
+        note = (f"показано изменённых ключей: {len(shown)} из {len(both)}; "
+                f"наборов расходящихся колонок {len(kinds)}")
+        if len(kinds) > limit:
+            note += f", показаны {limit} самых частых"
+        else:
+            note += ", каждый показан хотя бы одной записью"
+        lines.append(note)
     return lines
 
 

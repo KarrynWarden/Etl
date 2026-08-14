@@ -229,44 +229,59 @@ def _selftest():
     assert "нет в ведущей EXPMED 1" in lines[0]
     assert "IDRW=101: отличаются поля (2)" in body
     assert "SUMCHECK: ведущая 100.00 ≠ ведомая 90.00" in body
-    assert "IDRW=103: нет в ведомой mocheck" in body
-    assert "IDRW=104: нет в ведущей EXPMED" in body
+    # односторонние ключи идут диапазонами, а не по строке на ключ
+    assert "нет в ведомой mocheck — ключей 1: IDRW=103" in body, body
+    assert "нет в ведущей EXPMED (лишние в ведомой mocheck) — ключей 1: " \
+           "IDRW=104" in body, body
     # строки печатаются через repr — иначе хвостовой пробел не отличить
     assert "ACCNO: ведущая 'A-5' ≠ ведомая 'A-5 '" in body
     assert "расходятся колонки (по всем 3 изменённым ключам" in body
     assert "SUMCHECK (2)" in body and "ACCNO (1)" in body
+    # подробности — только по изменённым ключам, по возрастанию PK
     order = [l.split(":")[0] for l in lines if l.startswith("IDRW=")]
-    assert order == ["IDRW=101", "IDRW=102", "IDRW=103", "IDRW=104",
-                     "IDRW=105"], order
+    assert order == ["IDRW=101", "IDRW=102", "IDRW=105"], order
     short = A._diffLines(onlyMaster, onlySlave, structM, structS,
                          "EXPMED", "mocheck", limit=2)
     assert sum(1 for l in short if l.startswith("IDRW=")) == 2
-    assert "показано ключей: 2 из 5" in "\n".join(short)
+    assert "показано изменённых ключей: 2 из 3" in "\n".join(short)
 
-    # Перечень колонок считается по ВСЕМ изменённым ключам, а не по печатаемым.
-    # Случай, ради которого это важно: первые ключи по PK — односторонние
-    # («нет в ведомой»), они занимают весь печатаемый лимит, а изменённые
-    # ключи идут после них. Раньше отчёт про колонки в этом случае молчал.
-    farMaster = [(D(str(i)), D("1.00"), lu1, "A") for i in range(1, 121)]
-    farSlave = []
-    for i in range(200, 260):
-        farMaster.append((D(str(i)), D("1.00"), lu1, f"A{i}"))
-        # у всех расходится ACCNO, ровно у одного — ещё и SUMCHECK
-        farSlave.append((D(str(i)), D("9.00" if i == 205 else "1.00"), lu1,
-                         f"B{i}"))
-    farLines = A._diffLines(farMaster, farSlave, structM, structS,
-                            "EXPMED", "mocheck")
-    columns = [l for l in farLines if l.startswith("расходятся колонки")][0]
-    assert "по всем 60 изменённым ключам" in columns, columns
-    assert "ACCNO (60)" in columns, columns
-    # колонка с ЕДИНСТВЕННЫМ расхождением обязана быть в списке, и не первой:
-    # порядок по убыванию частоты, но отсечения по количеству нет
-    assert "SUMCHECK (1)" in columns, columns
-    assert columns.index("ACCNO") < columns.index("SUMCHECK"), columns
-    # при этом подробности по-прежнему урезаны лимитом и до изменённых ключей
-    # в этом наборе не доходят — тем нужнее строка выше
-    assert all("отличаются поля" not in l for l in farLines), farLines
-    assert "показано ключей: 100 из 180" in "\n".join(farLines)
+    # Случай, ради которого всё это и делалось: 300 расхождений при лимите 100.
+    #   1..100   — не перенеслись (заняли бы весь лимит целиком)
+    #   101..200 — расходится ACCNO
+    #   201..300 — расходится SUMCHECK
+    # Требуется: односторонние — одним диапазоном, а среди подробностей —
+    # живой пример КАЖДОГО набора расходящихся колонок, включая тот, чьи ключи
+    # начинаются за пределами лимита.
+    bulkMaster, bulkSlave = [], []
+    for i in range(1, 101):
+        bulkMaster.append((D(str(i)), D("1.00"), lu1, "A"))
+    for i in range(101, 201):
+        bulkMaster.append((D(str(i)), D("1.00"), lu1, f"A{i}"))
+        bulkSlave.append((D(str(i)), D("1.00"), lu1, f"B{i}"))
+    for i in range(201, 301):
+        bulkMaster.append((D(str(i)), D("1.00"), lu1, "A"))
+        bulkSlave.append((D(str(i)), D("2.00"), lu1, "A"))
+    bulk = A._diffLines(bulkMaster, bulkSlave, structM, structS,
+                        "EXPMED", "mocheck")
+    text = "\n".join(bulk)
+    assert "нет в ведомой mocheck — ключей 100: с IDRW=1 по IDRW=100 (100)" \
+        in text, text
+    assert "ACCNO (100)" in text and "SUMCHECK (100)" in text, text
+    assert "IDRW=101: отличаются поля (1) — ACCNO" in text, text
+    assert "IDRW=201: отличаются поля (1) — SUMCHECK" in text, text
+    # ни один печатаемый слот не потрачен на односторонние ключи
+    assert "IDRW=1:" not in text and "IDRW=50:" not in text, text
+    assert sum(1 for l in bulk if l.startswith("IDRW=")) == 100
+    assert "показано изменённых ключей: 100 из 200" in text, text
+    assert "наборов расходящихся колонок 2, каждый показан" in text, text
+    # весь отчёт укладывается в сотню подробностей плюс несколько шапок
+    assert len(bulk) <= 105, len(bulk)
+
+    # разрыв рвёт диапазон: «с 1 по 3» не должно означать «и 5 тоже»
+    gapMaster = [(D(str(i)), D("1.00"), lu1, "A") for i in (1, 2, 3, 5)]
+    gap = "\n".join(A._diffLines(gapMaster, [], structM, structS,
+                                 "EXPMED", "mocheck"))
+    assert "с IDRW=1 по IDRW=3 (3); IDRW=5" in gap, gap
 
     # составной ключ, NULL в ключе и дубликаты по ключу
     structM2 = [("YEAR", "NUMBER", 0, "Primary Key"),
