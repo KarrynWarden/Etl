@@ -48,6 +48,14 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault("ETL_FULL_PATH", ROOT + os.sep)
 sys.path.insert(0, ROOT)
 
+# Профилировщик ходит в БД, поэтому обычно запускается там, где стоят драйверы
+# и airflow. Но --selftest в БД не ходит вовсе, и требовать ради него окружение
+# airflow незачем: подменяем импорты заглушками (тот же приём, что в
+# tools/etl_selftest.py), чтобы проверку можно было гонять где угодно.
+if "--selftest" in sys.argv:
+    from tools.etl_selftest import _stubDrivers
+    _stubDrivers()
+
 from Functions.functionsFile.loadConfig import assemble  # noqa: E402
 from Functions.functionsFile.takeOneQuery import TakeOneQuery  # noqa: E402
 from Functions import do_audit as A  # noqa: E402
