@@ -158,10 +158,15 @@ END;
 --------------------------------------------------------------------------------
 -- 3. Ежедневный пересчёт.
 --
--- p_months — глубина окна в месяцах, считая текущий (18 = постановка 821).
---            Уменьшить, если прогон не укладывается по времени.
--- p_force  — 1: буквальное поведение 821 — перезалить и пометить ВСЕ периоды
---            окна, даже если данные не изменились.
+-- p_months    — глубина окна в месяцах, считая текущий (18 = постановка 821).
+--               Уменьшить, если прогон не укладывается по времени.
+-- p_force     — 1: буквальное поведение 821 — перезалить и пометить ВСЕ периоды
+--               окна, даже если данные не изменились.
+-- p_skip_gate — 1: не проверять medcheck.mekdt за вчера. ТОЛЬКО для ручного
+--               прогона: гейт срабатывает 1-2 раза в месяц, и чтобы проверить
+--               процесс в любой другой день, пришлось бы подделывать mekdt в
+--               medcheck — то есть править данные ради теста. Ночной джоб
+--               вызывает процедуру без аргументов, гейт у него на месте.
 --
 -- Шаги:
 --   3.1 гейт по medcheck.mekdt за вчера (срабатывает 1-2 раза в месяц);
@@ -171,8 +176,9 @@ END;
 --   3.5 самолечение: пометить периоды окна с плохим состоянием в etl_jobs.
 --------------------------------------------------------------------------------
 CREATE OR REPLACE PROCEDURE koknaev.medree_prdisp_refresh(
-    p_months IN PLS_INTEGER DEFAULT 18,
-    p_force  IN PLS_INTEGER DEFAULT 0
+    p_months    IN PLS_INTEGER DEFAULT 18,
+    p_force     IN PLS_INTEGER DEFAULT 0,
+    p_skip_gate IN PLS_INTEGER DEFAULT 0
 ) AS
     TYPE t_period  IS RECORD (year NUMBER, month NUMBER);
     TYPE t_periods IS TABLE OF t_period;
@@ -194,16 +200,24 @@ BEGIN
     v_month := EXTRACT(MONTH FROM v_from);
 
     -- 3.1. Гейт: есть ли medcheck.mekdt за вчера. Нет — ночью считать нечего.
-    SELECT COUNT(*) INTO v_gate FROM dual
-    WHERE EXISTS (SELECT 1
-                  FROM   koknaev.medcheck c
-                  WHERE  c.mekdt >= TRUNC(SYSDATE) - 1
-                    AND  c.mekdt <  TRUNC(SYSDATE));
+    --      Ручной прогон может его снять (p_skip_gate = 1) — это пишется в лог,
+    --      чтобы потом не гадать, почему процедура отработала в день, когда
+    --      гейта не было.
+    IF p_skip_gate = 1 THEN
+        koknaev.medree_prdisp_log_p(NULL, NULL, NULL,
+            'Гейт medcheck.mekdt снят вручную (p_skip_gate = 1)');
+    ELSE
+        SELECT COUNT(*) INTO v_gate FROM dual
+        WHERE EXISTS (SELECT 1
+                      FROM   koknaev.medcheck c
+                      WHERE  c.mekdt >= TRUNC(SYSDATE) - 1
+                        AND  c.mekdt <  TRUNC(SYSDATE));
 
-    IF v_gate = 0 THEN
-        koknaev.medree_prdisp_log_p(NULL, 0, 0,
-            'Пропуск: нет medcheck.mekdt за вчера');
-        RETURN;
+        IF v_gate = 0 THEN
+            koknaev.medree_prdisp_log_p(NULL, 0, 0,
+                'Пропуск: нет medcheck.mekdt за вчера');
+            RETURN;
+        END IF;
     END IF;
 
     koknaev.medree_prdisp_log_p(TO_CHAR(v_from, 'YYYY-MM'), NULL, NULL,
@@ -460,3 +474,34 @@ END;
 --   BEGIN koknaev.medree_prdisp_refresh(p_months => 3); END;     -- только 3 мес.
 --   BEGIN koknaev.medree_prdisp_refresh(p_force => 1); END;      -- пометить всё окно
 --   BEGIN koknaev.medree_prdisp_mark(2026, 7); COMMIT; END;      -- один период
+--
+--   -- прогнать СЕЙЧАС, не дожидаясь дня, когда появится mekdt за вчера:
+--   BEGIN koknaev.medree_prdisp_refresh(p_skip_gate => 1); END;
+--
+--   -- то же, но чужими руками — запустить джоб немедленно (гейт при этом
+--   -- ДЕЙСТВУЕТ, джоб зовёт процедуру без аргументов):
+--   BEGIN DBMS_SCHEDULER.RUN_JOB('KOKNAEV.MEDREE_PRDISP_DAILY', use_current_session => FALSE); END;
+--
+-- КАК УЗНАТЬ ОБ ОШИБКЕ. Процедура ловит любое исключение, откатывает
+-- транзакцию, пишет строку 'ОШИБКА: <текст>' в medree_prdisp_log и ПРОБРАСЫВАЕТ
+-- ошибку дальше. Значит смотреть надо в двух местах:
+--
+--   -- 1) сам текст ошибки
+--   SELECT ts, ym, note FROM koknaev.medree_prdisp_log
+--   WHERE  note LIKE 'ОШИБКА%' ORDER BY ts DESC;
+--
+--   -- 2) чем закончился НОЧНОЙ запуск: у джоба ошибка иначе нигде не всплывёт —
+--   --    никто не смотрит на неё в 02:00
+--   SELECT log_date, status, actual_start_date, run_duration, error#,
+--          SUBSTR(additional_info, 1, 200) AS info
+--   FROM   dba_scheduler_job_run_details
+--   WHERE  job_name = 'MEDREE_PRDISP_DAILY'
+--   ORDER  BY log_date DESC FETCH FIRST 10 ROWS ONLY;
+--
+--   -- 3) жив ли сам джоб и когда сработает следующий раз
+--   SELECT job_name, enabled, state, last_start_date, next_run_date, failure_count
+--   FROM   dba_scheduler_jobs WHERE job_name = 'MEDREE_PRDISP_DAILY';
+--
+-- Джоб, упавший несколько раз подряд, Oracle отключает сам (state = BROKEN) —
+-- поэтому failure_count и enabled стоит смотреть первыми, если пересчёт
+-- «молча перестал работать».
