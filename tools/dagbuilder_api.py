@@ -104,12 +104,24 @@ def r_lines(params):
             "all": B.existing_lines()}
 
 
+def _rel(path):
+    """Путь относительно корня репозитория. Абсолютные пути сервера в ответе
+    интерфейсу не нужны и только мешают их читать."""
+    if not path:
+        return path
+    try:
+        return os.path.relpath(path, ROOT)
+    except ValueError:            # другой диск на Windows — отдаём как есть
+        return path
+
+
 def r_line(params):
     """Спецификация линии для формы правки."""
     (key,) = _need(params, "key")
     spec = B.load_line(key)
     group, own = B.line_placement(key)
-    return {"spec": spec, "placement": {"group_dag": group, "own_dag": own}}
+    return {"spec": spec,
+            "placement": {"group_dag": group, "own_dag": _rel(own)}}
 
 
 def r_tags(params):
@@ -200,7 +212,7 @@ def r_write(params):
                             overwrite=bool(params.get("overwrite")),
                             force=tuple(params.get("force") or ()),
                             skip_unchanged=params.get("skip_unchanged", True))
-    return {"written": [os.path.relpath(p, ROOT) for p in written],
+    return {"written": [_rel(p) for p in written],
             "unchanged": B.unchanged_files(files)}
 
 
@@ -443,6 +455,21 @@ def _selftest():
     code, body = dispatch("GET", "line", {"key": "iprkdeptOrclPost"})
     assert code == 200, body
     assert body["result"]["spec"]["mode"] == "iud", body["result"]["spec"]["mode"]
+    # путь дага отдаётся ОТНОСИТЕЛЬНЫМ: абсолютные пути сервера интерфейсу не
+    # нужны, а в интерфейсе их ещё и неудобно читать
+    own = body["result"]["placement"]["own_dag"]
+    assert own == "dags/IprkdeptOrclPost.py", own
+
+    # 6b) правка одного поля меняет РОВНО один файл — то, ради чего в
+    #     конструкторе появился skip_unchanged. Проверяем через API целиком.
+    spec = body["result"]["spec"]
+    _code, out = dispatch("POST", "preview", {"spec": spec})
+    assert not [f for f in out["result"]["files"]
+                if f["path"] not in out["result"]["unchanged"]], "линия «поехала» без правок"
+    _code, out = dispatch("POST", "preview", {"spec": dict(spec, mode="section_compare")})
+    changed = [f["path"] for f in out["result"]["files"]
+               if f["path"] not in out["result"]["unchanged"]]
+    assert changed == ["etlFolder/config.d/iprkdeptOrclPost.json"], changed
 
     # 7) сборка триггера не ходит в БД и отдаёт готовый текст
     code, body = dispatch("POST", "triggers/build",
