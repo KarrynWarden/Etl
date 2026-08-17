@@ -126,9 +126,30 @@ def build_sp_all(spec):
         raise ValueError("Слишком короткое имя ведущей для ключа линии.")
 
     pairs = spec.get("pairs") or []
-    select_mode = spec.get("select_mode", "table")
+    # Имя ключа принимаем оба. load_sp_line отдаёт режим источника как
+    # `src_mode` (так он назван и в конфиге — srcMode), а здесь исторически
+    # читался `select_mode`, который кладёт форма создания. Пока обе стороны
+    # заполняла одна и та же форма, это не всплывало; стоило передать сюда
+    # спецификацию, прочитанную load_sp_line, — и линия со своим SELECT молча
+    # пересобиралась как «из таблицы»: рукописный запрос затирался
+    # сгенерированным `SELECT c1, c2 FROM t`, а srcMode пропадал из конфига.
+    # То есть правка ЛЮБОГО поля такой линии стирала её запрос.
+    select_mode = spec.get("select_mode") or spec.get("src_mode") or "table"
 
-    if select_mode == "custom":
+    if select_mode == "all":
+        # Источник — ВСЯ ведущая таблица, своего Select.sql у линии нет.
+        # Это законная настройка, а не недоделка: без ключа selectSql рантайм
+        # подставляет `SELECT * FROM <ведущая>` (dags/SpDagNew.py, dags/SpOnce.py).
+        # Так заведён CALENDAR — справочник в одну колонку, ради которого
+        # отдельный файл запроса не нужен.
+        # Конструктор этого режима не знал и на пересборке ВЫДУМЫВАЛ Select.sql
+        # с заглушками «(колонка N)» вместо имён, попутно дописывая selectSql
+        # в конфиг, — то есть ломал рабочую линию.
+        s_order = [s for _m, s in pairs if s]
+        if not s_order:
+            raise ValueError("Не сопоставлено ни одной колонки ведомой.")
+        select_content = None
+    elif select_mode == "custom":
         # своё SELECT: порядок колонок задаёт запрос — сопоставить надо все
         if not pairs or any(s is None for _m, s in pairs):
             raise ValueError(
@@ -156,7 +177,9 @@ def build_sp_all(spec):
     select_rel = f"queries/sp/{sql_name}/Select.sql"
     add_rel = f"queries/sp/{sql_name}/Add.sql"
 
-    body = {"tableNameSlave": slave_table, "addSql": add_rel, "selectSql": select_rel}
+    body = {"tableNameSlave": slave_table, "addSql": add_rel}
+    if select_content is not None:
+        body["selectSql"] = select_rel
     if select_mode == "custom":
         # Режим источника ОБЯЗАН лежать в конфиге: по одному тексту Select.sql
         # его не восстановить. Режим «из таблицы» генерирует ровно такой же
@@ -178,8 +201,10 @@ def build_sp_all(spec):
         body["append"] = True
 
     fragment = {key: body}
-    files = [
-        (f"etlFolder/{select_rel}", select_content),
+    files = []
+    if select_content is not None:
+        files.append((f"etlFolder/{select_rel}", select_content))
+    files += [
         (f"etlFolder/{add_rel}", add_content),
         (f"etlFolder/{SP_KIND_CONFIG[kind]}.d/{key}.json",
          json.dumps(fragment, ensure_ascii=False, indent=2) + "\n"),
@@ -382,7 +407,13 @@ def load_sp_line(kind, key):
     # созданных до его появления, флага нет — там остаётся прежняя эвристика
     # «простой SELECT ... FROM t => из таблицы» (она может ошибиться на своём
     # запросе без WHERE; такую линию достаточно один раз пересохранить).
-    src_mode = body.get("srcMode") or ("table" if master_from else "custom")
+    # Нет ключа selectSql вовсе — это режим «вся таблица» (см. build_sp_all).
+    # Проверять его надо ПЕРВЫМ: у такой линии нет текста, по которому
+    # эвристика ниже могла бы что-то определить, и она давала «custom».
+    if not select_rel:
+        src_mode = "all"
+    else:
+        src_mode = body.get("srcMode") or ("table" if master_from else "custom")
     # текущее сопоставление колонок — прямо из сохранённых SQL (без обращения к БД)
     master_cols, slave_cols, pairs = restore_mapping(select_text, add_text)
     return {
@@ -398,8 +429,14 @@ def load_sp_line(kind, key):
         "select_sql": select_rel, "select_sql_text": select_text,
         "add_sql": body.get("addSql"), "add_sql_text": add_text,
         "master_cols": master_cols, "slave_cols": slave_cols, "pairs": pairs,
-        "sql_dir_name": (os.path.basename(os.path.dirname(select_rel))
-                         if select_rel else None),
+        # Каталог SQL берём из ЛЮБОГО из двух путей — они всегда лежат рядом.
+        # Раньше смотрели только на selectSql, и у линии, где его нет (в
+        # конфиге один addSql — так заведён CALENDAR), имя каталога терялось.
+        # Пересборка такой линии уводила файлы в каталог по МЕТКЕ линии
+        # (queries/sp/CALENDAR вместо queries/sp/calendar) — то есть создавала
+        # второй комплект рядом, а рабочий оставляла сиротой.
+        "sql_dir_name": (os.path.basename(os.path.dirname(
+            select_rel or body.get("addSql") or "")) or None),
     }
 
 

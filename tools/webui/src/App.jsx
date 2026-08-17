@@ -7,6 +7,7 @@ import LineForm from './LineForm'
 import GitBar from './GitBar'
 import TriggersPage from './TriggersPage'
 import NewLinePage from './NewLinePage'
+import SpPage from './SpPage'
 
 // Оболочка. Разделы соответствуют вкладкам прежнего конструктора: сложный ETL,
 // триггеры, создание с нуля.
@@ -74,6 +75,11 @@ export default function App() {
                 ),
               },
               { key: 'triggers', label: 'Триггеры', children: <TriggersPage /> },
+              {
+                key: 'sp',
+                label: 'Справочники и разовый перенос',
+                children: <SpPage />,
+              },
             ]}
           />
         </Layout.Content>

@@ -88,4 +88,14 @@ export const api = {
   gitPush: (params) => call('POST', 'git/push', params),
   triggerBuild: (params) => call('POST', 'triggers/build', params),
   triggerCheck: (keys) => call('POST', 'triggers/check', { keys }),
+
+  // справочники и разовый перенос — свой набор понятий, см. SpPage.jsx
+  spLines: () => call('GET', 'sp/lines'),
+  spLine: (params) => call('GET', 'sp/line', params),
+  spPreview: (spec) => call('POST', 'sp/preview', { spec }),
+  spSetDisabled: (params) => call('POST', 'sp/set-disabled', params),
+  spMove: (params) => call('POST', 'sp/move', params),
+  spDeleteTargets: (params) => call('POST', 'sp/delete-targets', params),
+  spDelete: (params) => call('POST', 'sp/delete', params),
+  spAuditTrigger: (params) => call('POST', 'sp/audit-trigger', params),
 }

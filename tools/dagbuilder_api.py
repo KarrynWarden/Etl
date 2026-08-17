@@ -45,6 +45,7 @@ if ROOT not in sys.path:
 
 from tools import dag_builder as B      # noqa: E402
 from tools import trigger_builder as T  # noqa: E402
+from tools import sp_builder as SP      # noqa: E402
 
 logger = logging.getLogger("dagbuilder_api")
 
@@ -360,6 +361,108 @@ def r_trigger_check(params):
     return {"results": T.check_targets(targets)}
 
 
+# ─────────── справочники и разовый перенос (tools/sp_builder.py) ───────────
+# Отдельный от сложного ETL мир со своими понятиями, и смешивать их нельзя:
+#   * регулярный справочник ('regular') переносится не по расписанию, а по
+#     заданию: даг SpEtlNew берёт из etl_jobs строки с isokaudit = 0 и гоняет
+#     все линии с такой `dependence`. Ноль туда ставит АУДИТНЫЙ триггер на
+#     ведущей — без него справочник не обновится никогда и ни одной ошибки при
+#     этом не будет;
+#   * разовый перенос ('once') запускают руками, ему сигнал не нужен вовсе.
+# Линия описывается не структурами, а парой готовых SQL (Select.sql / Add.sql),
+# поэтому сопоставление колонок восстанавливается из них же, без обращения к БД.
+
+def _sp_kind(value):
+    if value not in ("regular", "once"):
+        raise BadRequest(f"kind должен быть 'regular' или 'once', получено {value!r}")
+    return value
+
+
+def r_sp_lines(params):
+    """Линии справочников и разового переноса — обоих типов сразу."""
+    out = []
+    for kind in ("regular", "once"):
+        disabled = set(SP.list_disabled_sp_lines(kind))
+        for key in SP.list_sp_lines(kind):
+            line, dbm, dbs = B.split_key(key)
+            out.append({"key": key, "kind": kind, "label": line,
+                        "db_master": dbm, "db_slave": dbs,
+                        "direction": f"{dbm}→{dbs}",
+                        "disabled": key in disabled})
+    return {"lines": out,
+            "directions": sorted({l["direction"] for l in out})}
+
+
+def r_sp_line(params):
+    """Спецификация линии справочника для формы правки."""
+    kind, key = _need(params, "kind", "key")
+    return {"spec": SP.load_sp_line(_sp_kind(kind), key)}
+
+
+def r_sp_preview(params):
+    """Собрать файлы линии справочника, ничего не записывая."""
+    (spec,) = _need(params, "spec")
+    spec = dict(spec)
+    if "pairs" in spec:
+        # у справочника пара может быть неполной (колонка без ведомой) —
+        # None здесь законен, в отличие от сложного ETL
+        spec["pairs"] = [(p[0], p[1]) for p in spec["pairs"]]
+    files, key = SP.build_sp_all(spec)
+    return {"key": key,
+            "files": [{"path": rel, "content": content} for rel, content in files],
+            "unchanged": B.unchanged_files(files)}
+
+
+def r_sp_set_disabled(params):
+    """Включить / отключить линию справочника."""
+    kind, key = _need(params, "kind", "key")
+    value = bool(params.get("value"))
+    SP.set_sp_disabled(_sp_kind(kind), key, value)
+    return {"key": key, "disabled": value}
+
+
+def r_sp_move(params):
+    """Перевести линию между типами: разовый <-> регулярный."""
+    key, from_kind, to_kind = _need(params, "key", "from_kind", "to_kind")
+    _sp_kind(from_kind), _sp_kind(to_kind)
+    if from_kind == to_kind:
+        raise BadRequest("исходный и целевой тип совпадают — переводить некуда")
+    return {"done": SP.move_sp_line(key, from_kind, to_kind)}
+
+
+def r_sp_delete_targets(params):
+    """Что удалится вместе с линией справочника.
+
+    sp_line_targets отдаёт ТРОЙКУ, а не список путей: описание фрагмента,
+    каталог SQL и признак «этот каталог нужен ещё кому-то». Последнее важно:
+    общий каталог удаление не трогает, и человек должен видеть это ДО того,
+    как нажмёт «удалить», а не выяснять потом, почему файлы остались.
+    """
+    kind, key = _need(params, "kind", "key")
+    fragment, sql_dir, shared = SP.sp_line_targets(_sp_kind(kind), key)
+    # у фрагмента с несколькими ключами описание вида "путь (ключ X)" —
+    # относительным делаем только сам путь
+    head, sep, tail = str(fragment).partition(" ")
+    return {"fragment": _rel(head) + sep + tail,
+            "sql_dir": _rel(sql_dir),
+            "sql_dir_shared": shared}
+
+
+def r_sp_delete(params):
+    kind, key = _need(params, "kind", "key")
+    return {"done": SP.delete_sp_line(_sp_kind(kind), key,
+                                      remove_sql=params.get("remove_sql", True))}
+
+
+def r_sp_audit_trigger(params):
+    """DDL аудитного триггера справочника — того, что ставит isokaudit = 0."""
+    db, table, dependence = _need(params, "db", "table", "dependence")
+    built = T.build_audit_trigger(_db(db), table, dependence,
+                                  jobs=params.get("jobs"))
+    return {"name": built["name"], "text": built["text"],
+            "statements": built["statements"]}
+
+
 GET_ROUTES = {
     "lines": r_lines,
     "line": r_line,
@@ -368,6 +471,8 @@ GET_ROUTES = {
     "git/status": r_git_status,
     "defaults": r_defaults,
     "triggers/targets": r_trigger_targets,
+    "sp/lines": r_sp_lines,
+    "sp/line": r_sp_line,
 }
 
 POST_ROUTES = {
@@ -386,6 +491,12 @@ POST_ROUTES = {
     "git/push": r_git_push,
     "triggers/build": r_trigger_build,
     "triggers/check": r_trigger_check,
+    "sp/preview": r_sp_preview,
+    "sp/set-disabled": r_sp_set_disabled,
+    "sp/move": r_sp_move,
+    "sp/delete-targets": r_sp_delete_targets,
+    "sp/delete": r_sp_delete,
+    "sp/audit-trigger": r_sp_audit_trigger,
 }
 
 
@@ -566,6 +677,49 @@ def _selftest():
                                   ("GET", "triggers/targets", {})):
         _code, out = dispatch(method, route, params)
         json.dumps(out, ensure_ascii=False, default=str)
+
+    # 8b) справочники и разовый перенос — свой мир, свои маршруты
+    code, body = dispatch("GET", "sp/lines", {})
+    assert code == 200, body
+    spLines = body["result"]["lines"]
+    assert spLines, "не нашлось ни одной линии справочника"
+    kinds = {l["kind"] for l in spLines}
+    assert kinds <= {"regular", "once"}, kinds
+    sample = spLines[0]
+    code, body = dispatch("GET", "sp/line",
+                          {"kind": sample["kind"], "key": sample["key"]})
+    assert code == 200, body
+    spec = body["result"]["spec"]
+    # сопоставление колонок у справочника восстанавливается ИЗ SQL, без БД —
+    # если оно пустое, форма правки откроется ни с чем
+    assert spec["pairs"], (sample["key"], spec)
+    assert spec["src_mode"] in ("all", "table", "custom"), spec["src_mode"]
+
+    # Линия БЕЗ своего Select.sql — законная настройка: рантайм подставляет
+    # SELECT * FROM ведущей. Проверяем, что такая линия читается как "all" и
+    # пересобирается БЕЗ файла запроса: конструктор когда-то выдумывал его с
+    # заглушками «(колонка N)» и дописывал selectSql в конфиг, ломая линию.
+    allMode = [l for l in spLines
+               if dispatch("GET", "sp/line", {"kind": l["kind"], "key": l["key"]})[1]
+               ["result"]["spec"]["src_mode"] == "all"]
+    if allMode:
+        one = allMode[0]
+        spec2 = dispatch("GET", "sp/line", {"kind": one["kind"], "key": one["key"]})[1]
+        spec2 = spec2["result"]["spec"]
+        code, body = dispatch("POST", "sp/preview", {"spec": dict(spec2, kind=one["kind"])})
+        assert code == 200, body
+        paths = [f["path"] for f in body["result"]["files"]]
+        assert not any(p.endswith("Select.sql") for p in paths), paths
+        assert any(p.endswith("Add.sql") for p in paths), paths
+
+    # пересборка того же самого не должна ничего менять на диске
+    code, body = dispatch("POST", "sp/preview", {"spec": spec})
+    assert code == 200, body
+    assert body["result"]["key"] == sample["key"], body["result"]["key"]
+
+    # неизвестный тип линии — понятная ошибка, а не падение внутри sp_builder
+    code, body = dispatch("GET", "sp/line", {"kind": "хз", "key": sample["key"]})
+    assert code == 400 and "regular" in body["detail"], body
 
     # 9) ФРОНТЕНД И API ГОВОРЯТ ОБ ОДНОМ И ТОМ ЖЕ.
     #
