@@ -96,12 +96,61 @@ def _files(value):
 # Каждый — (params: dict) -> JSON-совместимый объект. Ни один не знает про
 # tornado, поэтому все проверяются вызовом напрямую (см. _selftest).
 
+def _line_summary(key, bodies, archived):
+    """Краткие сведения о линии — то, по чему интерфейс фильтрует список.
+
+    Собирается из конфига (дёшево) плюс разбор файла дага ради тегов и
+    расписания. Полную спецификацию (структуры, сопоставление) отдаёт /line —
+    её тянуть на весь список незачем.
+    """
+    line, dbm, dbs = B.split_key(key)
+    body = bodies.get(key) or {}
+    group_id, group_path = B.group_dag_of(key)
+    table_master = body.get("tableNameMaster", line)
+    if group_path:
+        dag_path, own_dag = group_path, None
+    else:
+        dag_path, _dag_id, _arch = B._resolve_dag_path(line, table_master, dbm, dbs)
+        own_dag = _rel(dag_path)
+    tags, schedule = [], None
+    try:
+        sched = B._parse_dag_file(dag_path)
+        tags = sched.get("tags") or []
+        schedule = {"kind": sched.get("schedule_kind"),
+                    "minutes": sched.get("schedule_minutes"),
+                    "cron": sched.get("schedule_cron"),
+                    "retry_mode": sched.get("retry_mode")}
+    except Exception:                       # дага нет / написан руками
+        pass
+    return {
+        "key": key, "line": line,
+        "db_master": dbm, "db_slave": dbs,
+        "direction": f"{dbm}→{dbs}",
+        "table_master": table_master,
+        "table_slave": body.get("tableNameSlave", ""),
+        "mode": body.get("mode", "iud"),
+        "group_dag": group_id or None,
+        "own_dag": own_dag,
+        "archived": key in archived,
+        "disabled": bool(body.get("disabled")),
+        "skip_audit": bool(body.get("skipAudit")),
+        "needs_trigger": T.needs_trigger(body.get("mode", "iud")),
+        "tags": tags,
+        "schedule": schedule,
+    }
+
+
 def r_lines(params):
-    """Линии сложного ETL: в работе и в архиве."""
-    active = B.list_active_lines()
-    archived = B.list_archived_lines()
-    return {"active": active, "archived": archived,
-            "all": B.existing_lines()}
+    """Все линии сложного ETL со сведениями для фильтров списка."""
+    bodies = B._all_config_bodies()
+    archived = set(B.list_archived_lines())
+    lines = [_line_summary(k, bodies, archived) for k in B.existing_lines()]
+    return {
+        "lines": lines,
+        "directions": sorted({l["direction"] for l in lines}),
+        "modes": sorted({l["mode"] for l in lines}),
+        "tags": sorted({t for l in lines for t in l["tags"]}),
+    }
 
 
 def _rel(path):
@@ -225,7 +274,26 @@ def r_shared_files(params):
 def r_delete_targets(params):
     """Что именно удалит удаление линии — для подтверждения."""
     (key,) = _need(params, "key")
-    return {"targets": B.line_delete_targets(key)}
+    return {"targets": [_rel(p) for p in B.line_delete_targets(key)]}
+
+
+def r_set_flag(params):
+    """Включить / отключить линию и признак «не аудировать».
+
+    Отдельно от архива: архив прячет ДАГ (файл уезжает в dags/_archived), а
+    disabled — флаг в конфиге, который читает сам даг в рантайме. Для линии в
+    составном даге доступен только флаг: файл там общий на несколько линий, и
+    прятать его нельзя.
+    """
+    key, name = _need(params, "key", "flag")
+    if name not in ("disabled", "skipAudit"):
+        raise BadRequest(f"неизвестный флаг {name!r}: disabled или skipAudit")
+    value = bool(params.get("value"))
+    if name == "skipAudit":
+        B._set_skip_audit(key, value)
+    else:
+        B._set_line_flag(key, name, value)
+    return {"key": key, "flag": name, "value": value}
 
 
 def r_archive(params):
@@ -311,6 +379,7 @@ POST_ROUTES = {
     "write": r_write,
     "shared-files": r_shared_files,
     "delete-targets": r_delete_targets,
+    "set-flag": r_set_flag,
     "archive": r_archive,
     "restore": r_restore,
     "delete": r_delete,
@@ -434,8 +503,18 @@ def _selftest():
 
     # 5) чтение репозитория работает без БД — самые частые маршруты интерфейса
     code, body = dispatch("GET", "lines", {})
-    assert code == 200 and isinstance(body["result"]["active"], list), body
-    assert body["result"]["all"], "не нашлось ни одной линии в config.d"
+    assert code == 200, body
+    lines = body["result"]["lines"]
+    assert lines, "не нашлось ни одной линии в config.d"
+    one = {l["key"]: l for l in lines}["iprkdeptOrclPost"]
+    assert one["direction"] == "Orcl→Post", one
+    assert one["mode"] == "iud" and one["needs_trigger"] is True, one
+    assert one["own_dag"] == "dags/IprkdeptOrclPost.py", one
+    # у линии составного дага заполнен group_dag, а своего дага нет
+    grouped = {l["key"]: l for l in lines}["EXPMED23OrclPost"]
+    assert grouped["group_dag"] == "MocheckOrclPost" and not grouped["own_dag"], grouped
+    # справочники для фильтров непустые — без них фильтровать нечем
+    assert body["result"]["directions"] and body["result"]["modes"], body["result"]
 
     code, body = dispatch("GET", "tags", {})
     assert code == 200 and isinstance(body["result"]["tags"], list), body
@@ -487,6 +566,25 @@ def _selftest():
                                   ("GET", "triggers/targets", {})):
         _code, out = dispatch(method, route, params)
         json.dumps(out, ensure_ascii=False, default=str)
+
+    # 9) ФРОНТЕНД И API ГОВОРЯТ ОБ ОДНОМ И ТОМ ЖЕ.
+    #
+    # Интерфейс собирается отдельно и на другой машине, поэтому опечатка в
+    # имени маршрута там не ловится ничем: сборка проходит, а в браузере
+    # кнопка молча отвечает 404. Здесь мы вычитываем имена прямо из клиента
+    # (tools/webui/src/api.js) и требуем, чтобы каждый существовал.
+    client = os.path.join(ROOT, "tools", "webui", "src", "api.js")
+    if os.path.exists(client):
+        import re
+        with open(client, encoding="utf-8") as fp:
+            text = fp.read()
+        used = re.findall(r"call\(\s*'(GET|POST)'\s*,\s*'([^']+)'", text)
+        assert used, "в клиенте не нашлось ни одного вызова call(...) — проверка ослепла"
+        for method, route in used:
+            table = GET_ROUTES if method == "GET" else POST_ROUTES
+            assert route in table, (
+                f"интерфейс зовёт {method} /api/{route}, а такого маршрута нет. "
+                f"Есть: {', '.join(sorted(table))}")
 
     print("dagbuilder_api selftest OK")
 

@@ -1,12 +1,15 @@
 import { useState } from 'react'
-import { Col, ConfigProvider, Layout, Row, Space, Tag, Typography } from 'antd'
+import { Col, ConfigProvider, Layout, Row, Space, Tabs, Tag, Typography } from 'antd'
 import ruRU from 'antd/locale/ru_RU'
 
 import LinesPanel from './LinesPanel'
 import LineForm from './LineForm'
 import GitBar from './GitBar'
+import TriggersPage from './TriggersPage'
+import NewLinePage from './NewLinePage'
 
-// Оболочка. Слева список линий, справа то, что с выбранной делают.
+// Оболочка. Разделы соответствуют вкладкам прежнего конструктора: сложный ETL,
+// триггеры, создание с нуля.
 //
 // Консоли внизу здесь нет и не будет: каждое действие показывает свой
 // результат и свою ошибку рядом с собой (см. useAction/ActionError). Общий
@@ -14,6 +17,8 @@ import GitBar from './GitBar'
 export default function App() {
   const [selected, setSelected] = useState(null)
   const [reloadToken, setReloadToken] = useState(0)
+  const [tab, setTab] = useState('lines')
+  const bump = () => setReloadToken((n) => n + 1)
 
   return (
     <ConfigProvider locale={ruRU}>
@@ -29,21 +34,48 @@ export default function App() {
 
         <Layout.Content style={{ padding: 16 }}>
           <GitBar reloadToken={reloadToken} />
-          <Row gutter={16} style={{ marginTop: 16 }}>
-            <Col xs={24} md={8} lg={6}>
-              <LinesPanel
-                selected={selected}
-                onSelect={setSelected}
-                reloadToken={reloadToken}
-              />
-            </Col>
-            <Col xs={24} md={16} lg={18}>
-              <LineForm
-                lineKey={selected}
-                onChanged={() => setReloadToken((n) => n + 1)}
-              />
-            </Col>
-          </Row>
+
+          <Tabs
+            activeKey={tab}
+            onChange={setTab}
+            style={{ marginTop: 8 }}
+            items={[
+              {
+                key: 'lines',
+                label: 'Линии',
+                children: (
+                  <Row gutter={16}>
+                    <Col xs={24} md={8} lg={6}>
+                      <LinesPanel
+                        selected={selected}
+                        onSelect={setSelected}
+                        reloadToken={reloadToken}
+                      />
+                    </Col>
+                    <Col xs={24} md={16} lg={18}>
+                      <LineForm lineKey={selected} onChanged={bump} />
+                    </Col>
+                  </Row>
+                ),
+              },
+              {
+                key: 'new',
+                label: 'Новая линия',
+                children: (
+                  <NewLinePage
+                    onCreated={(spec) => {
+                      bump()
+                      if (spec?.line_name) {
+                        setSelected(`${spec.line_name}${spec.db_master}${spec.db_slave}`)
+                        setTab('lines')
+                      }
+                    }}
+                  />
+                ),
+              },
+              { key: 'triggers', label: 'Триггеры', children: <TriggersPage /> },
+            ]}
+          />
         </Layout.Content>
       </Layout>
     </ConfigProvider>

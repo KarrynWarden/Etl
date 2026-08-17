@@ -17,6 +17,10 @@ export default function FilesPreview({
   busy,
   error,
   written,
+  onPush,
+  pushing,
+  pushError,
+  pushed,
 }) {
   const unchangedSet = new Set(unchanged || [])
   const changed = (files || []).filter((f) => !unchangedSet.has(f.path))
@@ -33,15 +37,22 @@ export default function FilesPreview({
         </Space>
       }
       extra={
-        <Button
-          type="primary"
-          danger={changed.length > 0}
-          disabled={!changed.length}
-          loading={busy}
-          onClick={onWrite}
-        >
-          Записать на диск
-        </Button>
+        <Space>
+          <Button
+            type="primary"
+            danger={changed.length > 0}
+            disabled={!changed.length}
+            loading={busy}
+            onClick={onWrite}
+          >
+            Записать на диск
+          </Button>
+          {onPush && (
+            <Button disabled={!written} loading={pushing} onClick={onPush}>
+              Записать и запушить
+            </Button>
+          )}
+        </Space>
       }
     >
       {!changed.length && (
@@ -78,6 +89,16 @@ export default function FilesPreview({
       />
 
       <ActionError error={error} />
+      <ActionError error={pushError} />
+      {pushed && (
+        <Alert
+          style={{ marginTop: 12 }}
+          type="success"
+          showIcon
+          message="Запушено в git"
+          description={String(pushed.done)}
+        />
+      )}
 
       {written && (
         <Alert
