@@ -29,9 +29,25 @@ fi
 echo "== fetch $SERVER/$BRANCH =="
 git fetch "$SERVER" "$BRANCH"
 
+# Конфликт НЕ откатываем — в этом весь смысл dev-pull.sh: он для того и есть,
+# чтобы конфликт разрешить. Раньше здесь стоял `git rebase --abort`, и скрипт
+# просил «разреши вручную», выбросив ровно то состояние, в котором это можно
+# сделать: следом `git rebase --continue` отвечал «Нет перемещения в процессе»,
+# а `git add` — «спецификатор пути не соответствует ни одному файлу».
 if ! git rebase "$SERVER/$BRANCH"; then
-    git rebase --abort || true
-    echo "!! Конфликт с $SERVER/$BRANCH — правились одни и те же файлы. Разреши вручную."
+    echo
+    echo "!! Конфликт с $SERVER/$BRANCH — правились одни и те же файлы."
+    echo "   Перемещение ОСТАВЛЕНО в процессе, разбирай прямо сейчас:"
+    echo
+    git --no-pager diff --name-only --diff-filter=U | sed 's/^/     /'
+    echo
+    echo "   Для каждого файла из списка (стороны в rebase ПЕРЕВЁРНУТЫ):"
+    echo "     git show :2:<файл>   # версия с сервера ($SERVER/$BRANCH)"
+    echo "     git show :3:<файл>   # твой коммит, который накладывается"
+    echo "   Правишь файл, убираешь маркеры, затем:"
+    echo "     git add <файл> && git rebase --continue"
+    echo
+    echo "   Передумал — вернуть всё как было: git rebase --abort"
     exit 1
 fi
 

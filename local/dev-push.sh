@@ -221,9 +221,17 @@ fi
 
 echo "== синхронизация с $SERVER/$BRANCH перед пушем =="
 git fetch "$SERVER" "$BRANCH"
+# Здесь откат УМЕСТЕН, в отличие от dev-pull.sh: push — это «разослать готовое»,
+# и бросать человека в середине перемещения посреди рассылки не надо. Разбор
+# конфликта — работа dev-pull.sh, он оставляет состояние нетронутым.
 if ! git rebase "$SERVER/$BRANCH"; then
+    files=$(git --no-pager diff --name-only --diff-filter=U)
     git rebase --abort || true
-    echo "!! Конфликт с $SERVER/$BRANCH. Сначала: bash local/dev-pull.sh и разреши."
+    echo "!! Конфликт с $SERVER/$BRANCH — правились одни и те же файлы:"
+    sed 's/^/     /' <<<"$files"
+    echo "   Перемещение откатил, ветка как была."
+    echo "   Разобрать: bash local/dev-pull.sh (он оставит конфликт и подскажет команды),"
+    echo "   потом снова bash local/dev-push.sh"
     exit 1
 fi
 
