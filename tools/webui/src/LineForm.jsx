@@ -25,7 +25,7 @@ import { useAction } from './useAction'
 import ActionError from './ActionError'
 import ComboBox from './ComboBox'
 import FilesPreview from './FilesPreview'
-import MappingTable from './MappingTable'
+import MappingEditor from './MappingEditor'
 import LineActions from './LineActions'
 
 const MODES = [
@@ -80,6 +80,7 @@ export default function LineForm({ lineKey, onChanged }) {
     () => Boolean(spec && original && JSON.stringify(spec) !== original),
     [spec, original],
   )
+  const saved = useMemo(() => (original ? JSON.parse(original) : {}), [original])
 
   const masterNames = useMemo(() => (spec?.master_cols || []).map(colName), [spec])
   const slaveNames = useMemo(() => (spec?.slave_cols || []).map(colName), [spec])
@@ -268,8 +269,24 @@ export default function LineForm({ lineKey, onChanged }) {
         </Form.Item>
       ) : (
         <>
-          <Form.Item label="dag_id">
-            <Input value={spec.dag_id || ''} onChange={(e) => patch({ dag_id: e.target.value })} />
+          <Form.Item
+            label="dag_id"
+            help="это идентификатор задачи в Airflow вместе со всей её историей: смена имени заводит НОВЫЙ даг, а прежний остаётся в списке без расписания"
+          >
+            {/* Пока имя не трогали, пишем в тот же файл, что и лежит на диске
+                (dag_file_rel): имя файла и dag_id совпадают не у всех дагов.
+                Как только имя поменяли — привязку снимаем, иначе новый даг
+                уехал бы в старый файл. */}
+            <Input
+              value={spec.dag_id || ''}
+              onChange={(e) =>
+                patch(
+                  e.target.value === saved.dag_id
+                    ? { dag_id: e.target.value, dag_file_rel: saved.dag_file_rel }
+                    : { dag_id: e.target.value, dag_file_rel: '' },
+                )
+              }
+            />
           </Form.Item>
           <Row gutter={16}>
             <Col span={8}>
@@ -402,7 +419,7 @@ export default function LineForm({ lineKey, onChanged }) {
             {
               key: 'map',
               label: `Колонки (${(spec.pairs || []).length})`,
-              children: <MappingTable spec={spec} />,
+              children: <MappingEditor spec={spec} onChange={patch} />,
             },
             { key: 'dag', label: 'Даг и расписание', children: dagTab },
             { key: 'sql', label: 'SQL', children: sqlTab },
@@ -420,13 +437,14 @@ export default function LineForm({ lineKey, onChanged }) {
         <FilesPreview
           files={preview.result.files}
           unchanged={preview.result.unchanged}
+          created={preview.result.created}
           busy={write.loading}
           error={write.error}
           written={write.result}
-          onWrite={() =>
+          onWrite={(chosen) =>
             write
               .run({
-                files: preview.result.files.map((f) => [f.path, f.content]),
+                files: chosen.map((f) => [f.path, f.content]),
                 overwrite: true,
               })
               .then((res) => {

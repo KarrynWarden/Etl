@@ -381,9 +381,26 @@ def build_schedule_expr(spec):
 
 
 def build_dag_py(dag_id, line_name, table_master, db_master, db_slave,
-                 tags, schedule_expr="dt.timedelta(minutes=1)", retry_mode="frequent"):
+                 tags, schedule_expr="dt.timedelta(minutes=1)", retry_mode="frequent",
+                 note=None, task_id=None):
+    """Свой даг линии.
+
+    note — свободный текст пользователя (зачем эта линия, чем особенна). Он
+    попадает в конец docstring после маркера и ПЕРЕЖИВАЕТ перезапись, как у
+    составного дага. Без этого правка любого поля линии затирала рукописный
+    docstring шаблонным однострочником: у MedreeprdispOrclPost так терялось
+    двадцать строк описания двухчастного процесса — и терялось молча, потому
+    что даг после этого работает точно так же.
+
+    task_id — имя задачи в даге. У существующего дага берётся ИЗ ФАЙЛА, потому
+    что вся история запусков в Airflow висит именно на нём: даги писались
+    руками и звали задачу do_etl_medree_prdisp, а формула даёт
+    do_etl_MEDREE_PRDISP (имя линии для Oracle-ведущей — ВЕРХНИМ регистром).
+    Перезапись с новым именем — это НОВАЯ задача: прежняя остаётся в базе
+    Airflow отдельной строкой, её логи и статусы к новой не относятся."""
     tags_repr = ", ".join(repr(t) for t in tags)
-    return f'''"""DAG: {db_master}->{db_slave} для {line_name}."""
+    task_id = task_id or f"do_etl_{line_name}"
+    return f'''"""DAG: {db_master}->{db_slave} для {line_name}.{_note_block(note)}"""
 import datetime as dt
 
 from airflow.models import DAG
@@ -400,7 +417,7 @@ with DAG(
 ) as dag:
     configureLogger()
     task = makeEtlOperator(
-        "do_etl_{line_name}",
+        "{task_id}",
         tableNameMaster="{table_master}", dbMaster="{db_master}", dbSlave="{db_slave}",
         tableNameEtlJobs="{line_name}",
         retryMode="{retry_mode}",
@@ -432,6 +449,14 @@ GROUP_NOTE_MARK = "─── заметка (правится руками, ко
 # линия вообще без дага, и правка такой линии молча заводила ей второй,
 # собственный даг — то есть тот же перенос начинал идти дважды.
 GROUP_DAG_KEY = "groupDag"
+
+# Ключи конфига, за которые отвечают ПОЛЯ ФОРМЫ: их build_all собирает сам.
+# Всё остальное из конфига проходит насквозь через extra — см. load_line.
+_FORM_CONFIG_KEYS = frozenset((
+    "_doc", "tableNameMaster", "tableNameSlave", "structureMaster",
+    "structureSlave", "periodColumn", "slavePeriodColumn", "mode",
+    "selectSql", "periodsSql", GROUP_DAG_KEY,
+))
 
 
 def _note_block(note):
@@ -541,12 +566,37 @@ def parse_group_dag(path):
 
 
 def _docstring_note(tree):
-    """Заметка пользователя из docstring составного дага ('' — её нет)."""
+    """Заметка пользователя из docstring СОСТАВНОГО дага ('' — её нет).
+
+    Строго по маркеру: в составном даге под шапкой лежит ещё и описание
+    формата, которое пишет сам конструктор, — принять его за пользовательский
+    текст значило бы дублировать его при каждой перезаписи."""
     import ast
     doc = ast.get_docstring(tree) or ""
     if GROUP_NOTE_MARK not in doc:
         return ""
     return doc.split(GROUP_NOTE_MARK, 1)[1].strip()
+
+
+def _own_dag_note(tree):
+    """То же для дага ОДНОЙ линии.
+
+    У такого дага конструктор пишет ровно одну строку docstring — шапку вида
+    «DAG: Orcl->Post для X.». Значит всё, что есть кроме неё, написано руками
+    и обязано пережить перезапись. Маркер тоже понимаем: даги, созданные уже
+    с ним, разбираются так же, как составные.
+
+    Без этого правка любого поля линии подменяла рукописное описание шаблонным
+    однострочником — молча, потому что даг после такой замены работает точно
+    так же. У MedreeprdispOrclPost так терялось двадцать строк про двухчастный
+    процесс: где живёт часть 1, почему большинство запусков — пропуски и
+    откуда берётся isokaudit = 4."""
+    import ast
+    doc = ast.get_docstring(tree) or ""
+    if GROUP_NOTE_MARK in doc:
+        return doc.split(GROUP_NOTE_MARK, 1)[1].strip()
+    rest = doc.split("\n", 1)[1] if "\n" in doc else ""
+    return rest.strip()
 
 
 def list_group_dags(include_foreign=True):
@@ -692,11 +742,22 @@ def build_all(spec):
     out_files = []
     group_id = (spec.get("group_dag_id") or "").strip()
 
+    # Ключи-умолчания (tableNameMaster = имя линии, mode = "iud") в конфигах
+    # написаны не везде: рантайм подставляет их сам (do_etl setdefault), и
+    # корпус ровно пополам — 17 конфигов с tableNameMaster, 12 без. Значит
+    # решать, писать ли ключ, должен САМ конфиг: был — останется, не было — не
+    # появится. Иначе предпросмотр линии, в которой ничего не трогали, показывал
+    # правку конфига, и человеку приходилось гадать, что именно он задел.
+    # У новой линии прошлого нет — там ключи пишутся явно, как и раньше.
+    had = spec.get("config_keys")
+    explicit = (lambda name: True) if had is None else (lambda name: name in had)
+
     fragment = {key: {}}
     body = fragment[key]
     if spec.get("doc"):
         body["_doc"] = spec["doc"]
-    body["tableNameMaster"] = tm
+    if tm != line or explicit("tableNameMaster"):
+        body["tableNameMaster"] = tm
     body["tableNameSlave"] = ts
     body["structureMaster"] = master_struct_rel
     body["structureSlave"] = slave_struct_rel
@@ -707,7 +768,9 @@ def build_all(spec):
         body["periodColumn"] = spec["period_column"]
     if spec.get("slave_period_column"):
         body["slavePeriodColumn"] = spec["slave_period_column"]
-    body["mode"] = spec.get("mode", "iud")
+    mode = spec.get("mode") or "iud"
+    if mode != "iud" or explicit("mode"):
+        body["mode"] = mode
     # Принадлежность линии составному дагу — в её же конфиге: по нему
     # конструктор потом узнаёт, что своего дага у линии нет (см. group_dag_of).
     if group_id:
@@ -724,8 +787,22 @@ def build_all(spec):
     # первой строки общего файла.
     sql_text = spec.get("select_sql_text") or ""
     if sql_text.strip():
-        sql_name = re.sub(r"[^A-Za-z0-9_]", "", spec.get("select_sql_name") or line) or line
-        sql_rel = f"queries/customQueries/{sql_name}.sql"
+        # ПУТЬ ФАЙЛА В РЕЖИМЕ ПРАВКИ БЕРЁТСЯ ИЗ ЛИНИИ, а не выводится из её
+        # имени — ровно как struct_master_rel/struct_slave_rel выше, и по той
+        # же причине: запрос бывает ОБЩИМ на несколько линий.
+        #
+        # У линий mocheck источник один — queries/customQueries/MOCHECK.sql, и
+        # правка запроса обязана менять его всем (это описано в README как
+        # свойство схемы). Имя же, выведенное из линии, дало бы для EXPMED23
+        # файл queries/customQueries/EXPMED23.sql: предпросмотр предлагал
+        # создать ЧАСТНУЮ КОПИЮ общего запроса и переставить конфиг на неё.
+        # Линия после такой записи переставала следовать правкам MOCHECK.sql,
+        # причём молча — расхождение всплыло бы только на данных.
+        sql_rel = spec.get("select_sql_rel") or spec.get("select_sql")
+        if not sql_rel:
+            sql_name = re.sub(r"[^A-Za-z0-9_]", "",
+                              spec.get("select_sql_name") or line) or line
+            sql_rel = f"queries/customQueries/{sql_name}.sql"
         out_files.append((f"etlFolder/{sql_rel}", sql_text.rstrip() + "\n"))
         body["selectSql"] = sql_rel
 
@@ -734,14 +811,19 @@ def build_all(spec):
     # читают журнал/сравнивают срезы. Поэтому в других режимах ключ не пишется и
     # файл не создаётся, даже если текст в форме остался от предыдущего режима.
     periods_text = spec.get("periods_sql_text") or ""
-    if body["mode"] == "query_section":
+    if mode == "query_section":
         if not periods_text.strip():
             raise ValueError(
                 "Режим query_section: не заполнен «SQL периодов» — без него линии "
                 "неоткуда взять список групп для перезаливки.")
-        pname = re.sub(r"[^A-Za-z0-9_]", "",
-                       spec.get("periods_sql_name") or f"{line}_periods") or f"{line}_periods"
-        periods_rel = f"queries/customQueries/{pname}.sql"
+        # тот же принцип, что и с selectSql: путь существующей линии важнее
+        # имени, выведенного из её названия
+        periods_rel = spec.get("periods_sql_rel") or spec.get("periods_sql")
+        if not periods_rel:
+            pname = re.sub(r"[^A-Za-z0-9_]", "",
+                           spec.get("periods_sql_name") or f"{line}_periods") \
+                or f"{line}_periods"
+            periods_rel = f"queries/customQueries/{pname}.sql"
         out_files.append((f"etlFolder/{periods_rel}", periods_text.rstrip() + "\n"))
         body["periodsSql"] = periods_rel
 
@@ -761,21 +843,28 @@ def build_all(spec):
         # а не линии: у дага они одни на всех).
         dag_rel, dag_py = _group_dag_file(group_id, line, dbm, dbs, tags, spec)
     else:
-        dag_rel = f"dags/{dag_id}.py"
+        # Правим СУЩЕСТВУЮЩИЙ файл дага, если он известен: имя файла и dag_id
+        # внутри совпадают не всегда (dags/IpersonOrclPost.py объявляет
+        # dag_id="IpersonPostOrcl"), и вывод пути из dag_id создал бы ВТОРОЙ
+        # файл с тем же dag_id — Airflow на такую пару ругается и не берёт ни
+        # один из них. Смена dag_id в форме сбрасывает эту привязку (UI шлёт
+        # dag_file_rel только пока имя дага не трогали).
+        dag_rel = spec.get("dag_file_rel") or f"dags/{dag_id}.py"
         # Свой даг под именем СОСТАВНОГО затёр бы его вместе со всеми линиями,
         # которые в нём перечислены. Это не гипотеза: имя составного дага
         # подставляется в поле dag_id само, стоит открыть такую линию в правке.
-        exists = os.path.join(_dags_dir(), f"{dag_id}.py")
+        exists = os.path.join(ROOT, dag_rel)
         other = parse_group_dag(exists) if os.path.exists(exists) else None
         if other:
             raise ValueError(
-                f"dags/{dag_id}.py — составной даг ({len(other['lines'])} "
+                f"{dag_rel} — составной даг ({len(other['lines'])} "
                 f"линий: {', '.join(l for l, _m, _s in other['lines'])}). Своим "
                 f"дагом линии он стать не может — файл был бы затёрт. Либо "
                 f"выбери «В составной даг», либо задай другой dag_id.")
         dag_py = build_dag_py(dag_id, line, tm, dbm, dbs, tags,
                               build_schedule_expr(spec),
-                              spec.get("retry_mode", "frequent"))
+                              spec.get("retry_mode", "frequent"),
+                              spec.get("note"), spec.get("task_id"))
 
     out_files += [
         (f"etlFolder/{master_struct_rel}", _struct_json(m_out, dbm)),
@@ -989,13 +1078,32 @@ def _resolve_dag_path(line, table_master, dbm, dbs):
 
 
 def _parse_dag_file(path):
-    """Расписание / retryMode / теги из файла дага (best-effort)."""
+    """Расписание / retryMode / теги / заметка из файла дага (best-effort)."""
     res = {"schedule_kind": "interval", "schedule_minutes": 1, "schedule_cron": "",
-           "retry_mode": "frequent", "tags": []}
+           "retry_mode": "frequent", "tags": [], "note": "",
+           "dag_id": "", "task_id": ""}
     try:
         txt = _read_text(path)
     except OSError:
         return res
+    # dag_id берём ИЗ ФАЙЛА, а не из его имени. Они совпадают не всегда:
+    # dags/IpersonOrclPost.py объявляет dag_id="IpersonPostOrcl". Для Airflow
+    # dag_id — это идентификатор задачи со всей её историей запусков, и подмена
+    # его именем файла при перезаписи завела бы НОВЫЙ даг, а прежний остался бы
+    # висеть без расписания.
+    m = re.search(r"dag_id\s*=\s*['\"]([^'\"]+)['\"]", txt)
+    if m:
+        res["dag_id"] = m.group(1)
+    # Имя задачи — тоже из файла и по той же причине: на нём висит история
+    # запусков. Берём первое: у дага одной линии задача одна (составной даг
+    # разбирается отдельно, через LINES).
+    # Закомментированные куски в дагах есть (в ReqprepmoMocheckPostPost лежит
+    # старый вариант вызова), и принять имя задачи из комментария значило бы
+    # закрепить то, чего в даге нет.
+    live = "\n".join(l for l in txt.splitlines() if not l.lstrip().startswith("#"))
+    m = re.search(r"makeEtlOperator\(\s*['\"]([^'\"]+)['\"]", live)
+    if m:
+        res["task_id"] = m.group(1)
     m = re.search(r"retryMode\s*=\s*['\"](\w+)['\"]", txt)
     if m:
         res["retry_mode"] = m.group(1)
@@ -1011,6 +1119,13 @@ def _parse_dag_file(path):
         else:
             res["schedule_kind"] = "cron"
             res["schedule_cron"] = expr.strip().strip("'\"")
+    # Заметка пользователя из docstring — её надо вернуть в build_all, иначе
+    # пересборка линии затрёт рукописное описание шаблонной строкой.
+    try:
+        import ast
+        res["note"] = _own_dag_note(ast.parse(txt))
+    except Exception:
+        pass
     return res
 
 
@@ -1033,15 +1148,28 @@ def load_line(key):
         # формы «dag_id» — про СВОЙ даг линии. С именем составного там линия,
         # переключённая на «свой даг», записала бы свой даг поверх общего —
         # и вместе с ним потеряла бы все остальные линии этого дага.
-        dag_path, dag_id = group_path, ""
+        dag_path, dag_id, archived = group_path, "", False
     else:
-        dag_path, dag_id, _arch = _resolve_dag_path(line, table_master, dbm, dbs)
+        dag_path, dag_id, archived = _resolve_dag_path(line, table_master, dbm, dbs)
     sched = _parse_dag_file(dag_path)
+    # Файл дага и dag_id внутри него — два РАЗНЫХ факта, и оба надо сохранить:
+    # имя файла определяет, какой файл перезапишется, dag_id — какую задачу
+    # Airflow при этом продолжит вести. У архивных путь не закрепляем: правка
+    # архивной линии по-прежнему кладёт даг в dags/ (это и есть восстановление).
+    dag_file_rel, task_id = "", ""
+    if dag_id and os.path.exists(dag_path):
+        task_id = sched.get("task_id", "")
+        if not archived:
+            dag_id = sched.get("dag_id") or dag_id
+            dag_file_rel = os.path.relpath(dag_path, ROOT).replace(os.sep, "/")
 
-    extra = {k: body[k] for k in
-             ("filterClause", "filterClauseSlave", "conflictExtra",
-              "conflictWhere", "truncatePeriod", "auditExcludeFields", "skipAudit")
-             if k in body}
+    # extra — ВСЁ, что конфиг знает сверх полей формы, а не заранее известный
+    # список. Список молча терял ключи, которых в нём нет: у трёх отключённых
+    # линий стоит "disabled": true, и перезапись конфига (правка любого поля,
+    # хоть комментария) снимала флаг — линия включалась обратно сама, без
+    # единого слова в предпросмотре. Здесь любой ключ, который ставит не форма,
+    # переживает пересборку, включая те, что появятся позже.
+    extra = {k: v for k, v in body.items() if k not in _FORM_CONFIG_KEYS}
     select_sql = body.get("selectSql")
     select_sql_text = ""
     if select_sql:
@@ -1059,6 +1187,10 @@ def load_line(key):
 
     return {
         "key": key, "line_name": line, "dag_id": dag_id,
+        "dag_file_rel": dag_file_rel, "task_id": task_id,
+        # какие ключи конфиг РЕАЛЬНО содержит — чтобы пересборка не дописывала
+        # умолчания в конфиг, который прекрасно жил без них
+        "config_keys": sorted(body),
         "group_dag_id": group_id,
         "table_master": body.get("tableNameMaster", line),
         "table_slave": body.get("tableNameSlave", ""),
@@ -1074,6 +1206,7 @@ def load_line(key):
         "select_sql": select_sql, "select_sql_text": select_sql_text,
         "periods_sql": periods_sql, "periods_sql_text": periods_sql_text,
         "tags": sched["tags"], "retry_mode": sched["retry_mode"],
+        "note": sched.get("note", ""),
         "schedule_kind": sched["schedule_kind"],
         "schedule_minutes": sched["schedule_minutes"],
         "schedule_cron": sched["schedule_cron"],
@@ -1824,6 +1957,53 @@ def _selftest():
             assert _read_text(p) == "НОВОЕ"
         finally:
             ROOT = root_was
+
+    # ── ПЕРЕСБОРКА НЕ ПРИДУМЫВАЕТ ПРАВОК ─────────────────────────────────────
+    # Открыть линию и нажать «Предпросмотр», ничего не тронув, обязано давать
+    # «менять нечего». Каждая проверка ниже — про случай, где это ломалось, и
+    # ломалось молча: файл менялся, а понять, что именно ты задел, было нельзя.
+
+    # dag_id и task_id держат ИСТОРИЮ ЗАПУСКОВ Airflow и берутся из файла, а
+    # не выводятся из имени линии
+    dag_txt = build_dag_py("IpersonPostOrcl", "iperson", "iperson", "Post", "Orcl",
+                           ["PostOrcl"], task_id="do_etl_iperson")
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "IpersonOrclPost.py")   # имя файла ≠ dag_id, так бывает
+        with open(p, "w", encoding="utf-8") as fp:
+            fp.write(dag_txt)
+        got = _parse_dag_file(p)
+        assert got["dag_id"] == "IpersonPostOrcl", got
+        assert got["task_id"] == "do_etl_iperson", got
+        # закомментированный вызов не должен подменять живое имя задачи
+        with open(p, "a", encoding="utf-8") as fp:
+            fp.write('    #task = makeEtlOperator("do_etl_OLD")\n')
+        assert _parse_dag_file(p)["task_id"] == "do_etl_iperson"
+    # без подсказки имя задачи по-прежнему выводится из линии
+    assert '"do_etl_iperson"' in build_dag_py("X", "iperson", "iperson", "Post",
+                                              "Orcl", [])
+
+    # ключи-умолчания пишутся ровно так, как их держит сам конфиг
+    base = dict(spec, mode="iud", table_master="demo", line_name="demo")
+    lean = dict(build_all(dict(base, config_keys=["tableNameSlave"])))
+    body = json.loads(lean["etlFolder/config.d/demoPostOrcl.json"])["demoPostOrcl"]
+    assert "mode" not in body and "tableNameMaster" not in body, body
+    full = dict(build_all(dict(base, config_keys=["mode", "tableNameMaster"])))
+    body = json.loads(full["etlFolder/config.d/demoPostOrcl.json"])["demoPostOrcl"]
+    assert body["mode"] == "iud" and body["tableNameMaster"] == "demo", body
+    # у новой линии прошлого нет — там ключи пишутся явно
+    body = json.loads(dict(build_all(base))["etlFolder/config.d/demoPostOrcl.json"])
+    assert body["demoPostOrcl"]["mode"] == "iud"
+    # неумолчальное значение пишется всегда
+    body = json.loads(dict(build_all(dict(base, mode="section", config_keys=[])))
+                      ["etlFolder/config.d/demoPostOrcl.json"])
+    assert body["demoPostOrcl"]["mode"] == "section"
+
+    # чужие ключи конфига (disabled!) проходят насквозь: перезапись конфига
+    # отключённой линии не смеет её включить
+    body = json.loads(dict(build_all(dict(base, extra={"disabled": True})))
+                      ["etlFolder/config.d/demoPostOrcl.json"])
+    assert body["demoPostOrcl"]["disabled"] is True, body
+    assert "disabled" not in _FORM_CONFIG_KEYS
 
     # приведение имени к диалекту БД
     assert to_db_case("spmkb", "Orcl") == "SPMKB"

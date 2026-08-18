@@ -251,7 +251,12 @@ def r_preview(params):
         spec["pairs"] = _pairs(spec["pairs"])
     files = B.build_all(spec)
     return {"files": [{"path": rel, "content": content} for rel, content in files],
-            "unchanged": B.unchanged_files(files)}
+            "unchanged": B.unchanged_files(files),
+            # Отдельно от «изменится»: у отключённых линий (PODCHECK3,
+            # PODCHECK4) файла дага нет вовсе, и пересборка предлагает его
+            # СОЗДАТЬ. В общем списке это выглядело как правка существующего.
+            "created": [rel for rel, _c in files
+                        if not os.path.exists(os.path.join(B.ROOT, rel))]}
 
 
 def r_write(params):
@@ -410,7 +415,9 @@ def r_sp_preview(params):
     files, key = SP.build_sp_all(spec)
     return {"key": key,
             "files": [{"path": rel, "content": content} for rel, content in files],
-            "unchanged": B.unchanged_files(files)}
+            "unchanged": B.unchanged_files(files),
+            "created": [rel for rel, _c in files
+                        if not os.path.exists(os.path.join(B.ROOT, rel))]}
 
 
 def r_sp_set_disabled(params):
@@ -626,6 +633,22 @@ def _selftest():
     assert grouped["group_dag"] == "MocheckOrclPost" and not grouped["own_dag"], grouped
     # справочники для фильтров непустые — без них фильтровать нечем
     assert body["result"]["directions"] and body["result"]["modes"], body["result"]
+
+    # ПРОЧИТАТЬ И СОБРАТЬ ОБРАТНО = НИЧЕГО НЕ ПОМЕНЯТЬ. Проверяем на живых
+    # линиях, а не на выдуманной: ломалось это именно на особенностях реальных —
+    # общий MOCHECK.sql у EXPMED23 (пересборка предлагала завести его частную
+    # копию и переставить на неё конфиг) и конфиг без ключей-умолчаний у
+    # PLANOMS. Открыл линию, нажал «Предпросмотр», ничего не тронув — должно
+    # быть «менять нечего»; иначе непонятно, что из показанного твоё.
+    for key in ("EXPMED23OrclPost", "PLANOMSOrclPost", "iprkdeptOrclPost"):
+        code, body = dispatch("GET", "line", {"key": key})
+        assert code == 200, body
+        code, body = dispatch("POST", "preview", {"spec": body["result"]["spec"]})
+        assert code == 200, body
+        unchanged = set(body["result"]["unchanged"])
+        moved = [f["path"] for f in body["result"]["files"]
+                 if f["path"] not in unchanged and not f["path"].startswith("dags/")]
+        assert not moved, f"{key}: пересборка меняет нетронутое — {moved}"
 
     code, body = dispatch("GET", "tags", {})
     assert code == 200 and isinstance(body["result"]["tags"], list), body

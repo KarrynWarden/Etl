@@ -560,13 +560,14 @@ function SpForm({ entry, onChanged }) {
         <FilesPreview
           files={preview.result.files}
           unchanged={preview.result.unchanged}
+          created={preview.result.created}
           busy={write.loading}
           error={write.error}
           written={write.result}
-          onWrite={() =>
+          onWrite={(chosen) =>
             write
               .run({
-                files: preview.result.files.map((f) => [f.path, f.content]),
+                files: chosen.map((f) => [f.path, f.content]),
                 overwrite: true,
               })
               .then((r) => {
