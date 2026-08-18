@@ -36,7 +36,9 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
+import tempfile
 import traceback
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -239,6 +241,33 @@ def r_match(params):
     return {"suggestions": suggestions, "slave_unmatched": unmatched}
 
 
+def _preview_body(files):
+    """Тело ответа предпросмотра: собранное + то, что лежит на диске СЕЙЧАС.
+
+    Старое содержимое отдаётся вместе с новым, чтобы интерфейс мог показать
+    построчную разницу, а не два полотна текста рядом. Без неё «изменится» —
+    это приглашение вычитывать двести строк дага глазами в поисках правки,
+    которая на деле в одной строке."""
+    out = []
+    created = []
+    for rel, content in files:
+        path = os.path.join(B.ROOT, rel)
+        old = None
+        if os.path.exists(path):
+            try:
+                old = B._read_text(path)
+            except OSError:
+                old = None
+        else:
+            created.append(rel)
+        out.append({"path": rel, "content": content, "old": old})
+    return {"files": out, "unchanged": B.unchanged_files(files),
+            # Отдельно от «изменится»: у отключённых линий (PODCHECK3,
+            # PODCHECK4) файла дага нет вовсе, и пересборка предлагает его
+            # СОЗДАТЬ. В общем списке это выглядело как правка существующего.
+            "created": created}
+
+
 def r_preview(params):
     """Собрать файлы линии, НИЧЕГО не записывая.
 
@@ -250,13 +279,7 @@ def r_preview(params):
     if "pairs" in spec:
         spec["pairs"] = _pairs(spec["pairs"])
     files = B.build_all(spec)
-    return {"files": [{"path": rel, "content": content} for rel, content in files],
-            "unchanged": B.unchanged_files(files),
-            # Отдельно от «изменится»: у отключённых линий (PODCHECK3,
-            # PODCHECK4) файла дага нет вовсе, и пересборка предлагает его
-            # СОЗДАТЬ. В общем списке это выглядело как правка существующего.
-            "created": [rel for rel, _c in files
-                        if not os.path.exists(os.path.join(B.ROOT, rel))]}
+    return _preview_body(files)
 
 
 def r_write(params):
@@ -357,13 +380,22 @@ def r_trigger_build(params):
 
 
 def r_trigger_check(params):
-    """Что РЕАЛЬНО стоит в БД против того, что нужно линии."""
+    """Что РЕАЛЬНО стоит в БД против того, что нужно линии.
+
+    check_targets отдаёт ПАРУ (список по линиям, отчёт по каждой БД), а не
+    словарь. Раньше эта пара уезжала в ответ как есть: интерфейс искал в ней
+    строку по ключу линии, не находил и честно писал «не сверялось» — при
+    успешном 200 и непустом теле. Здесь она раскладывается по местам: results
+    ключуется линией, db_reports идёт отдельно (в нём живёт самое частое —
+    «подключиться не удалось», и без него сверка выглядит просто молчащей)."""
     (keys,) = _need(params, "keys")
     targets = [t for t in T.trigger_targets(include_disabled=True)
                if t["key"] in set(keys)]
     if not targets:
         raise BadRequest(f"среди линий не нашлось ни одной из {keys}")
-    return {"results": T.check_targets(targets)}
+    results, db_reports = T.check_targets(targets)
+    return {"results": {r["key"]: r for r in results},
+            "db_reports": db_reports}
 
 
 # ─────────── справочники и разовый перенос (tools/sp_builder.py) ───────────
@@ -413,11 +445,7 @@ def r_sp_preview(params):
         # None здесь законен, в отличие от сложного ETL
         spec["pairs"] = [(p[0], p[1]) for p in spec["pairs"]]
     files, key = SP.build_sp_all(spec)
-    return {"key": key,
-            "files": [{"path": rel, "content": content} for rel, content in files],
-            "unchanged": B.unchanged_files(files),
-            "created": [rel for rel, _c in files
-                        if not os.path.exists(os.path.join(B.ROOT, rel))]}
+    return dict(_preview_body(files), key=key)
 
 
 def r_sp_set_disabled(params):
@@ -569,9 +597,23 @@ def make_app():
 
     class SpaHandler(tornado.web.StaticFileHandler):
         """Статика фронтенда. Неизвестный путь отдаёт index.html — иначе
-        переход по ссылке внутри приложения давал бы 404."""
+        переход по ссылке внутри приложения давал бы 404.
+
+        Но подменять index.html'ом ФАЙЛ (что-нибудь.js, .css) нельзя. Именно на
+        этом получался пустой белый экран без единого сообщения: имя собранного
+        файла содержит хэш содержимого (index-05412b86.js) и меняется при каждой
+        пересборке. Стоит index.html и assets/ разъехаться — при переносе на
+        флешке, при недотянутом git pull — браузер просил старый .js, получал в
+        ответ HTML со статусом 200, не мог его исполнить и оставлял страницу
+        пустой. Ни ошибки, ни намёка: страница ведь «загрузилась».
+
+        Теперь такой запрос честно отдаёт 404, и в консоли браузера видно, чего
+        не хватает. А чтобы это ловилось ещё раньше, целостность dist
+        проверяется при старте — см. _dist_problems."""
         def validate_absolute_path(self, root, absolute_path):
             if not os.path.isfile(absolute_path):
+                if os.path.splitext(absolute_path)[1]:
+                    raise tornado.web.HTTPError(404)
                 absolute_path = os.path.join(root, "index.html")
             return super().validate_absolute_path(root, absolute_path)
 
@@ -582,15 +624,46 @@ def make_app():
     return tornado.web.Application(handlers, compress_response=True)
 
 
+def _dist_problems(dist=None):
+    """Чего не хватает собранному фронтенду. [] — всё на месте.
+
+    Проверка дешёвая и делается на старте, потому что расплата за пропуск
+    дорогая: страница открывается ПУСТОЙ, без ошибки и без намёка, и выглядит
+    это как «сервис не работает». Достаточно, чтобы index.html ссылался на
+    файл, которого рядом нет, — а имена файлов сборки содержат хэш и меняются
+    при каждой пересборке, так что разъехаться им проще простого."""
+    dist = dist or WEBUI_DIST
+    if not os.path.isdir(dist):
+        return [f"{os.path.relpath(dist, ROOT)} нет — фронтенд не собран "
+                f"(npm --prefix tools/webui run build)"]
+    index = os.path.join(dist, "index.html")
+    if not os.path.isfile(index):
+        return [f"{os.path.relpath(index, ROOT)} нет — сборка неполная"]
+    try:
+        with open(index, encoding="utf-8") as fp:
+            html = fp.read()
+    except OSError as err:
+        return [f"index.html не читается: {err}"]
+    out = []
+    for ref in re.findall(r'(?:src|href)\s*=\s*"([^"]+)"', html):
+        if ref.startswith(("http://", "https://", "//", "data:")):
+            continue
+        target = os.path.join(dist, ref.lstrip("./").split("?", 1)[0])
+        if not os.path.isfile(target):
+            out.append(f"index.html ссылается на {ref}, а файла нет — "
+                       f"страница откроется пустой. Пересоберите фронтенд "
+                       f"или дотяните tools/webui/dist целиком")
+    return out
+
+
 def serve(host, port):
     import tornado.ioloop
     app = make_app()
     app.listen(port, address=host)
     where = "весь мир" if host == "0.0.0.0" else host
     logger.info("конструктор слушает %s:%s (доступ: %s)", host, port, where)
-    if not os.path.isdir(WEBUI_DIST):
-        logger.warning("%s нет — фронтенд не собран, работает только /api/",
-                       os.path.relpath(WEBUI_DIST, ROOT))
+    for problem in _dist_problems():
+        logger.warning("ФРОНТЕНД: %s", problem)
     tornado.ioloop.IOLoop.current().start()
 
 
@@ -649,6 +722,26 @@ def _selftest():
         moved = [f["path"] for f in body["result"]["files"]
                  if f["path"] not in unchanged and not f["path"].startswith("dags/")]
         assert not moved, f"{key}: пересборка меняет нетронутое — {moved}"
+
+    # предпросмотр отдаёт и то, что лежит на диске: без старого текста
+    # интерфейсу нечего подсвечивать, и «изменится» снова превращается в
+    # полотно текста, которое надо вычитывать глазами
+    code, body = dispatch("GET", "line", {"key": "iprkdeptOrclPost"})
+    code, body = dispatch("POST", "preview", {"spec": body["result"]["spec"]})
+    assert code == 200, body
+    files = body["result"]["files"]
+    assert files and all("old" in f for f in files), files[:1]
+    on_disk = [f for f in files if f["path"] not in set(body["result"]["created"])]
+    assert on_disk and all(f["old"] for f in on_disk), "старое содержимое не прочиталось"
+
+    # сверка триггеров: ответ ключуется ЛИНИЕЙ. Раньше сюда как есть уезжала
+    # пара (список, отчёт), интерфейс искал в ней ключ линии, не находил и
+    # писал «не сверялось» — при успешном 200 и непустом теле
+    import inspect
+    src = inspect.getsource(r_trigger_check)
+    assert "results, db_reports = T.check_targets" in src, src
+    assert len(inspect.signature(T.check_targets).parameters) >= 1
+    assert "return results, db_reports" in inspect.getsource(T.check_targets)
 
     code, body = dispatch("GET", "tags", {})
     assert code == 200 and isinstance(body["result"]["tags"], list), body
@@ -762,6 +855,17 @@ def _selftest():
             assert route in table, (
                 f"интерфейс зовёт {method} /api/{route}, а такого маршрута нет. "
                 f"Есть: {', '.join(sorted(table))}")
+
+    # ── собранный фронтенд ───────────────────────────────────────────────────
+    # Проверка на разъехавшиеся index.html и assets/. Стоит им разойтись —
+    # страница открывается ПУСТОЙ, без ошибки, и виноватым назначается сервер.
+    assert not _dist_problems(), _dist_problems()
+    with tempfile.TemporaryDirectory() as tmp:
+        assert _dist_problems(tmp), "пустой каталог должен считаться проблемой"
+        with open(os.path.join(tmp, "index.html"), "w", encoding="utf-8") as fp:
+            fp.write('<script src="./assets/index-DEADBEEF.js"></script>')
+        problems = _dist_problems(tmp)
+        assert problems and "index-DEADBEEF.js" in problems[0], problems
 
     print("dagbuilder_api selftest OK")
 

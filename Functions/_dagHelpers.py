@@ -588,9 +588,17 @@ def iterAuditLines():
         if not isinstance(entry, dict):
             continue
 
-        # ⬇️ НОВОЕ: Пропускаем таблицы, для которых аудит временно отключен
+        # Пропускаем таблицы, для которых аудит временно отключен
         if entry.get("skipAudit"):
             logging.info("AuditDag: пропускаю ключ '%s' (skipAudit=true)", key)
+            continue
+        # Отключённую линию не аудируем ТОЖЕ: перенос по ней стоит, ведомая
+        # неизбежно отстаёт от ведущей, и аудит будет исправно находить
+        # расхождения — которых на самом деле нет, они и есть следствие
+        # отключения. Каждый такой прогон вдобавок читает оба среза целиком.
+        if entry.get("disabled"):
+            logging.info("AuditDag: пропускаю ключ '%s' (disabled=true — "
+                         "перенос отключён, сверять не с чем)", key)
             continue
         dbMaster, dbSlave = key[-8:-4], key[-4:]
         if dbMaster not in ("Post", "Orcl") or dbSlave not in ("Post", "Orcl"):

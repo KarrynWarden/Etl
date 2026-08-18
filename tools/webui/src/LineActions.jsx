@@ -25,6 +25,10 @@ export default function LineActions({ lineKey, spec, onChanged }) {
   const deleteTargets = useAction(api.deleteTargets)
   const remove = useAction(api.deleteLine)
 
+  // Оба флага живут в extra — это ключи конфига, которые форма не собирает
+  // сама, а проносит насквозь (см. load_line). Раньше disabled читался как
+  // spec.disabled и потому не читался НИКОГДА: переключатель всегда стоял в
+  // «включена», чем бы линия ни была на диске.
   const extra = spec.extra || {}
   const inGroup = Boolean(spec.group_dag_id)
   const after = (res) => {
@@ -73,7 +77,7 @@ export default function LineActions({ lineKey, spec, onChanged }) {
 
           <Space>
             <Switch
-              checked={Boolean(spec.disabled)}
+              checked={Boolean(extra.disabled)}
               loading={setFlag.loading}
               onChange={(v) => setFlag.run('disabled', v).then(after)}
             />

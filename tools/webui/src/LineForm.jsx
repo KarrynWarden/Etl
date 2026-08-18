@@ -114,6 +114,11 @@ export default function LineForm({ lineKey, onChanged }) {
   const patchExtra = (changes) =>
     setSpec((p) => ({ ...p, extra: { ...(p.extra || {}), ...changes } }))
   const extra = spec.extra || {}
+  // в конфиге это строка через запятую, в форме — список
+  const excludeList = String(extra.auditExcludeFields || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
 
   const settings = (
     <Form layout="vertical">
@@ -193,10 +198,23 @@ export default function LineForm({ lineKey, onChanged }) {
           </Form.Item>
         </Col>
         <Col span={8}>
-          <Form.Item label="Не сверять поля в аудите (auditExcludeFields)">
-            <Input
-              value={extra.auditExcludeFields || ''}
-              onChange={(e) => patchExtra({ auditExcludeFields: e.target.value || undefined })}
+          <Form.Item
+            label="Не сверять поля в аудите (auditExcludeFields)"
+            help="список — колонки ведущей; чего нет в списке, можно вписать"
+          >
+            {/* Колонки известны — незачем заставлять человека печатать их по
+                памяти и через запятую. В конфиг всё равно уходит канон:
+                строка через запятую (do_audit._asNameSet принимает и список,
+                но менять формат существующих конфигов не за чем). */}
+            <Select
+              mode="tags"
+              style={{ width: '100%' }}
+              placeholder="колонки, которые аудит не сверяет"
+              value={excludeList}
+              onChange={(v) =>
+                patchExtra({ auditExcludeFields: v.length ? v.join(', ') : undefined })
+              }
+              options={masterNames.map((n) => ({ value: n }))}
             />
           </Form.Item>
         </Col>
@@ -215,11 +233,22 @@ export default function LineForm({ lineKey, onChanged }) {
           </Form.Item>
         </Col>
         <Col span={12}>
-          <Form.Item label="Не аудировать линию (skipAudit)">
-            <Switch
-              checked={Boolean(extra.skipAudit)}
-              onChange={(v) => patchExtra({ skipAudit: v || undefined })}
-            />
+          {/* Переключателей skipAudit было ДВА — здесь и в «Действиях», и
+              работали они по-разному: там флаг ложился на диск сразу, здесь
+              ждал предпросмотра и записи. Два способа поменять одно и то же
+              значение неизбежно расходятся; оставлен один — тот, что рядом с
+              остальными «убрать из работы». */}
+          <Form.Item label="Аудит и участие в работе">
+            <Space direction="vertical" size={0}>
+              <Typography.Text>
+                {extra.skipAudit ? 'аудит выключен (skipAudit)' : 'аудит включён'}
+                {extra.disabled ? ', перенос отключён (disabled)' : ''}
+              </Typography.Text>
+              <Typography.Text type="secondary">
+                переключается на вкладке «Действия» — там флаг ложится на диск
+                сразу, без предпросмотра
+              </Typography.Text>
+            </Space>
           </Form.Item>
         </Col>
       </Row>
@@ -358,16 +387,33 @@ export default function LineForm({ lineKey, onChanged }) {
           style={{ fontFamily: 'monospace' }}
         />
       </Form.Item>
-      <Form.Item
-        label={`SQL периодов для query_section${spec.periods_sql ? ` — ${spec.periods_sql}` : ''}`}
-      >
-        <Input.TextArea
-          autoSize={{ minRows: 4, maxRows: 16 }}
-          value={spec.periods_sql_text || ''}
-          onChange={(e) => patch({ periods_sql_text: e.target.value })}
-          style={{ fontFamily: 'monospace' }}
-        />
-      </Form.Item>
+      {/* SQL периодов читает РОВНО ОДИН режим — query_section (do_etl.
+          _runQuerySection); остальные берут группы из журнала или сравнением
+          срезов. Пустое поле у линии, которая его не использует, выглядело как
+          недоделанная настройка: конструктор такой текст всё равно не запишет
+          и ключ periodsSql не создаст. */}
+      {spec.mode === 'query_section' ? (
+        <Form.Item
+          label={`SQL периодов${spec.periods_sql ? ` — ${spec.periods_sql}` : ''}`}
+          help="обязателен для query_section: отсюда берётся список групп для перезаливки"
+        >
+          <Input.TextArea
+            autoSize={{ minRows: 4, maxRows: 16 }}
+            value={spec.periods_sql_text || ''}
+            onChange={(e) => patch({ periods_sql_text: e.target.value })}
+            style={{ fontFamily: 'monospace' }}
+          />
+        </Form.Item>
+      ) : (
+        spec.periods_sql_text && (
+          <Alert
+            type="warning"
+            showIcon
+            message="У линии сохранён SQL периодов, но режим его не читает"
+            description={`Он нужен только режиму query_section, а здесь ${spec.mode}. Текст остаётся в ${spec.periods_sql || 'файле'}, но в конфиг ключ periodsSql не попадёт.`}
+          />
+        )
+      )}
     </Form>
   )
 

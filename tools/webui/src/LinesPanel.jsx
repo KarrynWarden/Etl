@@ -91,15 +91,20 @@ export default function LinesPanel({ selected, onSelect, reloadToken }) {
             options={(lines.result?.modes || []).map((m) => ({ value: m }))}
           />
         </Space.Compact>
+        {/* width обязателен: Select без значения сжимается по содержимому, а
+            содержимого нет — виден столбик в десяток пикселей, по которому не
+            догадаться, что это фильтр по тегам. */}
         <Select
           mode="multiple"
           allowClear
+          style={{ width: '100%' }}
           placeholder="теги дага"
           value={tags}
           onChange={setTags}
           options={(lines.result?.tags || []).map((t) => ({ value: t }))}
         />
         <Select
+          style={{ width: '100%' }}
           value={archive}
           onChange={setArchive}
           options={Object.entries(ARCHIVE).map(([value, label]) => ({ value, label }))}

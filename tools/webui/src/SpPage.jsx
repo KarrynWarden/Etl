@@ -45,10 +45,18 @@ const DBS = [
   { value: 'Post', label: 'PostgreSQL' },
 ]
 
+const WORK = { any: 'Все', on: 'В работе', off: 'Отключённые' }
+
 export default function SpPage() {
   const [kind, setKind] = useState('regular')
-  const [selected, setSelected] = useState(null)
+  // Храним КЛЮЧ, а не сам объект линии. Объект после перезагрузки списка
+  // становится копией из прошлого ответа, и форма продолжает показывать
+  // прежнее состояние: выключаешь линию — в списке она краснеет, а
+  // переключатель рядом стоит как стоял, потому что смотрит в устаревшую
+  // копию. По ключу состояние всегда берётся из свежего списка.
+  const [selectedKey, setSelectedKey] = useState(null)
   const [filter, setFilter] = useState('')
+  const [work, setWork] = useState('any')
 
   const lines = useAction(api.spLines)
 
@@ -60,10 +68,18 @@ export default function SpPage() {
   const shown = useMemo(() => {
     const all = lines.result?.lines || []
     const needle = filter.trim().toLowerCase()
-    return all.filter(
-      (l) => l.kind === kind && (!needle || l.key.toLowerCase().includes(needle)),
-    )
-  }, [lines.result, kind, filter])
+    return all.filter((l) => {
+      if (l.kind !== kind) return false
+      if (work === 'on' && l.disabled) return false
+      if (work === 'off' && !l.disabled) return false
+      return !needle || l.key.toLowerCase().includes(needle)
+    })
+  }, [lines.result, kind, filter, work])
+
+  const selected = useMemo(
+    () => (lines.result?.lines || []).find((l) => l.key === selectedKey && l.kind === kind) || null,
+    [lines.result, selectedKey, kind],
+  )
 
   return (
     <Row gutter={16}>
@@ -82,7 +98,7 @@ export default function SpPage() {
             value={kind}
             onChange={(v) => {
               setKind(v)
-              setSelected(null)
+              setSelectedKey(null)
             }}
             options={Object.entries(KINDS).map(([value, label]) => ({ value, label }))}
           />
@@ -92,6 +108,12 @@ export default function SpPage() {
             placeholder="фильтр по имени"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
+          />
+          <Select
+            style={{ width: '100%', marginBottom: 8 }}
+            value={work}
+            onChange={setWork}
+            options={Object.entries(WORK).map(([value, label]) => ({ value, label }))}
           />
           <Typography.Text type="secondary">
             показано {shown.length} из {(lines.result?.lines || []).filter((l) => l.kind === kind).length}
@@ -103,7 +125,7 @@ export default function SpPage() {
             {(lines.loading && !lines.result ? [] : shown).map((l) => (
               <div
                 key={l.key}
-                onClick={() => setSelected(l)}
+                onClick={() => setSelectedKey(l.key)}
                 style={{
                   cursor: 'pointer',
                   padding: '6px 8px',
@@ -146,6 +168,8 @@ function SpForm({ entry, onChanged }) {
   const delTargets = useAction(api.spDeleteTargets)
   const remove = useAction(api.spDelete)
   const auditTrigger = useAction(api.spAuditTrigger)
+  const snapMaster = useAction(api.snapStructure)
+  const snapSlave = useAction(api.snapStructure)
 
   useEffect(() => {
     if (!entry) return
@@ -189,9 +213,28 @@ function SpForm({ entry, onChanged }) {
   if (!spec) return null
 
   const patch = (c) => setSpec((p) => ({ ...p, ...c }))
-  const slaveNames = (spec.slave_cols || []).map((c) =>
-    typeof c === 'string' ? c : c?.column_name || c?.COLUMN_NAME || '',
-  )
+  const colName = (c) =>
+    typeof c === 'string' ? c : c?.column_name || c?.COLUMN_NAME || ''
+  const slaveNames = (spec.slave_cols || []).map(colName)
+
+  // Перевод линии из «вся таблица» в явный список колонок. Ведомую снимаем
+  // тоже: в режиме «вся таблица» её колонки известны из Add.sql, но их порядок
+  // и есть то, на что молча полагался SELECT *, — сверить с БД надёжнее.
+  const convertFromAll = async () => {
+    const m = await snapMaster.run({ db: spec.db_master, table: spec.master_table })
+    if (!m) return
+    const s = await snapSlave.run({ db: spec.db_slave, table: spec.slave_table })
+    if (!s) return
+    const fresh = s.columns.map(colName)
+    const known = (spec.pairs || []).map(([, sl]) => sl)
+    patch({
+      src_mode: 'table',
+      slave_cols: s.columns,
+      // Пары строим по ПОЗИЦИИ — ровно так их и понимал прежний режим. Если
+      // ведомая уже была описана (Add.sql), её порядок и берём за основу.
+      pairs: m.columns.map((c, i) => [colName(c), known[i] || fresh[i] || null]),
+    })
+  }
 
   const settings = (
     <Form layout="vertical">
@@ -252,24 +295,69 @@ function SpForm({ entry, onChanged }) {
           <Form.Item
             label="Источник ведущей"
             help={
-              spec.src_mode === 'all'
-                ? 'своего Select.sql нет — рантайм сам берёт SELECT * FROM ведущей'
-                : spec.src_mode === 'table'
-                  ? 'Select.sql собирается из сопоставленных колонок'
-                  : 'Select.sql — ваш запрос, сохраняется как есть'
+              spec.src_mode === 'custom'
+                ? 'Select.sql — ваш запрос, сохраняется как есть'
+                : 'Select.sql собирается из сопоставленных колонок'
             }
           >
+            {/* «Вся таблица» (SELECT * без файла Select.sql) из выбора убран.
+                Смысл у него был, пока конфиг и SQL правились руками: не
+                перечислять колонки — экономия. Теперь колонки снимаются
+                кнопкой, зато явный список ловит расхождение структур ДО
+                переноса, а SELECT * ломается молча, стоит кому-нибудь добавить
+                колонку в ведущую. Линии, оставшиеся в этом режиме, читаются
+                по-прежнему — их предлагается перевести, см. ниже. */}
             <Radio.Group
               value={spec.src_mode}
               onChange={(e) => patch({ src_mode: e.target.value })}
             >
-              <Radio.Button value="all">вся таблица</Radio.Button>
-              <Radio.Button value="table">выбранные колонки</Radio.Button>
-              <Radio.Button value="custom">своё SELECT</Radio.Button>
+              {spec.src_mode === 'all' && (
+                <Radio.Button value="all" disabled>
+                  вся таблица (устарел)
+                </Radio.Button>
+              )}
+              <Radio.Button value="table" disabled={spec.src_mode === 'all'}>
+                выбранные колонки
+              </Radio.Button>
+              <Radio.Button value="custom" disabled={spec.src_mode === 'all'}>
+                своё SELECT
+              </Radio.Button>
             </Radio.Group>
           </Form.Item>
         </Col>
       </Row>
+
+      {spec.src_mode === 'all' && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="Линия работает в режиме «вся таблица» (SELECT * FROM ведущей)"
+          description={
+            <Space direction="vertical" style={{ display: 'flex' }}>
+              <Typography.Text>
+                Колонки нигде не перечислены, поэтому сопоставление идёт по
+                ПОЗИЦИИ, и добавленная кем-то колонка в ведущей сдвинет всё
+                разом — без ошибки, просто данные лягут не туда. Режим оставлен
+                только для чтения таких линий; переведите её на явный список.
+              </Typography.Text>
+              <Space>
+                <Button
+                  type="primary"
+                  loading={snapMaster.loading || snapSlave.loading}
+                  onClick={convertFromAll}
+                >
+                  Снять колонки из БД и перевести
+                </Button>
+                <Typography.Text type="secondary">
+                  {spec.master_table} → {spec.slave_table}
+                </Typography.Text>
+              </Space>
+              <ActionError error={snapMaster.error || snapSlave.error} />
+            </Space>
+          }
+        />
+      )}
 
       {entry.kind === 'once' && (
         <Form.Item

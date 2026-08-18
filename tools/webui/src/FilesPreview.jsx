@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Alert, Button, Card, Checkbox, Collapse, Space, Tag, Typography } from 'antd'
 
 import ActionError from './ActionError'
+import DiffView from './DiffView'
 
 // Предпросмотр собранных файлов.
 //
@@ -133,12 +134,12 @@ export default function FilesPreview({
                 )}
               </Space>
             ),
-            children: (
-              <Typography.Paragraph>
-                <pre style={{ maxHeight: 360, overflow: 'auto', margin: 0 }}>
-                  {f.content}
-                </pre>
-              </Typography.Paragraph>
+            children: isChanged ? (
+              <DiffView oldText={f.old} newText={f.content} />
+            ) : (
+              <pre style={{ maxHeight: 360, overflow: 'auto', margin: 0, fontSize: 12 }}>
+                {f.content}
+              </pre>
             ),
           }
         })}

@@ -20,6 +20,25 @@ import ActionError from './ActionError'
 // Конструктор НЕ выполняет DDL в боевой БД — это делает администратор, чтобы
 // правки шли через одни руки. Поэтому здесь три вещи: показать, кому триггер
 // нужен; сверить с тем, что стоит; отдать текст, который можно передать DBA.
+// Статусы сверки приходят из tools/trigger_builder.check_targets. Английское
+// слово в ячейке ничего не объясняет — расшифровываем.
+const STATUS_COLOR = {
+  ok: 'green',
+  warn: 'orange',
+  error: 'red',
+  missing: 'red',
+  skip: 'default',
+  fail: 'red',
+}
+const STATUS_TEXT = {
+  ok: 'стоит и совпадает',
+  warn: 'стоит, но с оговорками',
+  error: 'стоит неправильно',
+  missing: 'триггера нет',
+  skip: 'не проверялся',
+  fail: 'проверить не удалось',
+}
+
 export default function TriggersPage() {
   const [onlyNeeded, setOnlyNeeded] = useState(true)
   const [ddl, setDdl] = useState(null)
@@ -69,13 +88,25 @@ export default function TriggersPage() {
     },
     {
       title: 'В БД',
-      width: 160,
+      width: 260,
       render: (_, r) => {
         const res = checked[r.key]
         if (!res) return <Typography.Text type="secondary">не сверялось</Typography.Text>
-        const status = res.status || res
-        const color = status === 'ok' ? 'green' : status === 'error' ? 'red' : 'orange'
-        return <Tag color={color}>{String(status)}</Tag>
+        const status = res.status || 'ok'
+        const trouble = [...(res.problems || []), ...(res.notes || [])]
+        return (
+          <Space direction="vertical" size={2}>
+            <Tag color={STATUS_COLOR[status] || 'orange'}>
+              {STATUS_TEXT[status] || String(status)}
+            </Tag>
+            {trouble.map((p, i) => (
+              <Typography.Text key={i} type={res.problems?.includes(p) ? 'danger' : 'secondary'}
+                               style={{ fontSize: 12 }}>
+                {String(p)}
+              </Typography.Text>
+            ))}
+          </Space>
+        )
       },
     },
     {
@@ -136,6 +167,30 @@ export default function TriggersPage() {
       <ActionError error={targets.error} />
       <ActionError error={check.error} onClose={check.reset} />
       <ActionError error={build.error} onClose={build.reset} />
+
+      {/* Отчёт по БД, а не по линиям: самая частая причина «все линии красные»
+          — это не триггеры, а «подключиться не удалось». Без этого блока
+          сверка выглядела бы как приговор всем линиям сразу. */}
+      {Object.entries(check.result?.db_reports || {}).map(([db, rep]) => (
+        <Alert
+          key={db}
+          style={{ marginBottom: 12 }}
+          type={rep.status === 'ok' ? 'success' : rep.status === 'fail' ? 'error' : 'warning'}
+          showIcon
+          message={`${db}: реквизиты ${rep.cred}, журнал ${rep.journal}`}
+          description={
+            (rep.messages || []).length ? (
+              <ul style={{ margin: 0, paddingLeft: 18 }}>
+                {rep.messages.map((m, i) => (
+                  <li key={i}>{String(m)}</li>
+                ))}
+              </ul>
+            ) : (
+              'служебные объекты на месте'
+            )
+          }
+        />
+      ))}
 
       <Table
         rowKey="key"
