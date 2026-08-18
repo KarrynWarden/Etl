@@ -232,23 +232,30 @@ export default function LineForm({ lineKey, onChanged }) {
             />
           </Form.Item>
         </Col>
-        <Col span={12}>
+        <Col span={6}>
           {/* Переключателей skipAudit было ДВА — здесь и в «Действиях», и
-              работали они по-разному: там флаг ложился на диск сразу, здесь
-              ждал предпросмотра и записи. Два способа поменять одно и то же
-              значение неизбежно расходятся; оставлен один — тот, что рядом с
-              остальными «убрать из работы». */}
-          <Form.Item label="Аудит и участие в работе">
-            <Space direction="vertical" size={0}>
-              <Typography.Text>
-                {extra.skipAudit ? 'аудит выключен (skipAudit)' : 'аудит включён'}
-                {extra.disabled ? ', перенос отключён (disabled)' : ''}
-              </Typography.Text>
-              <Typography.Text type="secondary">
-                переключается на вкладке «Действия» — там флаг ложится на диск
-                сразу, без предпросмотра
-              </Typography.Text>
-            </Space>
+              работали они по-разному: тот писал файл сразу по щелчку, этот ждал
+              предпросмотра. Остался один, и именно этот: ни одна правка не
+              должна уходить на диск раньше кнопки «Записать». */}
+          <Form.Item
+            label="Не аудировать линию (skipAudit)"
+            help="переносим, но не сверяем"
+          >
+            <Switch
+              checked={Boolean(extra.skipAudit)}
+              onChange={(v) => patchExtra({ skipAudit: v || undefined })}
+            />
+          </Form.Item>
+        </Col>
+        <Col span={6}>
+          <Form.Item
+            label="Отключить линию (disabled)"
+            help="даг остаётся, но пропускает её — и аудит тоже"
+          >
+            <Switch
+              checked={Boolean(extra.disabled)}
+              onChange={(v) => patchExtra({ disabled: v || undefined })}
+            />
           </Form.Item>
         </Col>
       </Row>

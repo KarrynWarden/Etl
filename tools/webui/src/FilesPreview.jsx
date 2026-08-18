@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Alert, Button, Card, Checkbox, Collapse, Space, Tag, Typography } from 'antd'
+import { Alert, Button, Card, Checkbox, Collapse, Popconfirm, Space, Tag, Typography } from 'antd'
 
 import ActionError from './ActionError'
 import DiffView from './DiffView'
@@ -65,19 +65,51 @@ export default function FilesPreview({
       }
       extra={
         <Space>
-          <Button
-            type="primary"
-            danger={selected.length > 0}
+          {/* Запись перетирает файлы на диске — единственное место, откуда
+              правка туда попадает. Спрашиваем и называем, сколько файлов и
+              каких: промахнуться мимо кнопки легко, разобраться потом, что
+              именно изменилось, — уже нет. */}
+          <Popconfirm
+            title={`Записать ${selected.length} файлов на диск?`}
+            description={
+              <div style={{ maxWidth: 460 }}>
+                Существующие будут перезаписаны:
+                <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                  {selected.map((f) => (
+                    <li key={f.path}>
+                      <Typography.Text code>{f.path}</Typography.Text>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            }
+            okText="Записать"
+            cancelText="Нет"
             disabled={!selected.length}
-            loading={busy}
-            onClick={() => onWrite(selected)}
+            onConfirm={() => onWrite(selected)}
           >
-            Записать {selected.length < changed.length ? `выбранное (${selected.length})` : 'на диск'}
-          </Button>
-          {onPush && (
-            <Button disabled={!written} loading={pushing} onClick={onPush}>
-              Записать и запушить
+            <Button
+              type="primary"
+              danger={selected.length > 0}
+              disabled={!selected.length}
+              loading={busy}
+            >
+              Записать {selected.length < changed.length ? `выбранное (${selected.length})` : 'на диск'}
             </Button>
+          </Popconfirm>
+          {onPush && (
+            <Popconfirm
+              title="Запушить записанное?"
+              description="Коммит и push уйдут в общий репозиторий."
+              okText="Запушить"
+              cancelText="Нет"
+              disabled={!written}
+              onConfirm={onPush}
+            >
+              <Button disabled={!written} loading={pushing}>
+                Запушить записанное
+              </Button>
+            </Popconfirm>
           )}
         </Space>
       }

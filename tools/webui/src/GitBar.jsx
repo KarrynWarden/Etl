@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { Alert, Button, Card, Space, Tag, Typography } from 'antd'
+import { Alert, Button, Card, Popconfirm, Space, Tag, Typography } from 'antd'
 
 import { api } from './api'
 import { useAction } from './useAction'
@@ -29,14 +29,33 @@ export default function GitBar({ reloadToken }) {
         ) : (
           <Tag color="green">всё запушено</Tag>
         )}
-        <Button
-          size="small"
+        {/* Пуш уходит наружу и забирает ВСЁ незакоммиченное в клоне, не только
+            то, что правил ты. Поэтому спрашиваем и показываем список файлов в
+            самом вопросе. */}
+        <Popconfirm
+          title="Закоммитить и запушить?"
+          description={
+            <div style={{ maxWidth: 460 }}>
+              В коммит уйдут все перечисленные файлы — и те, что правил не ты,
+              если в клоне осталось чужое:
+              <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                {dirty.map((f) => (
+                  <li key={f}>
+                    <Typography.Text code>{f}</Typography.Text>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          }
+          okText="Запушить"
+          cancelText="Нет"
           disabled={!dirty.length}
-          loading={push.loading}
-          onClick={() => push.run({ message: 'конструктор: правка линий' })}
+          onConfirm={() => push.run({ message: 'конструктор: правка линий' })}
         >
-          Закоммитить и запушить
-        </Button>
+          <Button size="small" disabled={!dirty.length} loading={push.loading}>
+            Закоммитить и запушить
+          </Button>
+        </Popconfirm>
       </Space>
 
       {dirty.length > 0 && (

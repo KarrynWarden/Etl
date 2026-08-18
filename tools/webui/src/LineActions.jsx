@@ -1,34 +1,37 @@
 import { useState } from 'react'
-import { Alert, Button, Descriptions, Popconfirm, Space, Switch, Typography } from 'antd'
+import { Alert, Button, Descriptions, Popconfirm, Space, Typography } from 'antd'
 
 import { api } from './api'
 import { useAction } from './useAction'
 import ActionError from './ActionError'
 
-// Действия над линией: архив, флаги, удаление.
+// Действия над линией: операции с ФАЙЛАМИ — архив, восстановление, удаление.
+//
+// Флагов (`disabled`, `skipAudit`) здесь больше нет, и это принципиально. Они
+// живут в конфиге, а значит собираются вместе с ним и попадают на диск ровно
+// так же, как любая другая правка: «Настройки» → «Предпросмотр» → «Записать».
+// Переключатель, который писал файл сразу по щелчку, был единственным местом,
+// где правка уходила на диск незаметно — задел мышью, не увидел, перезагрузил
+// страницу, а линия уже отключена в репозитории.
 //
 // Три РАЗНЫХ способа убрать линию из работы, и путать их дорого:
 //   архив     — файл дага уезжает в dags/_archived, Airflow его не парсит.
 //               Конфиг и структуры на месте, вернуть можно одной кнопкой;
-//   disabled  — флаг в конфиге. Даг остаётся, но lineEnabled в рантайме его
-//               пропускает. Единственный способ для линии СОСТАВНОГО дага:
-//               файл там общий на несколько линий, прятать его нельзя;
-//   skipAudit — переносим, но не проверяем аудитом.
-// Удаление — насовсем, и оно единственное необратимо, поэтому сначала
-// показывает полный список того, что снесёт.
+//   disabled  — флаг в конфиге (вкладка «Настройки»). Даг остаётся, но
+//               lineEnabled в рантайме его пропускает. Единственный способ для
+//               линии СОСТАВНОГО дага: файл там общий на несколько линий;
+//   skipAudit — переносим, но не проверяем аудитом (тоже «Настройки»).
+//
+// То, что осталось здесь, — перемещение и удаление файлов; собрать их в
+// предпросмотр нельзя, поэтому каждое спрашивает подтверждение.
 export default function LineActions({ lineKey, spec, onChanged }) {
   const [targets, setTargets] = useState(null)
 
   const archive = useAction(api.archive)
   const restore = useAction(api.restore)
-  const setFlag = useAction((flag, value) => api.setFlag({ key: lineKey, flag, value }))
   const deleteTargets = useAction(api.deleteTargets)
   const remove = useAction(api.deleteLine)
 
-  // Оба флага живут в extra — это ключи конфига, которые форма не собирает
-  // сама, а проносит насквозь (см. load_line). Раньше disabled читался как
-  // spec.disabled и потому не читался НИКОГДА: переключатель всегда стоял в
-  // «включена», чем бы линия ни была на диске.
   const extra = spec.extra || {}
   const inGroup = Boolean(spec.group_dag_id)
   const after = (res) => {
@@ -45,46 +48,59 @@ export default function LineActions({ lineKey, spec, onChanged }) {
         </Descriptions.Item>
       </Descriptions>
 
-      <div>
-        <Typography.Title level={5}>Убрать из работы</Typography.Title>
-        <Space direction="vertical" style={{ display: 'flex' }}>
-          <Space>
-            <Switch
-              checked={Boolean(extra.skipAudit)}
-              loading={setFlag.loading}
-              onChange={(v) => setFlag.run('skipAudit', v).then(after)}
-            />
-            <span>Не аудировать линию (skipAudit) — переносим, но не проверяем</span>
-          </Space>
+      <Alert
+        type="info"
+        showIcon
+        message="Флаги переехали на вкладку «Настройки»"
+        description={
+          <>
+            «Отключить линию» (disabled) и «Не аудировать» (skipAudit) — это ключи
+            конфига, и меняются они как остальные поля: правите на «Настройках»,
+            смотрите «Предпросмотр», нажимаете «Записать». Сейчас у линии:{' '}
+            <b>{extra.disabled ? 'перенос отключён' : 'перенос включён'}</b>,{' '}
+            <b>{extra.skipAudit ? 'аудит выключен' : 'аудит включён'}</b>.
+          </>
+        }
+      />
 
-          <Space>
-            <Button
-              loading={archive.loading}
-              disabled={inGroup}
-              onClick={() => archive.run(lineKey).then(after)}
-            >
+      <div>
+        <Typography.Title level={5}>Убрать даг из видимости Airflow</Typography.Title>
+        <Typography.Paragraph type="secondary">
+          Архив переносит файл дага в <Typography.Text code>dags/_archived</Typography.Text> —
+          этот каталог Airflow не читает. Конфиг и структуры остаются на месте.
+          Файл двигается сразу, собрать это в предпросмотр нельзя, поэтому
+          спрашиваем подтверждение.
+        </Typography.Paragraph>
+        <Space wrap>
+          <Popconfirm
+            title="Убрать даг в архив?"
+            description="Файл дага сейчас же переедет в dags/_archived, и Airflow перестанет его видеть."
+            okText="В архив"
+            cancelText="Нет"
+            disabled={inGroup}
+            onConfirm={() => archive.run(lineKey).then(after)}
+          >
+            <Button loading={archive.loading} disabled={inGroup}>
               🗄 В архив
             </Button>
-            <Button loading={restore.loading} onClick={() => restore.run(lineKey).then(after)}>
-              ♻ Восстановить
-            </Button>
-            {inGroup && (
-              <Typography.Text type="secondary">
-                линия в составном даге — архивировать нечего, файл общий; используйте флаг ниже
-              </Typography.Text>
-            )}
-          </Space>
-
-          <Space>
-            <Switch
-              checked={Boolean(extra.disabled)}
-              loading={setFlag.loading}
-              onChange={(v) => setFlag.run('disabled', v).then(after)}
-            />
-            <span>Отключить линию (disabled) — даг остаётся, но пропускает её</span>
-          </Space>
+          </Popconfirm>
+          <Popconfirm
+            title="Вернуть даг из архива?"
+            description="Файл сейчас же вернётся в dags/, и Airflow снова начнёт его исполнять."
+            okText="Восстановить"
+            cancelText="Нет"
+            onConfirm={() => restore.run(lineKey).then(after)}
+          >
+            <Button loading={restore.loading}>♻ Восстановить</Button>
+          </Popconfirm>
+          {inGroup && (
+            <Typography.Text type="secondary">
+              линия в составном даге — архивировать нечего, файл общий на несколько
+              линий; отключается она флагом disabled на «Настройках»
+            </Typography.Text>
+          )}
         </Space>
-        <ActionError error={archive.error || restore.error || setFlag.error} />
+        <ActionError error={archive.error || restore.error} />
         {(archive.result || restore.result) && (
           <Alert
             style={{ marginTop: 8 }}

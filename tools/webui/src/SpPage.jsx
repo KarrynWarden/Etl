@@ -163,7 +163,6 @@ function SpForm({ entry, onChanged }) {
   const load = useAction(api.spLine)
   const preview = useAction(api.spPreview)
   const write = useAction(api.write)
-  const setDisabled = useAction(api.spSetDisabled)
   const move = useAction(api.spMove)
   const delTargets = useAction(api.spDeleteTargets)
   const remove = useAction(api.spDelete)
@@ -466,21 +465,24 @@ function SpForm({ entry, onChanged }) {
 
   const actions = (
     <Space direction="vertical" size="large" style={{ display: 'flex' }}>
+      {/* Переключатель «участие в работе» писал фрагмент на диск сразу по
+          щелчку — единственное место, где правка уходила в репозиторий мимо
+          «Предпросмотра». Флаг disabled лежит в том же фрагменте, что и всё
+          остальное, поэтому он стал обычным полем формы: правится здесь,
+          попадает на диск кнопкой «Записать» и до неё виден в предпросмотре. */}
       <div>
         <Typography.Title level={5}>Участие в работе</Typography.Title>
         <Space>
           <Switch
-            checked={!entry.disabled}
-            loading={setDisabled.loading}
-            onChange={(v) =>
-              setDisabled
-                .run({ kind: entry.kind, key: entry.key, value: !v })
-                .then((r) => r && onChanged?.())
-            }
+            checked={!spec.disabled}
+            onChange={(v) => patch({ disabled: !v })}
           />
-          <span>{entry.disabled ? 'отключена — даг её пропускает' : 'включена'}</span>
+          <span>
+            {spec.disabled ? 'отключена — даг её пропускает' : 'включена'}
+            {Boolean(spec.disabled) !== Boolean(entry.disabled) &&
+              ' (правка в форме — на диске пока по-прежнему)'}
+          </span>
         </Space>
-        <ActionError error={setDisabled.error} />
       </div>
 
       <div>

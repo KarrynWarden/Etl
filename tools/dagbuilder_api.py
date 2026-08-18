@@ -306,23 +306,18 @@ def r_delete_targets(params):
     return {"targets": [_rel(p) for p in B.line_delete_targets(key)]}
 
 
-def r_set_flag(params):
-    """Включить / отключить линию и признак «не аудировать».
-
-    Отдельно от архива: архив прячет ДАГ (файл уезжает в dags/_archived), а
-    disabled — флаг в конфиге, который читает сам даг в рантайме. Для линии в
-    составном даге доступен только флаг: файл там общий на несколько линий, и
-    прятать его нельзя.
-    """
-    key, name = _need(params, "key", "flag")
-    if name not in ("disabled", "skipAudit"):
-        raise BadRequest(f"неизвестный флаг {name!r}: disabled или skipAudit")
-    value = bool(params.get("value"))
-    if name == "skipAudit":
-        B._set_skip_audit(key, value)
-    else:
-        B._set_line_flag(key, name, value)
-    return {"key": key, "flag": name, "value": value}
+# Маршрутов «поставить флаг одним запросом» здесь БОЛЬШЕ НЕТ — ни set-flag для
+# сложного ETL, ни sp/set-disabled для справочников. Они писали файл на диск
+# сразу по щелчку переключателя, и это был единственный способ изменить
+# репозиторий мимо связки «Предпросмотр» → «Записать»: задел мышью, не заметил,
+# перезагрузил страницу — а линия уже отключена в конфиге, и узнать об этом
+# можно было только из git diff.
+#
+# Оба флага (disabled, skipAudit) — обычные ключи конфига: их собирает
+# build_all, они видны в предпросмотре как изменение файла и попадают на диск
+# той же кнопкой, что и всё остальное. Функции B._set_line_flag /
+# SP.set_sp_disabled остались — ими пользуется прежний интерфейс на Voilà
+# (tools/dag_builder_ui.py).
 
 
 def r_archive(params):
@@ -448,14 +443,6 @@ def r_sp_preview(params):
     return dict(_preview_body(files), key=key)
 
 
-def r_sp_set_disabled(params):
-    """Включить / отключить линию справочника."""
-    kind, key = _need(params, "kind", "key")
-    value = bool(params.get("value"))
-    SP.set_sp_disabled(_sp_kind(kind), key, value)
-    return {"key": key, "disabled": value}
-
-
 def r_sp_move(params):
     """Перевести линию между типами: разовый <-> регулярный."""
     key, from_kind, to_kind = _need(params, "key", "from_kind", "to_kind")
@@ -519,7 +506,6 @@ POST_ROUTES = {
     "write": r_write,
     "shared-files": r_shared_files,
     "delete-targets": r_delete_targets,
-    "set-flag": r_set_flag,
     "archive": r_archive,
     "restore": r_restore,
     "delete": r_delete,
@@ -527,7 +513,6 @@ POST_ROUTES = {
     "triggers/build": r_trigger_build,
     "triggers/check": r_trigger_check,
     "sp/preview": r_sp_preview,
-    "sp/set-disabled": r_sp_set_disabled,
     "sp/move": r_sp_move,
     "sp/delete-targets": r_sp_delete_targets,
     "sp/delete": r_sp_delete,
@@ -855,6 +840,36 @@ def _selftest():
             assert route in table, (
                 f"интерфейс зовёт {method} /api/{route}, а такого маршрута нет. "
                 f"Есть: {', '.join(sorted(table))}")
+
+    # ── что вообще меняет репозиторий ────────────────────────────────────────
+    # Правка обязана доходить до диска ОДНОЙ дорогой: «Предпросмотр» → человек
+    # видит разницу → «Записать». Маршруты ниже — исключения, и каждое здесь не
+    # случайно: write — это и есть кнопка записи; archive/restore/delete/sp-move
+    # двигают и удаляют файлы, собрать их в предпросмотр нечем, поэтому в
+    # интерфейсе каждый спрашивает подтверждение; git/push отправляет уже
+    # записанное.
+    #
+    # Список закрытый: новый пишущий маршрут придётся вписать сюда руками, и
+    # это тот момент, когда стоит спросить себя, почему он не проходит через
+    # предпросмотр. Так ушли set-flag и sp/set-disabled — переключатели,
+    # писавшие конфиг сразу по щелчку.
+    writing = {"write", "archive", "restore", "delete", "sp/delete", "sp/move",
+               "git/push"}
+    # …а эти только ПОКАЗЫВАЮТ, что будет удалено, — их и зовут перед
+    # подтверждением удаления
+    read_only = {"delete-targets", "sp/delete-targets"}
+    unexpected = {r for r in POST_ROUTES
+                  if r not in writing and r not in read_only and (
+                      "delete" in r or "set" in r or "write" in r
+                      or "move" in r or "push" in r or "archive" in r)}
+    assert not unexpected, (
+        f"маршруты {sorted(unexpected)} похожи на пишущие, но не перечислены. "
+        f"Если они правда меняют репозиторий — им нужно подтверждение в "
+        f"интерфейсе; если нет — переименуйте, чтобы не путать")
+    for name in ("set-flag", "sp/set-disabled"):
+        assert name not in POST_ROUTES, (
+            f"маршрут {name} писал конфиг сразу по щелчку переключателя — "
+            f"единственный способ изменить репозиторий мимо кнопки «Записать»")
 
     # ── собранный фронтенд ───────────────────────────────────────────────────
     # Проверка на разъехавшиеся index.html и assets/. Стоит им разойтись —
