@@ -328,7 +328,17 @@ def _selftest():
     assert A._periodCond("Post", "createdate", False) == \
         "p.createdate = %(createdate)s"
     assert A._periodCond("Orcl", "createdate", False) == "p.createdate = :createdate"
-    assert A._periodCond("Orcl", "dcalc", True) == "TRUNC(p.dcalc) = :createdate"
+    # суточная гранулярность — полуинтервал, а не TRUNC вокруг колонки:
+    # под функцией индекс не работает, и условие нельзя протолкнуть внутрь
+    # вложенного запроса (см. Functions.do_etl._periodCond)
+    assert A._periodCond("Orcl", "dcalc", True) == (
+        "(p.dcalc >= TRUNC(:createdate) AND p.dcalc < TRUNC(:createdate) + 1)")
+    assert A._periodCond("Post", "dcalc", True) == (
+        "(p.dcalc >= %(createdate)s::date AND p.dcalc < %(createdate)s::date + 1)")
+    # сравнение со «старым» условием (--probe) для полуинтервала не строится:
+    # у COALESCE-варианта не было соответствия диапазону. Проба такую линию
+    # просто пропускает, а не сравнивает с чем попало.
+    assert _legacyCond(A._periodCond("Orcl", "dcalc", True)) is None
     # NULL-группа: без бинда и БЕЗ функции вокруг колонки
     assert A._periodCond("Orcl", "dcalc", True, True) == "p.dcalc IS NULL"
     assert A._periodCond("Post", {"year": "y", "month": "m"}, False, True) == \

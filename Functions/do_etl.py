@@ -463,6 +463,23 @@ def _periodCond(dbType, spec, alias=None, bind="createdate", truncate=False,
             # именно КОЛОНКА, а не TRUNC(колонка): TRUNC(NULL) это тоже NULL,
             # но под функцией индекс снова не применится
             return f"{_qual(alias, spec['column'])} IS NULL"
+        if truncate:
+            # ПОЛУИНТЕРВАЛ вместо TRUNC(колонка) = :период.
+            #
+            # Смысл тот же (для дат TRUNC(x) = d ⟺ d <= x < d+1), но колонка
+            # остаётся ГОЛОЙ — а значит работает индекс по ней и, что важнее,
+            # условие можно протолкнуть внутрь вложенного запроса. Под функцией
+            # оба варианта закрыты: у EXPMED23 выборка одной группы обходила
+            # весь EXPMED с 2020 года и стоила 7 секунд при 85 строках на
+            # выходе; на 600 групп это часы.
+            #
+            # TRUNC/::date стоит на БИНДЕ, а не на колонке: бинд — константа,
+            # индексу он не мешает, зато граница не поедет, если сверху придёт
+            # значение со временем.
+            col = _qual(alias, spec["column"])
+            name = _bindName(dbType, bind)
+            low = f"{name}::date" if _isPost(dbType) else f"TRUNC({name})"
+            return f"({col} >= {low} AND {col} < {low} + 1)"
         expr = _periodExpr(dbType, spec, alias, truncate)
         return f"{expr} = " + _bindName(dbType, bind)
     columns = [(spec["year"], "y")]
@@ -520,10 +537,14 @@ def _journalPeriodCond(dbType, period, bind="createdate", truncate=False):
     """
     if period is None:
         return "period IS NULL"
-    expr = "period"
+    name = _bindName(dbType, bind)
     if truncate:
-        expr = "DATE(period)" if _isPost(dbType) else "TRUNC(period)"
-    return f"{expr} = " + _bindName(dbType, bind)
+        # тот же полуинтервал, что и у данных (см. _periodCond): журнал —
+        # самая большая служебная таблица, и функция вокруг period закрывала
+        # индекс ровно так же
+        low = f"{name}::date" if _isPost(dbType) else f"TRUNC({name})"
+        return f"(period >= {low} AND period < {low} + 1)"
+    return f"period = {name}"
 
 
 def _journalPeriodBind(period, bind="createdate"):

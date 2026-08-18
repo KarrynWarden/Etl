@@ -152,13 +152,23 @@ def _checkPeriodCond():
     assert E._periodBinds(composite, dt.date(2026, 3, 1)) == \
         {"createdate_y": 2026, "createdate_m": 3}
 
-    # truncatePeriod: колонка ПОД функцией осознанно — гранулярность группы
-    # там суточная, а в колонке лежит время. Это известный остаток, он
-    # описан в README; проверка фиксирует, что он не расползся на остальных.
-    assert E._periodCond("Orcl", single, truncate=True) == \
-        "TRUNC(createdate) = :createdate"
-    assert E._periodCond("Post", single, truncate=True) == \
-        "DATE(createdate) = %(createdate)s"
+    # truncatePeriod: суточная гранулярность выражается ПОЛУИНТЕРВАЛОМ, а не
+    # функцией вокруг колонки. Смысл тот же (TRUNC(x) = d ⟺ d <= x < d+1), но
+    # колонка остаётся голой: работает индекс, и условие можно протолкнуть
+    # внутрь вложенного запроса. Под TRUNC выборка одной группы EXPMED23
+    # обходила весь EXPMED с 2020 года — 7 секунд ради 85 строк.
+    assert E._periodCond("Orcl", single, truncate=True) == (
+        "(createdate >= TRUNC(:createdate) "
+        "AND createdate < TRUNC(:createdate) + 1)")
+    assert E._periodCond("Post", single, truncate=True) == (
+        "(createdate >= %(createdate)s::date "
+        "AND createdate < %(createdate)s::date + 1)")
+    # граница считается от БИНДА (константа — индексу не мешает), а не от
+    # колонки: иначе значение со временем сдвинуло бы окно
+    for db in ("Orcl", "Post"):
+        cond = E._periodCond(db, single, "p", truncate=True)
+        assert "TRUNC(p." not in cond and "DATE(p." not in cond, cond
+        assert cond.count("p.createdate") == 2, cond
     print("  условие периода: без COALESCE, NULL-группа без бинда — ок")
 
 
@@ -173,10 +183,10 @@ def _checkJournalCond():
         "period = %(period)s"
     assert E._journalPeriodCond("Orcl", day, "period", False) == \
         "period = :period"
-    assert E._journalPeriodCond("Orcl", day, "period", True) == \
-        "TRUNC(period) = :period"
-    assert E._journalPeriodCond("Post", day, "period", True) == \
-        "DATE(period) = %(period)s"
+    assert E._journalPeriodCond("Orcl", day, "period", True) == (
+        "(period >= TRUNC(:period) AND period < TRUNC(:period) + 1)")
+    assert E._journalPeriodCond("Post", day, "period", True) == (
+        "(period >= %(period)s::date AND period < %(period)s::date + 1)")
     assert E._journalPeriodCond("Orcl", None, "period", True) == "period IS NULL"
     assert E._journalPeriodBind(None) == {}
     assert E._journalPeriodBind(day) == {"createdate": day}
@@ -336,10 +346,10 @@ def _checkGroupFlow():
             assert "createdate IS NULL" in deleteSql and deleteBinds == {}
             assert "p.createdate IS NULL" in groupSql and groupBinds == {}
         else:
-            assert "TRUNC(period) = :createdate" in markSql, markSql
-            assert "DATE(createdate) = %(createdate)s" in deleteSql, deleteSql
+            assert "period >= TRUNC(:createdate)" in markSql, markSql
+            assert "createdate >= %(createdate)s::date" in deleteSql, deleteSql
             assert deleteBinds == {"createdate": period}
-            assert "TRUNC(p.createdate) = :createdate" in groupSql, groupSql
+            assert "p.createdate >= TRUNC(:createdate)" in groupSql, groupSql
             assert groupBinds == {"createdate": period}
         # tablename в выборке группы больше не биндится: он был нужен
         # убранному JOIN'у, а лишний бинд Oracle не принимает (ORA-01036)
