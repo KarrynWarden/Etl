@@ -353,12 +353,23 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
     setSpec((p) => ({ ...p, ...next, ...(parsed || {}) }))
   }
 
-  const snapColumns = async () => {
+  // Снять колонки. `source` — откуда брать ВЕДУЩУЮ: 'table' или 'query'.
+  //
+  // Выбирает человек, на каждое снятие. «Из колонок» и «своё SELECT» — не два
+  // конструктора, между которыми выбирают раз и навсегда, а инструменты,
+  // работающие вместе: написал запрос — снял по нему колонки и разложил пары;
+  // снял по таблице — получил из колонок готовый запрос. Раньше кнопка молча
+  // смотрела на режим линии и написанный руками SELECT игнорировала, пока
+  // режим не переключат отдельно, — то есть заставляла человека объявить, в
+  // каком он «варианте», прежде чем сделать очевидное.
+  //
+  // Ведомая снимается всегда из своей таблицы: там двусмысленности нет.
+  const snapColumns = async (source) => {
     const sql = (spec.select_sql_text || '').trim()
-    const m =
-      spec.src_mode === 'custom' && sql
-        ? await snapQuery.run({ db: spec.db_master, sql })
-        : await snapMaster.run({ db: spec.db_master, table: spec.master_table })
+    const byQuery = source === 'query' && sql
+    const m = byQuery
+      ? await snapQuery.run({ db: spec.db_master, sql, table: spec.master_table })
+      : await snapMaster.run({ db: spec.db_master, table: spec.master_table })
     if (!m) return
     const s = await snapSlave.run({ db: spec.db_slave, table: spec.slave_table })
     if (!s) return
@@ -368,19 +379,27 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
       master_cols: m.columns,
       slave_cols: s.columns,
     })
-    patch({
-      src_mode: spec.src_mode === 'all' ? 'table' : spec.src_mode,
+    const next = {
+      // Снятие по запросу означает, что хозяин запроса — человек: имена
+      // колонок теперь берутся из его псевдонимов, и пересобирать SELECT из
+      // колонок мы больше не вправе. Снятие по таблице — наоборот.
+      src_mode: byQuery ? 'custom' : 'table',
       master_cols: m.columns,
       slave_cols: s.columns,
       pairs: m.columns.map((c, i) => {
         const name = colName(c)
-        // 1) пара, расставленная руками; 2) для «всей таблицы» — прежний
-        // порядок (именно на него этот режим и полагался); 3) автоподбор
+        // 1) пара, расставленная руками; 2) для прежнего режима «вся таблица» —
+        // порядок, на который он и полагался; 3) автоподбор по именам
         const kept = known.get(name)
         const byPosition = spec.src_mode === 'all' ? positional[i] : null
         return [name, kept || byPosition || suggestion?.suggestions?.[i] || null]
       }),
-    })
+    }
+    // По таблице — сразу пересобираем Select.sql: иначе колонки уже новые, а
+    // запрос ещё старый, и увидеть это можно только в предпросмотре.
+    // По запросу — не трогаем: он и есть источник.
+    if (byQuery) setSpec((p) => ({ ...p, ...next }))
+    else patchMapping(next)
   }
 
   // Занятый ключ — отказ при записи (overwrite: false), но узнать об этом
@@ -465,37 +484,28 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
           </Form.Item>
         </Col>
         <Col span={12}>
+          {/* Переключателя «вариант конструктора» здесь больше нет. Колонки и
+              свой SELECT — не два разных способа завести линию, между которыми
+              надо выбрать заранее, а инструменты, работающие вместе: снял
+              колонки по таблице — получил из них запрос; написал запрос — снял
+              по нему колонки. Кто сейчас хозяин Select.sql, это СЛЕДСТВИЕ
+              последнего действия, а не настройка, которую заполняют перед
+              работой. Показываем состояние; меняется оно там, где и работают, —
+              кнопками «Снять по таблице» / «Снять по запросу» на вкладке
+              «Колонки» и переключателем на вкладке SQL. */}
           <Form.Item
-            label="Источник ведущей"
-            help={
-              spec.src_mode === 'custom'
-                ? 'Select.sql — ваш запрос, сохраняется как есть'
-                : 'Select.sql собирается из сопоставленных колонок'
-            }
+            label="Select.sql"
+            help="меняется на вкладках «Колонки» и «SQL» — тем, что вы там делаете"
           >
-            {/* «Вся таблица» (SELECT * без файла Select.sql) из выбора убран.
-                Смысл у него был, пока конфиг и SQL правились руками: не
-                перечислять колонки — экономия. Теперь колонки снимаются
-                кнопкой, зато явный список ловит расхождение структур ДО
-                переноса, а SELECT * ломается молча, стоит кому-нибудь добавить
-                колонку в ведущую. Линии, оставшиеся в этом режиме, читаются
-                по-прежнему — их предлагается перевести, см. ниже. */}
-            <Radio.Group
-              value={spec.src_mode}
-              onChange={(e) => patch({ src_mode: e.target.value })}
-            >
-              {spec.src_mode === 'all' && (
-                <Radio.Button value="all" disabled>
-                  вся таблица (устарел)
-                </Radio.Button>
+            <Space>
+              {spec.src_mode === 'custom' ? (
+                <Tag color="blue">ваш запрос, сохраняется как есть</Tag>
+              ) : spec.src_mode === 'all' ? (
+                <Tag color="orange">режим «вся таблица» (устарел)</Tag>
+              ) : (
+                <Tag>собирается из сопоставленных колонок</Tag>
               )}
-              <Radio.Button value="table" disabled={spec.src_mode === 'all'}>
-                выбранные колонки
-              </Radio.Button>
-              <Radio.Button value="custom" disabled={spec.src_mode === 'all'}>
-                своё SELECT
-              </Radio.Button>
-            </Radio.Group>
+            </Space>
           </Form.Item>
         </Col>
       </Row>
@@ -515,7 +525,11 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
                 только для чтения таких линий; переведите её на явный список.
               </Typography.Text>
               <Space>
-                <Button type="primary" loading={snapping} onClick={snapColumns}>
+                <Button
+                  type="primary"
+                  loading={snapping}
+                  onClick={() => snapColumns('table')}
+                >
                   Снять колонки из БД и перевести
                 </Button>
                 <Typography.Text type="secondary">
@@ -554,10 +568,6 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
         onChange={patchMapping}
         onSnap={snapColumns}
         snapping={snapping || buildSql.loading}
-        snapDisabled={
-          !spec.slave_table ||
-          (spec.src_mode === 'custom' ? !spec.select_sql_text : !spec.master_table)
-        }
       />
       <ActionError error={snapError} />
       <ActionError error={buildSql.error} />
@@ -576,44 +586,48 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
           ручная правка там будет затёрта следующим же изменением колонок — об
           этом сказано прямо, а рядом кнопка перевода в «своё SELECT», после
           которой запрос принадлежит человеку. */}
-      {spec.src_mode !== 'custom' && (
+      {/* Один вопрос, а не выбор варианта: кто сейчас хозяин Select.sql. От
+          ответа зависит ровно одно — перезапишет ли конструктор ваш текст,
+          когда вы поправите колонки. Всё остальное работает одинаково: колонки
+          читаются из запроса, запрос собирается из колонок, оба направления
+          доступны в любой момент. */}
+      {spec.src_mode !== 'custom' ? (
         <Alert
           type="info"
           showIcon
           style={{ marginBottom: 16 }}
-          message="Select.sql собирается конструктором"
+          message="Select.sql сейчас собирает конструктор — из ведущей таблицы и сопоставления"
           description={
             <Space direction="vertical" style={{ display: 'flex' }}>
               <span>
-                В режиме «выбранные колонки» запрос пересобирается из ведущей
-                таблицы и сопоставления, поэтому правка руками не удержится.
-                Нужен свой запрос — переключитесь, текущий текст останется
-                отправной точкой.
+                Правьте его свободно: чтобы текст закрепился за вами и больше не
+                пересобирался, нажмите кнопку ниже — или просто снимите колонки
+                кнопкой «Снять по запросу» на вкладке «Колонки», и запрос станет
+                вашим сам.
               </span>
               <Button size="small" onClick={() => patch({ src_mode: 'custom' })}>
-                Сделать своим SELECT
+                Запрос мой, не пересобирать
               </Button>
             </Space>
           }
         />
-      )}
-      {spec.src_mode === 'custom' && (
+      ) : (
         <Alert
           type="info"
           showIcon
           style={{ marginBottom: 16 }}
-          message="Select.sql — ваш запрос"
+          message="Select.sql ваш — сохраняется как есть"
           description={
             <Space direction="vertical" style={{ display: 'flex' }}>
               <span>
-                Сохраняется как есть, имена колонок ведущей читаются из его
-                псевдонимов. Можно вернуться к сборке из колонок — тогда запрос
-                будет собран заново по текущему сопоставлению.
+                Имена колонок ведущей читаются из его псевдонимов: поправили
+                запрос — колонки обновятся, нажали «Снять по запросу» — обновятся
+                и типы с ключами. Вернуть сборку из колонок можно в любой момент.
               </span>
               <Popconfirm
-                title="Собрать Select.sql из колонок?"
-                description="Ваш текст запроса будет заменён сгенерированным."
-                okText="Собрать"
+                title="Собирать Select.sql из колонок?"
+                description="Ваш текст запроса будет заменён сгенерированным по текущему сопоставлению."
+                okText="Собирать"
                 cancelText="Нет"
                 onConfirm={() => patchMapping({ src_mode: 'table' })}
               >

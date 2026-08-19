@@ -961,6 +961,51 @@ def _selftest():
     assert not os.path.exists(os.path.join(
         B.ROOT, "etlFolder", "SpTableName.d", "SPSELFTESTOrclPost.json"))
 
+    # ── свой запрос и колонки помогают друг другу, а не спорят ───────────────
+    # Сценарий целиком: линия живёт в режиме «выбранные колонки», человек
+    # пишет СВОЙ запрос и снимает колонки по нему. Ожидается: имена берутся из
+    # псевдонимов запроса, масштаб и признак ключа подмешиваются из таблицы,
+    # запрос после этого принадлежит человеку и не пересобирается, а INSERT
+    # собирается по парам. БД здесь не нужна — подменяем оба снятия.
+    from unittest import mock
+    q_cols = [{"column_name": n, "data_type": "", "data_scale": None,
+               "is_primary_key": None} for n in ("kod", "naimenovanie", "idrw")]
+    t_cols = [{"column_name": n, "data_type": t, "data_scale": s,
+               "is_primary_key": pk}
+              for n, t, s, pk in (("kod", "VARCHAR2", None, "Primary Key"),
+                                  ("naimenovanie", "VARCHAR2", None, None),
+                                  ("idrw", "NUMBER", 0, None))]
+    with mock.patch.object(B, "snap_query_structure", return_value=q_cols), \
+         mock.patch.object(B, "snap_structure", return_value=t_cols):
+        code, body = dispatch("POST", "snap-query-structure",
+                              {"db": "Orcl", "sql": "SELECT 1 FROM dual",
+                               "table": "KOKNAEV.SPMKB"})
+        assert code == 200, body
+        got = body["result"]
+        assert [c["column_name"] for c in got["columns"]] == \
+            ["kod", "naimenovanie", "idrw"], got["columns"]
+        # ради этого всё и затевалось: без подмешивания масштаб приходил
+        # пустым, и снятие показывало NUMBER там, где в структуре NUMBER(0)
+        assert got["scale_known"] is True, got
+        assert got["columns"][2]["data_scale"] == 0, got["columns"][2]
+        assert got["columns"][0]["is_primary_key"] == "Primary Key", got["columns"][0]
+
+        # а без имени таблицы подмешивать неоткуда — и это честно помечается,
+        # чтобы разбор не выдавал «неизвестно» за «поменялось»
+        code, body = dispatch("POST", "snap-query-structure",
+                              {"db": "Orcl", "sql": "SELECT 1 FROM dual"})
+        assert code == 200 and body["result"]["scale_known"] is False, body
+
+    # запрос теперь свой — конструктор его не пересобирает, INSERT собирает
+    code, body = dispatch("POST", "sp/build-sql",
+                          {"db_slave": "Post", "master_table": "KOKNAEV.SPMKB",
+                           "slave_table": "spmkb", "src_mode": "custom",
+                           "pairs": [["kod", "kod"], ["idrw", "idrw"]],
+                           "select_sql_text": "SELECT code kod FROM spmkb\n"})
+    assert code == 200, body
+    assert "select_sql_text" not in body["result"], body["result"]
+    assert "INSERT INTO spmkb (kod, idrw)" in body["result"]["add_sql_text"]
+
     # ── связь «колонки ↔ SQL» у справочника ──────────────────────────────────
     # Линия описана двумя запросами, и оба конца связи обязаны сходиться:
     # разобрать сохранённый SQL и собрать его обратно — значит получить то же

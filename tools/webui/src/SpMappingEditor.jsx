@@ -31,17 +31,16 @@ import { toDbCase, matchesDbCase } from './dbCase'
 // запроса, поэтому правка имени здесь и есть правка SQL.
 const nameOf = (c) => (typeof c === 'string' ? c : c?.column_name || c?.COLUMN_NAME || '')
 
-export default function SpMappingEditor({
-  spec,
-  onChange,
-  onSnap,
-  snapping,
-  snapDisabled,
-}) {
+export default function SpMappingEditor({ spec, onChange, onSnap, snapping }) {
   const [filter, setFilter] = useState('all')
   const [allowReuse, setAllowReuse] = useState(false)
   const [newSlave, setNewSlave] = useState('')
   const [nameError, setNameError] = useState(null)
+  const [lastSource, setLastSource] = useState(null)
+
+  const hasTable = Boolean((spec.master_table || '').trim())
+  const hasSlave = Boolean((spec.slave_table || '').trim())
+  const hasSql = Boolean((spec.select_sql_text || '').trim())
 
   const pairs = spec.pairs || []
   const slaveNames = useMemo(() => (spec.slave_cols || []).map(nameOf), [spec.slave_cols])
@@ -145,10 +144,53 @@ export default function SpMappingEditor({
 
   return (
     <>
+      {/* Откуда взять колонки — выбор на КАЖДОЕ снятие, а не свойство линии.
+          «Из колонок» и «своё SELECT» — не два разных конструктора, между
+          которыми надо выбрать раз и навсегда, а два инструмента, работающих
+          вместе: написал запрос — снял по нему колонки; снял по таблице —
+          получил из них запрос. Раньше кнопка молча смотрела на режим линии, и
+          написанный руками SELECT она игнорировала, пока режим не переключат. */}
       <Space wrap style={{ marginBottom: 12 }}>
-        <Button icon={<ReloadOutlined />} loading={snapping} disabled={snapDisabled} onClick={onSnap}>
-          Снять колонки из БД
-        </Button>
+        <Space.Compact>
+          <Tooltip
+            title={
+              hasTable
+                ? `Прочитать колонки таблицы ${spec.master_table} — так видны и те, что появились в ней недавно`
+                : 'Не заполнена ведущая таблица на вкладке «Настройки»'
+            }
+          >
+            <Button
+              icon={<ReloadOutlined />}
+              loading={snapping && lastSource === 'table'}
+              disabled={!hasTable || !hasSlave}
+              onClick={() => {
+                setLastSource('table')
+                onSnap('table')
+              }}
+            >
+              Снять по таблице
+            </Button>
+          </Tooltip>
+          <Tooltip
+            title={
+              hasSql
+                ? 'Выполнить ВАШ запрос и взять имена колонок из его псевдонимов — ровно так их увидит рантайм'
+                : 'Запрос пуст — впишите его на вкладке SQL'
+            }
+          >
+            <Button
+              icon={<ReloadOutlined />}
+              loading={snapping && lastSource === 'query'}
+              disabled={!hasSql || !hasSlave}
+              onClick={() => {
+                setLastSource('query')
+                onSnap('query')
+              }}
+            >
+              Снять по запросу
+            </Button>
+          </Tooltip>
+        </Space.Compact>
         <Tooltip
           title={
             offCase.length
@@ -200,11 +242,7 @@ export default function SpMappingEditor({
           showIcon
           style={{ marginBottom: 12 }}
           message="Колонок пока нет"
-          description={
-            spec.src_mode === 'custom'
-              ? 'Впишите запрос на вкладке SQL — колонки разберутся из него сами, — или снимите их из БД.'
-              : 'Заполните обе таблицы на вкладке «Настройки» и нажмите «Снять колонки из БД».'
-          }
+          description="Два пути, и они не исключают друг друга: заполнить обе таблицы на «Настройках» и нажать «Снять по таблице» — или вписать свой запрос на вкладке SQL и нажать «Снять по запросу»."
         />
       )}
       {spec.src_mode === 'custom' && Boolean(pairs.length) && (
