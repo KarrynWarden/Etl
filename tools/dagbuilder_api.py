@@ -209,19 +209,49 @@ def r_snap_structure(params):
     """Снять структуру таблицы из БД."""
     db, table = _need(params, "db", "table")
     cols = B.snap_structure(_db(db), table, params.get("cred") or "MAIN")
+    # У таблицы масштаб и ключ видны достоверно — в отличие от снимка по
+    # запросу, см. r_snap_query_structure
     return {"columns": cols,
-            "period_column": B.default_period_column(cols)}
+            "period_column": B.default_period_column(cols),
+            "scale_known": True, "from_query": False}
 
 
 def r_snap_query_structure(params):
     """Снять структуру своего SELECT — типы берутся так же, как их сверяет
-    рантайм, поэтому снятая структура проходит проверку как есть."""
+    рантайм, поэтому снятая структура проходит проверку как есть.
+
+    Если передана `table` — подмешиваем из неё DATA_SCALE и признак ключа.
+    Из описания курсора их не видно ВОВСЕ: snap_query_structure всегда отдаёт
+    data_scale=None и is_primary_key=None. Без подмешивания снятие структуры у
+    линии со своим запросом выглядело так, будто в базе всё поменялось: у
+    EXPMED23 в сохранённой структуре NUMBER(0), а свежий снимок показывал
+    NUMBER — и разбор предлагал «поправить» почти каждую колонку. То же с
+    ключом: он пропадал у всех колонок разом.
+    """
     db, sql = _need(params, "db", "sql")
-    cols = B.snap_query_structure(_db(db), sql, params.get("cred") or "MAIN")
+    db = _db(db)
+    cred = params.get("cred") or "MAIN"
+    cols = B.snap_query_structure(db, sql, cred)
+    table = (params.get("table") or "").strip()
+    merged = False
+    if table:
+        try:
+            cols = B.merge_table_pk(cols, B.snap_structure(db, table, cred))
+            merged = True
+        except Exception as err:
+            # Таблицы может не быть вовсе (запрос по нескольким источникам) —
+            # это не ошибка снятия, просто масштаб и ключ останутся неизвестны.
+            logger.info("подмешать структуру таблицы %s не вышло: %s", table, err)
     unknown = [c for c in cols
                if B.unknown_type(c.get("data_type") or c.get("DATA_TYPE"))]
     return {"columns": cols,
             "period_column": B.default_period_column(cols),
+            # Масштаб и ключ достоверны только если их удалось подмешать из
+            # таблицы. Интерфейсу это нужно знать: «неизвестно» и «пусто» —
+            # разные вещи, и выдавать первое за второе значит показывать
+            # изменения там, где их нет.
+            "scale_known": merged,
+            "from_query": True,
             # Тип константы в запросе драйвер определить не может — такие
             # колонки интерфейс обязан показать и попросить указать тип руками.
             "unknown_types": [c.get("column_name") or c.get("COLUMN_NAME")
@@ -443,6 +473,66 @@ def r_sp_preview(params):
     return dict(_preview_body(files), key=key)
 
 
+def r_sp_parse_sql(params):
+    """SQL справочника -> колонки и сопоставление.
+
+    Половина связи «правлю запрос — вижу колонки». Разбирает ровно тот же
+    restore_mapping, каким линия читается с диска, поэтому набранный руками
+    текст и сохранённый разбираются ОДИНАКОВО — иначе правка запроса меняла бы
+    сопоставление не так, как его потом прочитает конструктор.
+    """
+    master_cols, slave_cols, pairs = SP.restore_mapping(
+        params.get("select_sql_text") or "", params.get("add_sql_text") or "")
+    return {"master_cols": master_cols, "slave_cols": slave_cols,
+            "pairs": [list(p) for p in pairs]}
+
+
+def r_sp_build_sql(params):
+    """Колонки и сопоставление -> SQL справочника. Вторая половина связи.
+
+    Собирает теми же функциями, что и запись на диск, — текст в форме и текст в
+    файле обязаны совпадать байт в байт, иначе предпросмотр показывал бы
+    изменение сразу после того, как человек ничего не менял.
+
+    Select собирается только в режиме «выбранные колонки»: в режиме «своё
+    SELECT» запрос принадлежит человеку, и перезаписывать его нельзя.
+    """
+    db_slave = _db(params.get("db_slave") or "Post")
+    pairs = _pairs(params.get("pairs") or [])
+    slave_table = (params.get("slave_table") or "").strip()
+    master_table = (params.get("master_table") or "").strip()
+    mode = params.get("src_mode") or "table"
+
+    # Текст, который сейчас в форме: если состав колонок в нём тот же, оставляем
+    # его КАК ЕСТЬ. Файлы писались руками и разложены по-своему — у SPMKB все
+    # семнадцать колонок в одну строку, — а генератор ставит перенос после
+    # каждой. Без этой проверки выбор пары у одной колонки переписывал бы весь
+    # запрос ради переносов строк, и предпросмотр показывал бы правку, которой
+    # человек не делал.
+    def keep_if_same(current, fresh, parse):
+        if not current:
+            return fresh
+        try:
+            return current if parse(current) == parse(fresh) else fresh
+        except Exception:
+            return fresh
+
+    out = {}
+    m_order = [m for m, s in pairs if m and s]
+    s_order = [s for m, s in pairs if (mode == "custom" or m) and s]
+    if mode != "custom" and master_table and m_order:
+        out["select_sql_text"] = keep_if_same(
+            params.get("select_sql_text"),
+            SP.build_sp_select(master_table, m_order),
+            SP.parse_select_columns)
+    if slave_table and s_order:
+        out["add_sql_text"] = keep_if_same(
+            params.get("add_sql_text"),
+            SP.build_sp_add(slave_table, s_order, db_slave),
+            lambda t: SP.parse_insert_columns(t))
+    return out
+
+
 def r_sp_move(params):
     """Перевести линию между типами: разовый <-> регулярный."""
     key, from_kind, to_kind = _need(params, "key", "from_kind", "to_kind")
@@ -513,6 +603,8 @@ POST_ROUTES = {
     "triggers/build": r_trigger_build,
     "triggers/check": r_trigger_check,
     "sp/preview": r_sp_preview,
+    "sp/parse-sql": r_sp_parse_sql,
+    "sp/build-sql": r_sp_build_sql,
     "sp/move": r_sp_move,
     "sp/delete-targets": r_sp_delete_targets,
     "sp/delete": r_sp_delete,
@@ -868,6 +960,38 @@ def _selftest():
     # и ничего из этого на диск не попало: предпросмотр обязан быть безопасным
     assert not os.path.exists(os.path.join(
         B.ROOT, "etlFolder", "SpTableName.d", "SPSELFTESTOrclPost.json"))
+
+    # ── связь «колонки ↔ SQL» у справочника ──────────────────────────────────
+    # Линия описана двумя запросами, и оба конца связи обязаны сходиться:
+    # разобрать сохранённый SQL и собрать его обратно — значит получить то же
+    # самое. Иначе правка колонок молча переписывала бы запрос.
+    code, body = dispatch("GET", "sp/line", {"kind": "regular", "key": "SPMKBOrclPost"})
+    assert code == 200, body
+    sp = body["result"]["spec"]
+    code, body = dispatch("POST", "sp/parse-sql",
+                          {"select_sql_text": sp["select_sql_text"],
+                           "add_sql_text": sp["add_sql_text"]})
+    assert code == 200, body
+    assert body["result"]["pairs"] == [list(p) for p in sp["pairs"]], body["result"]["pairs"]
+
+    build_args = {"db_slave": sp["db_slave"], "master_table": sp["master_table"],
+                  "slave_table": sp["slave_table"], "src_mode": sp["src_mode"],
+                  "select_sql_text": sp["select_sql_text"],
+                  "add_sql_text": sp["add_sql_text"]}
+    code, body = dispatch("POST", "sp/build-sql", dict(build_args, pairs=sp["pairs"]))
+    assert code == 200, body
+    # состав колонок тот же — рукописную раскладку не трогаем. У SPMKB все
+    # семнадцать колонок в одной строке, а генератор ставит перенос после
+    # каждой: перепиши их тут, и выбор пары у одной колонки показывал бы в
+    # предпросмотре переписанный целиком запрос
+    assert body["result"]["select_sql_text"] == sp["select_sql_text"]
+    assert body["result"]["add_sql_text"] == sp["add_sql_text"]
+    # а вот убранная колонка обязана перестроить оба запроса
+    code, body = dispatch("POST", "sp/build-sql",
+                          dict(build_args, pairs=sp["pairs"][:-1]))
+    assert code == 200, body
+    assert body["result"]["select_sql_text"] != sp["select_sql_text"]
+    assert sp["pairs"][-1][1] not in body["result"]["add_sql_text"]
 
     # ── что вообще меняет репозиторий ────────────────────────────────────────
     # Правка обязана доходить до диска ОДНОЙ дорогой: «Предпросмотр» → человек

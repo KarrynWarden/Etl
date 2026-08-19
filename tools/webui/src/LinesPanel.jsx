@@ -14,7 +14,7 @@ import ActionError from './ActionError'
 // mocheck», «что лежит в архиве». Поэтому фильтров четыре, и они складываются.
 const ARCHIVE = { any: 'Все', work: 'В работе', archived: 'В архиве' }
 
-export default function LinesPanel({ selected, onSelect, reloadToken }) {
+export default function LinesPanel({ selected, onSelect, onCreate, creating, reloadToken }) {
   const [text, setText] = useState('')
   const [direction, setDirection] = useState(null)
   const [mode, setMode] = useState(null)
@@ -55,6 +55,9 @@ export default function LinesPanel({ selected, onSelect, reloadToken }) {
       size="small"
       extra={
         <Space>
+          <Button size="small" type={creating ? 'default' : 'primary'} onClick={onCreate}>
+            + Создать
+          </Button>
           <Tooltip title="Перечитать список">
             <Button
               size="small"

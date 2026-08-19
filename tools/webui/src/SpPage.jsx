@@ -28,6 +28,7 @@ import ActionError from './ActionError'
 import ComboBox from './ComboBox'
 import FilesPreview from './FilesPreview'
 import TableNameInput from './TableNameInput'
+import SpMappingEditor from './SpMappingEditor'
 
 // Справочники и разовый перенос.
 //
@@ -229,6 +230,8 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
   const snapQuery = useAction(api.snapQueryStructure)
   const snapSlave = useAction(api.snapStructure)
   const match = useAction(api.match)
+  const buildSql = useAction(api.spBuildSql)
+  const parseSql = useAction(api.spParseSql)
 
   const isNew = Boolean(entry) && !entry.key
 
@@ -305,6 +308,50 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
     snapMaster.loading || snapQuery.loading || snapSlave.loading || match.loading
   const snapError =
     snapMaster.error || snapQuery.error || snapSlave.error || match.error
+
+  // ── связь «колонки ↔ SQL» в обе стороны ─────────────────────────────────
+  // Линия справочника ОПИСАНА двумя запросами: Select.sql и Add.sql. Значит
+  // правка колонок — это правка запросов, и наоборот; держать их врозь и
+  // показывать одно из двух только для чтения — значит заставлять человека
+  // выбирать, каким способом он сегодня работает.
+  //
+  // Собирает и разбирает СЕРВЕР, теми же функциями, что пишут файлы
+  // (build_sp_select / build_sp_add / restore_mapping). Повтори их здесь — и
+  // текст в форме разошёлся бы с текстом в файле на первом же пробеле, а
+  // предпросмотр показывал бы изменение сразу после того, как ничего не
+  // меняли.
+  const rebuildSql = async (next) => {
+    const merged = { ...spec, ...next }
+    const built = await buildSql.run({
+      db_slave: merged.db_slave,
+      master_table: merged.master_table,
+      slave_table: merged.slave_table,
+      src_mode: merged.src_mode,
+      pairs: merged.pairs || [],
+      // текущие тексты — чтобы сервер не переписывал раскладку рукописного
+      // запроса там, где состав колонок не изменился
+      select_sql_text: merged.select_sql_text || '',
+      add_sql_text: merged.add_sql_text || '',
+    })
+    setSpec((p) => ({ ...p, ...next, ...(built || {}) }))
+  }
+
+  // Правка колонок: сразу пересобираем запросы.
+  const patchMapping = (next) => {
+    setSpec((p) => ({ ...p, ...next }))
+    rebuildSql(next)
+  }
+
+  // Правка запроса: разбираем его обратно в колонки. По уходу из поля, а не на
+  // каждой букве — недописанный SELECT разбирать нечего, да и незачем.
+  const reparseSql = async (next) => {
+    const merged = { ...spec, ...next }
+    const parsed = await parseSql.run({
+      select_sql_text: merged.select_sql_text || '',
+      add_sql_text: merged.add_sql_text || '',
+    })
+    setSpec((p) => ({ ...p, ...next, ...(parsed || {}) }))
+  }
 
   const snapColumns = async () => {
     const sql = (spec.select_sql_text || '').trim()
@@ -502,119 +549,106 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
 
   const mapping = (
     <>
-      <Space wrap style={{ marginBottom: 12 }}>
-        <Button
-          loading={snapping}
-          disabled={
-            !spec.slave_table ||
-            (spec.src_mode === 'custom' ? !spec.select_sql_text : !spec.master_table)
-          }
-          onClick={snapColumns}
-        >
-          Снять колонки из БД
-        </Button>
-        <Typography.Text type="secondary">
-          {spec.src_mode === 'custom' ? 'по тексту SELECT из формы' : spec.master_table || '—'} →{' '}
-          {spec.slave_table || '—'}
-        </Typography.Text>
-      </Space>
-      <ActionError error={snapError} />
-
-      {!(spec.pairs || []).length && (
-        <Alert
-          type="info"
-          showIcon
-          style={{ marginBottom: 12 }}
-          message="Колонок пока нет"
-          description={
-            spec.src_mode === 'custom'
-              ? 'Впишите запрос на вкладке SQL и нажмите «Снять колонки из БД» — имена возьмутся из его псевдонимов.'
-              : 'Заполните обе таблицы на вкладке «Настройки» и нажмите «Снять колонки из БД».'
-          }
-        />
-      )}
-
-      {spec.src_mode === 'all' && (
-        <Alert
-          type="info"
-          showIcon
-          style={{ marginBottom: 12 }}
-          message="Источник — вся таблица, имён колонок ведущей здесь нет"
-          description="Рантайм подставляет SELECT * FROM ведущей, поэтому колонки сопоставляются по ПОЗИЦИИ: i-я колонка выборки ложится в i-ю колонку INSERT."
-        />
-      )}
-      {spec.src_mode === 'custom' && (
-        <Alert
-          type="warning"
-          showIcon
-          style={{ marginBottom: 12 }}
-          message="Для своего SELECT сопоставлены должны быть ВСЕ колонки"
-          description="Вставка идёт по порядку колонок запроса, пропуски недопустимы."
-        />
-      )}
-      <Table
-        size="small"
-        bordered
-        pagination={false}
-        scroll={{ y: 380 }}
-        rowKey={(_, i) => i}
-        dataSource={(spec.pairs || []).map(([m, s], i) => ({ i, m, s }))}
-        columns={[
-          { title: '#', dataIndex: 'i', width: 48, render: (v) => v + 1 },
-          {
-            title: `Ведущая (${spec.db_master})`,
-            render: (_, r) => <Typography.Text code>{r.m}</Typography.Text>,
-          },
-          {
-            title: `Ведомая (${spec.db_slave})`,
-            render: (_, r) => (
-              <ComboBox
-                style={{ width: '100%' }}
-                value={r.s || ''}
-                options={slaveNames}
-                placeholder="— нет пары —"
-                onChange={(v) =>
-                  patch({
-                    pairs: spec.pairs.map((row, i) => (i === r.i ? [row[0], v || null] : row)),
-                  })
-                }
-              />
-            ),
-          },
-        ]}
+      <SpMappingEditor
+        spec={spec}
+        onChange={patchMapping}
+        onSnap={snapColumns}
+        snapping={snapping || buildSql.loading}
+        snapDisabled={
+          !spec.slave_table ||
+          (spec.src_mode === 'custom' ? !spec.select_sql_text : !spec.master_table)
+        }
       />
+      <ActionError error={snapError} />
+      <ActionError error={buildSql.error} />
     </>
   )
 
   const sql = (
     <Form layout="vertical">
+      {/* Оба запроса правятся руками, и правка сразу видна на вкладке
+          «Колонки» — как и наоборот. Линия справочника ОПИСАНА этими двумя
+          файлами, так что колонки и SQL — два взгляда на одно и то же, а не
+          «настоящее» и «только для чтения». Разбор идёт по уходу из поля:
+          недописанный SELECT разбирать нечего.
+
+          В режиме «выбранные колонки» Select собирает конструктор, поэтому
+          ручная правка там будет затёрта следующим же изменением колонок — об
+          этом сказано прямо, а рядом кнопка перевода в «своё SELECT», после
+          которой запрос принадлежит человеку. */}
+      {spec.src_mode !== 'custom' && (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="Select.sql собирается конструктором"
+          description={
+            <Space direction="vertical" style={{ display: 'flex' }}>
+              <span>
+                В режиме «выбранные колонки» запрос пересобирается из ведущей
+                таблицы и сопоставления, поэтому правка руками не удержится.
+                Нужен свой запрос — переключитесь, текущий текст останется
+                отправной точкой.
+              </span>
+              <Button size="small" onClick={() => patch({ src_mode: 'custom' })}>
+                Сделать своим SELECT
+              </Button>
+            </Space>
+          }
+        />
+      )}
+      {spec.src_mode === 'custom' && (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="Select.sql — ваш запрос"
+          description={
+            <Space direction="vertical" style={{ display: 'flex' }}>
+              <span>
+                Сохраняется как есть, имена колонок ведущей читаются из его
+                псевдонимов. Можно вернуться к сборке из колонок — тогда запрос
+                будет собран заново по текущему сопоставлению.
+              </span>
+              <Popconfirm
+                title="Собрать Select.sql из колонок?"
+                description="Ваш текст запроса будет заменён сгенерированным."
+                okText="Собрать"
+                cancelText="Нет"
+                onConfirm={() => patchMapping({ src_mode: 'table' })}
+              >
+                <Button size="small">Собирать из колонок</Button>
+              </Popconfirm>
+            </Space>
+          }
+        />
+      )}
+
       <Form.Item
         label={`Select.sql${spec.select_sql ? ` — ${spec.select_sql}` : ''}`}
-        help={
-          spec.src_mode === 'custom'
-            ? 'свой запрос — сохраняется как есть'
-            : 'собирается из ведущей таблицы и сопоставленных колонок'
-        }
+        help="имена колонок ведущей читаются отсюда — правка видна на вкладке «Колонки»"
       >
         <Input.TextArea
           autoSize={{ minRows: 5, maxRows: 20 }}
           style={{ fontFamily: 'monospace' }}
           value={spec.select_sql_text || ''}
-          disabled={spec.src_mode !== 'custom'}
           onChange={(e) => patch({ select_sql_text: e.target.value })}
+          onBlur={(e) => reparseSql({ select_sql_text: e.target.value })}
         />
       </Form.Item>
       <Form.Item
         label={`Add.sql${spec.add_sql ? ` — ${spec.add_sql}` : ''}`}
-        help="собирается автоматически из ведомой таблицы и сопоставления"
+        help="колонки ведомой читаются отсюда — правка видна на вкладке «Колонки»"
       >
         <Input.TextArea
           autoSize={{ minRows: 3, maxRows: 12 }}
           style={{ fontFamily: 'monospace' }}
           value={spec.add_sql_text || ''}
-          disabled
+          onChange={(e) => patch({ add_sql_text: e.target.value })}
+          onBlur={(e) => reparseSql({ add_sql_text: e.target.value })}
         />
       </Form.Item>
+      <ActionError error={parseSql.error} />
     </Form>
   )
 

@@ -111,6 +111,16 @@ export default function LineForm({ lineKey, onChanged }) {
 
   if (!spec) return null
 
+  const writeChosen = (chosen) =>
+    write
+      .run({ files: chosen.map((f) => [f.path, f.content]), overwrite: true })
+      .then((res) => {
+        if (!res) return undefined
+        setOriginal(JSON.stringify(spec))
+        onChanged?.()
+        return res
+      })
+
   const patch = (changes) => setSpec((p) => ({ ...p, ...changes }))
   const patchExtra = (changes) =>
     setSpec((p) => ({ ...p, extra: { ...(p.extra || {}), ...changes } }))
@@ -503,22 +513,18 @@ export default function LineForm({ lineKey, onChanged }) {
           busy={write.loading}
           error={write.error}
           written={write.result}
-          onWrite={(chosen) =>
-            write
-              .run({
-                files: chosen.map((f) => [f.path, f.content]),
-                overwrite: true,
-              })
-              .then((res) => {
-                if (!res) return
-                setOriginal(JSON.stringify(spec))
-                onChanged?.()
-              })
-          }
+          onWrite={writeChosen}
           pushing={push.loading}
           pushError={push.error}
           pushed={push.result}
-          onPush={() => push.run({ message: `конструктор: ${lineKey}` }).then(() => onChanged?.())}
+          // «Записать и запушить» — одно действие: запись, и только если она
+          // прошла, коммит. Порядок важен: пушить неудавшуюся запись нечего.
+          onPush={(chosen) =>
+            writeChosen(chosen).then(
+              (res) =>
+                res && push.run({ message: `конструктор: ${lineKey}` }).then(() => onChanged?.()),
+            )
+          }
         />
       )}
 

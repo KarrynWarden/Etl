@@ -37,7 +37,7 @@ const colType = (c) => c?.data_type || c?.DATA_TYPE || ''
 // секунды, а сопоставление колонок имеет смысл только после него. В прежнем
 // интерфейсе всё лежало одной длинной формой, и было неочевидно, что сначала
 // надо нажать «Снять структуры», а ошибка этого шага уезжала в консоль внизу.
-export default function NewLinePage({ onCreated }) {
+export default function NewLinePage({ onCreated, onCancel }) {
   const [step, setStep] = useState(0)
   const [form, setForm] = useState({
     db_master: 'Orcl',
@@ -67,7 +67,13 @@ export default function NewLinePage({ onCreated }) {
   const snapAll = async () => {
     const m =
       form.source === 'sql'
-        ? await snapQuery.run({ db: form.db_master, sql: form.select_sql_text })
+        ? // таблицу передаём, если она указана: из описания курсора не видно
+          // ни масштаба, ни первичного ключа — сервер подмешает их оттуда
+          await snapQuery.run({
+            db: form.db_master,
+            sql: form.select_sql_text,
+            table: form.table_master,
+          })
         : await snapMaster.run({ db: form.db_master, table: form.table_master })
     if (!m) return
     const s = await snapSlave.run({ db: form.db_slave, table: form.table_slave })
@@ -117,7 +123,14 @@ export default function NewLinePage({ onCreated }) {
   const unmatched = pairs.filter(([, s]) => !s).length
 
   return (
-    <Card title="Новая линия">
+    <Card
+      title="Новая линия"
+      extra={
+        onCancel && (
+          <Button onClick={onCancel}>Вернуться к списку</Button>
+        )
+      }
+    >
       <Steps
         current={step}
         style={{ marginBottom: 16 }}

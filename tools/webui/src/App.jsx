@@ -17,6 +17,7 @@ import SpPage from './SpPage'
 // поток вывода был главным источником «нажал и не понял, сработало ли».
 export default function App() {
   const [selected, setSelected] = useState(null)
+  const [creating, setCreating] = useState(false)
   const [reloadToken, setReloadToken] = useState(0)
   const [tab, setTab] = useState('lines')
   const bump = () => setReloadToken((n) => n + 1)
@@ -44,34 +45,48 @@ export default function App() {
               {
                 key: 'lines',
                 label: 'Линии',
+                // Создание живёт ЗДЕСЬ, а не отдельной вкладкой наверху.
+                // Раньше у сложного ETL «Линии» и «Новая линия» были разными
+                // вкладками, а у справочников создание и правка — одной, и
+                // одинаковые по смыслу вещи выглядели устроенными по-разному.
+                // Теперь везде одинаково: слева список с кнопкой «+ Создать»,
+                // справа форма — та же самая, отличается лишь тем, откуда
+                // взялись начальные значения.
                 children: (
                   <Row gutter={16}>
                     <Col xs={24} md={8} lg={6}>
                       <LinesPanel
-                        selected={selected}
-                        onSelect={setSelected}
+                        selected={creating ? null : selected}
+                        onSelect={(key) => {
+                          setCreating(false)
+                          setSelected(key)
+                        }}
+                        onCreate={() => {
+                          setSelected(null)
+                          setCreating(true)
+                        }}
+                        creating={creating}
                         reloadToken={reloadToken}
                       />
                     </Col>
                     <Col xs={24} md={16} lg={18}>
-                      <LineForm lineKey={selected} onChanged={bump} />
+                      {creating ? (
+                        <NewLinePage
+                          onCancel={() => setCreating(false)}
+                          onCreated={(spec) => {
+                            bump()
+                            setCreating(false)
+                            if (spec?.line_name)
+                              setSelected(
+                                `${spec.line_name}${spec.db_master}${spec.db_slave}`,
+                              )
+                          }}
+                        />
+                      ) : (
+                        <LineForm lineKey={selected} onChanged={bump} />
+                      )}
                     </Col>
                   </Row>
-                ),
-              },
-              {
-                key: 'new',
-                label: 'Новая линия',
-                children: (
-                  <NewLinePage
-                    onCreated={(spec) => {
-                      bump()
-                      if (spec?.line_name) {
-                        setSelected(`${spec.line_name}${spec.db_master}${spec.db_slave}`)
-                        setTab('lines')
-                      }
-                    }}
-                  />
                 ),
               },
               { key: 'triggers', label: 'Триггеры', children: <TriggersPage /> },

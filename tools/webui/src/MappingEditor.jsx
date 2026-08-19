@@ -12,13 +12,19 @@ import {
   Tooltip,
   Typography,
 } from 'antd'
-import { DeleteOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
+import {
+  DeleteOutlined,
+  FontSizeOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+} from '@ant-design/icons'
 
 import { api } from './api'
 import { useAction } from './useAction'
 import ActionError from './ActionError'
 import ComboBox from './ComboBox'
 import SnapReview from './SnapReview'
+import { toDbCase, matchesDbCase } from './dbCase'
 
 // Правка сопоставления колонок существующей линии.
 //
@@ -73,16 +79,23 @@ const byName = (cols) => {
 
 // Отличия снятого из БД от того, что записано у линии. Возвращает плоский
 // список решений — по одному на каждое отличие (см. SnapReview).
-function collectChanges(spec, dbMaster, dbSlave) {
+//
+// `known` говорит, ДОСТОВЕРЕН ли у снимка масштаб и признак ключа. У снимка по
+// своему SELECT их не видно вовсе — описание курсора их не отдаёт, и сервер
+// подмешивает их из таблицы, если она известна. Когда подмешать не удалось,
+// «неизвестно» нельзя выдавать за «пусто»: у EXPMED23 в структуре NUMBER(0), а
+// снимок показывал NUMBER — и разбор предлагал поправить почти каждую колонку,
+// хотя в базе ничего не менялось.
+function collectChanges(spec, dbMaster, dbSlave, known) {
   const out = []
   const push = (kind, name, before, after, payload) =>
     out.push({ id: `${kind}:${name}`, kind, name, before, after, payload })
 
   const sides = [
-    ['master', spec.master_cols || [], dbMaster],
-    ['slave', spec.slave_cols || [], dbSlave],
+    ['master', spec.master_cols || [], dbMaster, known.master],
+    ['slave', spec.slave_cols || [], dbSlave, known.slave],
   ]
-  for (const [side, current, fresh] of sides) {
+  for (const [side, current, fresh, scaleKnown] of sides) {
     if (!fresh) continue
     const now = byName(current)
     const db = byName(fresh)
@@ -95,9 +108,12 @@ function collectChanges(spec, dbMaster, dbSlave) {
     for (const col of current) {
       const other = db.get(nameOf(col))
       if (!other) continue
-      if (typeText(col) !== typeText(other))
-        push(`${side}_type`, nameOf(col), typeText(col), typeText(other), other)
-      if (side === 'master' && isPk(col) !== isPk(other))
+      // Сам тип виден всегда. Масштаб — только когда снимок достоверен;
+      // иначе сравниваем один тип, без скобок.
+      const cmp = scaleKnown ? typeText : typeOf
+      if (cmp(col) !== cmp(other))
+        push(`${side}_type`, nameOf(col), cmp(col), cmp(other), other)
+      if (side === 'master' && scaleKnown && isPk(col) !== isPk(other))
         push('master_pk', nameOf(col), isPk(col) ? 'ключ' : 'не ключ',
              isPk(other) ? 'ключ' : 'не ключ', other)
     }
@@ -204,14 +220,17 @@ export default function MappingEditor({ spec, onChange }) {
   const snapBoth = async () => {
     const sql = (spec.select_sql_text || '').trim()
     const m = sql
-      ? await snapQuery.run({ db: spec.db_master, sql })
+      ? // таблицу передаём, чтобы сервер подмешал масштаб и признак ключа:
+        // из описания курсора их не видно
+        await snapQuery.run({ db: spec.db_master, sql, table: spec.table_master })
       : await snapMaster.run({ db: spec.db_master, table: spec.table_master })
     if (!m) return
     const s = await snapSlave.run({ db: spec.db_slave, table: spec.table_slave })
     if (!s) return
-    const changes = collectChanges(spec, m.columns, s.columns)
+    const known = { master: m.scale_known !== false, slave: s.scale_known !== false }
+    const changes = collectChanges(spec, m.columns, s.columns, known)
     setDecisions({})
-    setReview({ changes, master: m.columns, slave: s.columns })
+    setReview({ changes, master: m.columns, slave: s.columns, known })
   }
 
   const decide = (id, value) =>
@@ -239,12 +258,19 @@ export default function MappingEditor({ spec, onChange }) {
       } else if (ch.kind === 'slave_added') {
         sCols = [...sCols, ch.payload]
       } else if (ch.kind === 'master_type' || ch.kind === 'master_pk') {
+        // Масштаб и ключ трогаем, только если снимок их знает: у снимка по
+        // своему SELECT они не видны, и принятая правка типа обнулила бы
+        // сохранённый NUMBER(0) до NUMBER.
         cols = cols.map((c) =>
           nameOf(c) === ch.name
             ? patchCol(c, {
                 type: typeOf(ch.payload),
-                scale: ch.payload.data_scale ?? ch.payload.DATA_SCALE ?? null,
-                pk: isPk(ch.payload) ? 'Primary Key' : null,
+                ...(review.known.master
+                  ? {
+                      scale: ch.payload.data_scale ?? ch.payload.DATA_SCALE ?? null,
+                      pk: isPk(ch.payload) ? 'Primary Key' : null,
+                    }
+                  : {}),
               })
             : c,
         )
@@ -253,7 +279,9 @@ export default function MappingEditor({ spec, onChange }) {
           nameOf(c) === ch.name
             ? patchCol(c, {
                 type: typeOf(ch.payload),
-                scale: ch.payload.data_scale ?? ch.payload.DATA_SCALE ?? null,
+                ...(review.known.slave
+                  ? { scale: ch.payload.data_scale ?? ch.payload.DATA_SCALE ?? null }
+                  : {}),
               })
             : c,
         )
@@ -297,6 +325,34 @@ export default function MappingEditor({ spec, onChange }) {
   )
   const usingSql = Boolean((spec.select_sql_text || '').trim())
 
+  const offCase = [
+    ...(usingSql ? [] : master.map(nameOf).filter((n) => n && !matchesDbCase(n, spec.db_master))),
+    ...slaveNames.filter((n) => n && !matchesDbCase(n, spec.db_slave)),
+  ]
+  const fixCase = () => {
+    const renameMap = new Map()
+    const cols = master.map((c) => {
+      if (usingSql) return c
+      const to = toDbCase(nameOf(c), spec.db_master)
+      if (to !== nameOf(c)) renameMap.set(nameOf(c), to)
+      return patchCol(c, { name: to })
+    })
+    const slaveMap = new Map()
+    const sCols = slave.map((c) => {
+      const to = toDbCase(nameOf(c), spec.db_slave)
+      if (to !== nameOf(c)) slaveMap.set(nameOf(c), to)
+      return patchCol(c, { name: to })
+    })
+    onChange({
+      master_cols: cols,
+      slave_cols: sCols,
+      pairs: pairs.map(([m, s]) => [
+        renameMap.get(m) || m,
+        s ? slaveMap.get(s) || s : s,
+      ]),
+    })
+  }
+
   // Список для колонки ведомой: по умолчанию только СВОБОДНЫЕ плюс своя
   // текущая. Одна колонка ведущей в две колонки ведомой — случай редкий и
   // обычно решается псевдонимом в SELECT, а вот случайно занять чужую пару из
@@ -314,6 +370,29 @@ export default function MappingEditor({ spec, onChange }) {
           {spec.db_master} {usingSql ? 'по тексту SELECT из формы' : spec.table_master} →{' '}
           {spec.db_slave} {spec.table_slave}
         </Typography.Text>
+        {/* Регистр имён — сразу у всех: по колонке за раз это полсотни
+            нажатий. Имена ведущей трогаем ТОЛЬКО когда своего SELECT нет: при
+            своём запросе это его псевдонимы, и рантайм сверяет структуру с
+            тем, что вернул драйвер, — сменить регистр здесь, не тронув запрос,
+            значит развести их молча. */}
+        <Tooltip
+          title={
+            offCase.length
+              ? `Привести к регистру диалекта: ведущая ${spec.db_master}, ведомая ${spec.db_slave}`
+              : usingSql
+                ? 'Имена ведущей — псевдонимы вашего SELECT, их регистр здесь не трогается; проверяется только ведомая'
+                : 'Регистр всех имён уже соответствует диалекту'
+          }
+        >
+          <Button
+            icon={<FontSizeOutlined />}
+            disabled={!offCase.length}
+            danger={offCase.length > 0}
+            onClick={fixCase}
+          >
+            Регистр имён{offCase.length ? ` (${offCase.length})` : ''}
+          </Button>
+        </Tooltip>
         <Segmented
           value={filter}
           onChange={setFilter}

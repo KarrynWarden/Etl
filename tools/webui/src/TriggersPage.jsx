@@ -39,8 +39,22 @@ const STATUS_TEXT = {
   fail: 'проверить не удалось',
 }
 
+// Порядок строк после сверки. Список — это список ДЕЛ: сначала то, что чинить,
+// потом всё остальное. Сортировка по имени линии оставляла «триггера нет»
+// вперемешку с «всё совпало», и разобрать, что именно требует внимания,
+// получалось только вычитыванием таблицы целиком.
+const STATUS_ORDER = {
+  error: 0,      // стоит, но не тот — самое опасное: молчит и врёт
+  missing: 1,    // триггера нет — перенос не увидит изменений
+  fail: 2,       // проверить не удалось — неизвестность хуже «нет»
+  warn: 3,
+  skip: 4,
+  ok: 5,
+}
+
 export default function TriggersPage() {
   const [onlyNeeded, setOnlyNeeded] = useState(true)
+  const [hideOk, setHideOk] = useState(false)
   const [ddl, setDdl] = useState(null)
 
   const targets = useAction(api.triggerTargets)
@@ -52,8 +66,23 @@ export default function TriggersPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const rows = (targets.result?.targets || []).filter((t) => !onlyNeeded || t.needs)
   const checked = check.result?.results || {}
+  const checkedAny = Object.keys(checked).length > 0
+  const statusOf = (key) => checked[key]?.status || (checked[key] ? 'ok' : null)
+
+  const rows = (targets.result?.targets || [])
+    .filter((t) => !onlyNeeded || t.needs)
+    .filter((t) => !hideOk || statusOf(t.key) !== 'ok')
+    .slice()
+    .sort((a, b) => {
+      // до сверки порядок не меняем — сортировать нечего, и перестановка
+      // строк на пустом месте только сбивает
+      if (!checkedAny) return 0
+      const sa = STATUS_ORDER[statusOf(a.key)] ?? 9
+      const sb = STATUS_ORDER[statusOf(b.key)] ?? 9
+      return sa - sb || String(a.key).localeCompare(String(b.key))
+    })
+  const okCount = Object.values(checked).filter((r) => (r.status || 'ok') === 'ok').length
 
   const columns = [
     { title: 'Линия', dataIndex: 'key', render: (v, r) => (
@@ -143,10 +172,26 @@ export default function TriggersPage() {
           <Checkbox checked={onlyNeeded} onChange={(e) => setOnlyNeeded(e.target.checked)}>
             только те, кому триггер нужен
           </Checkbox>
+          <Checkbox
+            checked={hideOk}
+            disabled={!checkedAny}
+            onChange={(e) => setHideOk(e.target.checked)}
+          >
+            скрыть совпавшие{checkedAny ? ` (${okCount})` : ''}
+          </Checkbox>
           <Button
             loading={check.loading}
             disabled={!rows.length}
-            onClick={() => check.run(rows.map((r) => r.key))}
+            // Проверяем ВСЕ подходящие линии, а не только видимые: иначе
+            // «скрыть совпавшие» после первой же сверки сузило бы вторую до
+            // проблемных, и починенное перестало бы перепроверяться.
+            onClick={() =>
+              check.run(
+                (targets.result?.targets || [])
+                  .filter((t) => !onlyNeeded || t.needs)
+                  .map((t) => t.key),
+              )
+            }
           >
             Проверить в БД
           </Button>

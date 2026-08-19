@@ -97,17 +97,23 @@ export default function FilesPreview({
               Записать {selected.length < changed.length ? `выбранное (${selected.length})` : 'на диск'}
             </Button>
           </Popconfirm>
+          {/* Три способа закончить работу — ровно как было в прежнем
+              конструкторе: записать; записать и сразу отправить; отправить
+              отдельно (кнопка в шапке — ею уходит и то, что записано раньше,
+              и чужое, что осталось в клоне). Разделять их незачем: «записал и
+              забыл запушить» — самая частая причина того, что на сервере
+              ничего не изменилось. */}
           {onPush && (
             <Popconfirm
-              title="Запушить записанное?"
-              description="Коммит и push уйдут в общий репозиторий."
-              okText="Запушить"
+              title={`Записать ${selected.length} файлов и запушить?`}
+              description="Файлы лягут на диск, затем уйдут коммитом в общий репозиторий."
+              okText="Записать и запушить"
               cancelText="Нет"
-              disabled={!written}
-              onConfirm={onPush}
+              disabled={!selected.length}
+              onConfirm={() => onPush(selected)}
             >
-              <Button disabled={!written} loading={pushing}>
-                Запушить записанное
+              <Button disabled={!selected.length} loading={pushing || busy}>
+                Записать и запушить
               </Button>
             </Popconfirm>
           )}
