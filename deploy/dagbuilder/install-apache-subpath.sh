@@ -55,17 +55,83 @@ code=$(curl -s -o /dev/null -w '%{http_code}' --noproxy '*' "http://127.0.0.1:$P
 # ── 2. находим vhost ─────────────────────────────────────────────────────────
 echo
 echo "== Конфиг Apache =="
+
+# Спрашиваем у САМОГО Apache, а не ищем по каталогам. `apache2ctl -S` печатает
+# карту виртуальных хостов с файлом и номером строки — и это единственный
+# надёжный способ: конфиг может лежать где угодно (sites-enabled, conf-enabled,
+# conf.d, свой Include), а grep по одному каталогу такую раскладку не находит и
+# врёт, будто сайта нет, — при том что сайт открыт в соседней вкладке.
+CTL=$(command -v apache2ctl || command -v apachectl)
+VHOST_MAP=$("$CTL" -S 2>&1)
+
 if [ -n "${VHOST:-}" ]; then
   [ -f "$VHOST" ] || bad "нет файла $VHOST"
 else
-  # ищем среди ВКЛЮЧЁННЫХ: править выключенный конфиг бессмысленно
-  mapfile -t found < <(grep -rls "ServerName[[:space:]]\+$SERVER_NAME" \
-                       /etc/apache2/sites-enabled/ 2>/dev/null | xargs -r -n1 readlink -f | sort -u)
+  # строки вида:  *:443   airflow-test.oms66.ru (/etc/apache2/sites-enabled/x.conf:1)
+  # берём только :443 — на :80 обычно висит редирект, и правь мы его, ничего бы
+  # не заработало
+  # Разбор карты. Тонкость: у Apache два формата вывода, и в частом (Debian,
+  # NameVirtualHost) порт стоит НЕ в строке с именем, а в заголовке секции:
+  #
+  #   *:443                  is a NameVirtualHost
+  #            port 443 namevhost airflow-test.oms66.ru (/etc/…/x.conf:1)
+  #
+  # Поэтому порт запоминаем с заголовка и тянем вниз, а не ищем в той же
+  # строке. Только match() с двумя аргументами и RSTART/RLENGTH — это POSIX и
+  # работает в mawk, который в Debian стоит вместо gawk по умолчанию.
+  parse_map() {
+    awk -v name="$SERVER_NAME" -v want="$1" '
+      # заголовок секции: начинается не с пробела и содержит :ЧИСЛО
+      /^[^ \t]/ && /:[0-9]+/ {
+        p = $0
+        sub(/^[^:]*:/, "", p)
+        sub(/[^0-9].*$/, "", p)
+        if (p != "") port = p
+      }
+      index($0, name) > 0 {
+        # в строке с именем порт бывает и свой: "port 443 namevhost ..."
+        this = port
+        if (match($0, /port[ \t]+[0-9]+/)) {
+          s = substr($0, RSTART, RLENGTH); sub(/[^0-9]*/, "", s); this = s
+        }
+        if (want == "" || this == want) {
+          if (match($0, /\([^)]*:[0-9]+\)/)) {
+            f = substr($0, RSTART + 1, RLENGTH - 2)
+            sub(/:[0-9]+$/, "", f)
+            print f
+          }
+        }
+      }
+    ' <<<"$VHOST_MAP" | sort -u
+  }
+
+  mapfile -t found < <(parse_map 443)
+  # Если по :443 не нашлось — вдруг сайт живёт на другом порту; смотрим шире.
+  if [ "${#found[@]}" -eq 0 ]; then
+    mapfile -t found < <(parse_map "")
+    [ "${#found[@]}" -gt 0 ] && warn "vhost найден, но не на :443 — проверьте порт"
+  fi
+
   case ${#found[@]} in
-    0) bad "не нашёл включённый vhost с ServerName $SERVER_NAME — укажите VHOST=..." ;;
     1) VHOST="${found[0]}" ;;
-    *) printf '     %s\n' "${found[@]}"
-       bad "таких vhost несколько — укажите нужный через VHOST=..." ;;
+    0)
+      echo
+      echo "  Apache не знает виртуального хоста '$SERVER_NAME'. Вот что он знает:"
+      sed 's/^/     /' <<<"$VHOST_MAP"
+      echo
+      echo "  Дальше одно из трёх:"
+      echo "   * имя в конфиге записано иначе (ServerAlias, другой регистр) —"
+      echo "     запустите с SERVER_NAME='<как в списке выше>';"
+      echo "   * нужный файл виден в списке — укажите его: VHOST=/путь/к/файлу.conf;"
+      echo "   * этот сайт отдаёт ДРУГАЯ машина (Apache здесь только локальный)."
+      echo "     Проверьте, куда он резолвится и сюда ли приходит:"
+      echo "       getent hosts $SERVER_NAME ; hostname -I"
+      bad "не нашёл, какой vhost править"
+      ;;
+    *)
+      printf '     %s\n' "${found[@]}"
+      bad "таких vhost несколько — укажите нужный через VHOST=..."
+      ;;
   esac
 fi
 ok "vhost: $VHOST"
