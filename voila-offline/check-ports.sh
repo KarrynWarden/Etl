@@ -19,9 +19,10 @@ declare -A KNOWN=(
   [8081]="JupyterLab"
   [8082]="airflow-test"
   [8083]="занят gunicorn (прод-webserver?)"
-  [8084]="Voila (конструктор дагов)"
+  [8084]="Voila (прежний конструктор дагов)"
+  [8085]="веб-конструктор ETL-линий (dagbuilder_api)"
 )
-SUGGEST_FROM=8084
+SUGGEST_FROM=8085
 SUGGEST_TO=8099
 
 have() { command -v "$1" >/dev/null 2>&1; }

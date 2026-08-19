@@ -1,0 +1,36 @@
+# Вариант БЕЗ заявки в DNS: конструктор живёт подпутём на уже существующем
+# домене — https://airflow-test.oms66.ru/dagbuilder/
+#
+# Годится, чтобы запустить сегодня и не ждать А-запись. Кусок ниже вставляется
+# в существующий <VirtualHost *:443> файла airflow-test (deploy/airflow-test-apache.conf)
+# ВЫШЕ строк `ProxyPass / http://localhost:8082/`, иначе их правило перехватит
+# путь первым.
+#
+#   sudo a2enmod proxy proxy_http headers auth_basic authn_file authz_user
+#   sudo apache2ctl configtest && sudo systemctl reload apache2
+
+    # ── конструктор ETL-линий ────────────────────────────────────────────────
+    # Обязательно ПЕРЕД общим `ProxyPass /`.
+
+    # Без завершающего слэша страница откроется, но не заработает: адрес API
+    # приложение считает от document.baseURI. На /dagbuilder (без слэша) базой
+    # становится корень сайта, и запросы уходят в /api/ — то есть в airflow.
+    # Один редирект снимает весь класс «открыл ссылку, а кнопки молчат».
+    RedirectMatch permanent ^/dagbuilder$ /dagbuilder/
+
+    ProxyPass        /dagbuilder/  http://127.0.0.1:8085/
+    ProxyPassReverse /dagbuilder/  http://127.0.0.1:8085/
+
+    <Location /dagbuilder/>
+        # Своей авторизации у конструктора нет, а пишет он в репозиторий,
+        # пушит в git и ходит в боевые БД. Если у airflow-test своя форма
+        # входа — она конструктор НЕ закрывает: это разные приложения.
+        AuthType Basic
+        AuthName "Конструктор ETL-линий"
+        AuthUserFile /etc/apache2/dagbuilder.htpasswd
+        Require valid-user
+    </Location>
+
+# Всё. Ни WebSocket, ни особых заголовков не нужно: интерфейс общается с API
+# обычными запросами, а пути к файлам сборки относительные (base: './' в
+# vite.config.js), поэтому подпуть работает без единой настройки в приложении.

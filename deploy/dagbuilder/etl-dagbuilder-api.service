@@ -1,0 +1,46 @@
+# systemd-сервис: веб-конструктор ETL-линий (React + tornado).
+#
+#   sudo cp deploy/dagbuilder/etl-dagbuilder-api.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now etl-dagbuilder-api
+#   systemctl status etl-dagbuilder-api --no-pager
+#   journalctl -u etl-dagbuilder-api -f          # живой лог
+#
+# Слушает ТОЛЬКО 127.0.0.1 — наружу отдаёт Apache, у которого есть авторизация.
+# Это не перестраховка: конструктор пишет файлы в репозиторий, делает git push и
+# ходит в боевые БД. Открыть его на 0.0.0.0 — значит отдать всё это любому, кто
+# доберётся до порта.
+#
+# Порт 8085. Занятость проверяется: bash voila-offline/check-ports.sh 8085
+
+[Unit]
+Description=ETL DAG Builder web UI (React + tornado API)
+Documentation=file:///opt/jupyter/workdir/konkin/etl/tools/webui/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Тот же пользователь, что правит общий Jupyter-клон; группа etldev — общий доступ.
+# ВАЖНО: под этим же пользователем должен работать git push (ключ, remote, права
+# на каталог). Проверить до включения сервиса:
+#   sudo -u jupyter git -C /opt/jupyter/workdir/konkin/etl push --dry-run
+User=jupyter
+Group=etldev
+# umask 002 -> файлы, которые пишет конструктор, груп-записываемые: их потом
+# правят и с dev-ПК, и из Jupyter. Без этого следующая правка упрётся в права.
+UMask=0002
+
+WorkingDirectory=/opt/jupyter/workdir/konkin/etl
+ExecStart=/opt/jupyter/bin/python tools/dagbuilder_api.py --host 127.0.0.1 --port 8085
+
+# Сервис читает и пишет рабочий клон, поэтому файловую систему не запираем —
+# ограничиваемся тем, что заведомо ничего не ломает.
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

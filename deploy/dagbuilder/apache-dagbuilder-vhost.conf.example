@@ -1,0 +1,62 @@
+# Отдельный домен для конструктора: https://dagbuilder.oms66.ru/
+#
+#   sudo cp apache-dagbuilder-vhost.conf.example /etc/apache2/sites-available/dagbuilder.conf
+#   sudo a2enmod proxy proxy_http headers auth_basic authn_file authz_user
+#   sudo apache2ctl configtest && sudo systemctl reload apache2
+#   sudo a2ensite dagbuilder
+#
+# Требуется от сисадминов: A-запись dagbuilder.oms66.ru на этот сервер.
+# Сертификат — тот же, что у airflow-test.oms66.ru: он общий на домен, поэтому
+# нового выпускать не нужно (проверить: openssl x509 -noout -text -in
+# /etc/ssl/certs/oms66.crt | grep -A1 'Subject Alternative Name').
+
+<VirtualHost *:443>
+    ServerAdmin suslov@oms66.ru
+    ServerName dagbuilder.oms66.ru
+
+    SSLEngine on
+    SSLProtocol all -SSLv2 -SSLv3 -TLSv1 -TLSv1.1
+    SSLHonorCipherOrder on
+    SSLCipherSuite HIGH:!aNULL:!MD5:!SHA1
+    SSLCertificateKeyFile   /etc/ssl/private/oms66.key
+    SSLCertificateFile      /etc/ssl/certs/oms66.crt
+    SSLCertificateChainFile /etc/ssl/certs/oms66-ca.crt
+
+    # ── АВТОРИЗАЦИЯ ─────────────────────────────────────────────────────────
+    # Не украшение. Конструктор пишет файлы в репозиторий, делает git push и
+    # ходит в боевые БД, а своей авторизации у него нет вовсе — вся защита
+    # здесь. Незакрытый vhost равносилен раздаче прав на прод.
+    #
+    # Файл паролей:
+    #   sudo htpasswd -c /etc/apache2/dagbuilder.htpasswd konkin
+    #   sudo htpasswd    /etc/apache2/dagbuilder.htpasswd <следующий>
+    # Если в организации уже настроен LDAP — используйте его вместо Basic:
+    #   AuthType Basic / AuthBasicProvider ldap / AuthLDAPURL "ldap://..."
+    <Location />
+        AuthType Basic
+        AuthName "Конструктор ETL-линий"
+        AuthUserFile /etc/apache2/dagbuilder.htpasswd
+        Require valid-user
+    </Location>
+
+    ProxyRequests     Off
+    ProxyPreserveHost On
+    ProxyPass         /  http://127.0.0.1:8085/
+    ProxyPassReverse  /  http://127.0.0.1:8085/
+
+    RequestHeader set X-Forwarded-Proto "https"
+    RequestHeader set X-Forwarded-Port  "443"
+
+    # Предпросмотр отдаёт содержимое файлов целиком, а SQL-запросы бывают
+    # длинными: ответ на несколько мегабайт здесь норма, а не признак беды.
+    ProxyTimeout 300
+
+    ErrorLog  ${APACHE_LOG_DIR}/dagbuilder-error.log
+    CustomLog ${APACHE_LOG_DIR}/dagbuilder-access.log combined
+</VirtualHost>
+
+# Голый http — только редирект на https, чтобы пароль не ушёл открытым текстом.
+<VirtualHost *:80>
+    ServerName dagbuilder.oms66.ru
+    RedirectPermanent / https://dagbuilder.oms66.ru/
+</VirtualHost>
