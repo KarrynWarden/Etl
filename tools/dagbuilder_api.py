@@ -841,6 +841,34 @@ def _selftest():
                 f"интерфейс зовёт {method} /api/{route}, а такого маршрута нет. "
                 f"Есть: {', '.join(sorted(table))}")
 
+    # ── создание линии справочника с нуля ────────────────────────────────────
+    # Ровно то, что собирает форма создания: пустая спецификация с
+    # заполненными полями, никакого чтения с диска. Проверяем, что из неё
+    # получается полный комплект — два SQL и фрагмент — и что все три файла
+    # НОВЫЕ: запись новой линии идёт с overwrite=false и обязана падать, если
+    # ключ занят, а не съедать чужие файлы.
+    new_sp = {"kind": "regular", "master_label": "SPSELFTEST",
+              "db_master": "Orcl", "db_slave": "Post",
+              "master_table": "KOKNAEV.SPSELFTEST", "slave_table": "spselftest",
+              "dependence": "SPSELFTEST", "src_mode": "table",
+              "pairs": [["ID", "id"], ["NAME", "name"]]}
+    code, body = dispatch("POST", "sp/preview", {"spec": new_sp})
+    assert code == 200, body
+    res = body["result"]
+    assert res["key"] == "SPSELFTESTOrclPost", res["key"]
+    paths = [f["path"] for f in res["files"]]
+    assert len(paths) == 3 and set(paths) == set(res["created"]), (paths, res["created"])
+    assert any(p.endswith("Select.sql") for p in paths), paths
+    assert any(p.endswith("Add.sql") for p in paths), paths
+    assert any("SpTableName.d/" in p for p in paths), paths
+    # разовый перенос — тот же путь, только фрагмент уезжает в SpOnce.d
+    code, body = dispatch("POST", "sp/preview", {"spec": dict(new_sp, kind="once")})
+    assert code == 200, body
+    assert any("SpOnce.d/" in f["path"] for f in body["result"]["files"]), body["result"]
+    # и ничего из этого на диск не попало: предпросмотр обязан быть безопасным
+    assert not os.path.exists(os.path.join(
+        B.ROOT, "etlFolder", "SpTableName.d", "SPSELFTESTOrclPost.json"))
+
     # ── что вообще меняет репозиторий ────────────────────────────────────────
     # Правка обязана доходить до диска ОДНОЙ дорогой: «Предпросмотр» → человек
     # видит разницу → «Записать». Маршруты ниже — исключения, и каждое здесь не

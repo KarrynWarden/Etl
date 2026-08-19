@@ -57,6 +57,11 @@ export default function SpPage() {
   const [selectedKey, setSelectedKey] = useState(null)
   const [filter, setFilter] = useState('')
   const [work, setWork] = useState('any')
+  // Создание новой линии — то же самое окно правки, но с пустой
+  // спецификацией и без чтения с диска. Отдельной страницы не завожу: поля
+  // ровно те же, а «создать» от «поправить» отличается только тем, откуда
+  // взялись начальные значения и можно ли перезаписывать существующие файлы.
+  const [creating, setCreating] = useState(false)
 
   const lines = useAction(api.spLines)
 
@@ -88,9 +93,21 @@ export default function SpPage() {
           size="small"
           title="Линии"
           extra={
-            <Button size="small" loading={lines.loading} onClick={() => lines.run()}>
-              Обновить
-            </Button>
+            <Space>
+              <Button
+                size="small"
+                type="primary"
+                onClick={() => {
+                  setSelectedKey(null)
+                  setCreating(true)
+                }}
+              >
+                + Создать
+              </Button>
+              <Button size="small" loading={lines.loading} onClick={() => lines.run()}>
+                Обновить
+              </Button>
+            </Space>
           }
         >
           <Segmented
@@ -99,6 +116,7 @@ export default function SpPage() {
             onChange={(v) => {
               setKind(v)
               setSelectedKey(null)
+              setCreating(false)
             }}
             options={Object.entries(KINDS).map(([value, label]) => ({ value, label }))}
           />
@@ -125,7 +143,10 @@ export default function SpPage() {
             {(lines.loading && !lines.result ? [] : shown).map((l) => (
               <div
                 key={l.key}
-                onClick={() => setSelectedKey(l.key)}
+                onClick={() => {
+                  setSelectedKey(l.key)
+                  setCreating(false)
+                }}
                 style={{
                   cursor: 'pointer',
                   padding: '6px 8px',
@@ -148,13 +169,49 @@ export default function SpPage() {
       </Col>
 
       <Col xs={24} md={16} lg={18}>
-        <SpForm entry={selected} onChanged={() => lines.run()} />
+        <SpForm
+          entry={creating ? { kind, key: null } : selected}
+          existingKeys={(lines.result?.lines || []).map((l) => l.key)}
+          onChanged={() => lines.run()}
+          onCreated={(key) => {
+            setCreating(false)
+            setSelectedKey(key)
+            lines.run()
+          }}
+        />
       </Col>
     </Row>
   )
 }
 
-function SpForm({ entry, onChanged }) {
+// Начальная спецификация новой линии. Поля ровно те же, что отдаёт
+// load_sp_line, — форма не должна знать, читали её с диска или завели сейчас.
+function blankSpec(kind) {
+  return {
+    key: null,
+    kind,
+    master_label: '',
+    db_master: 'Orcl',
+    db_slave: 'Post',
+    master_table: '',
+    slave_table: '',
+    dependence: '',
+    disabled: false,
+    append: false,
+    doc: '',
+    src_mode: 'table',
+    select_sql: null,
+    select_sql_text: '',
+    add_sql: null,
+    add_sql_text: '',
+    master_cols: [],
+    slave_cols: [],
+    pairs: [],
+    sql_dir_name: null,
+  }
+}
+
+function SpForm({ entry, existingKeys, onChanged, onCreated }) {
   const [spec, setSpec] = useState(null)
   const [original, setOriginal] = useState(null)
   const [targets, setTargets] = useState(null)
@@ -168,13 +225,26 @@ function SpForm({ entry, onChanged }) {
   const remove = useAction(api.spDelete)
   const auditTrigger = useAction(api.spAuditTrigger)
   const snapMaster = useAction(api.snapStructure)
+  const snapQuery = useAction(api.snapQueryStructure)
   const snapSlave = useAction(api.snapStructure)
+  const match = useAction(api.match)
+
+  const isNew = Boolean(entry) && !entry.key
 
   useEffect(() => {
     if (!entry) return
     preview.reset()
     write.reset()
     setTargets(null)
+    if (!entry.key) {
+      // Новая линия: читать нечего, начинаем с пустой формы. `original`
+      // ставим тем же значением, чтобы «есть несохранённые правки» зажигалось
+      // от первого настоящего ввода, а не от самого факта создания.
+      const fresh = blankSpec(entry.kind)
+      setSpec(fresh)
+      setOriginal(JSON.stringify(fresh))
+      return
+    }
     load.run({ kind: entry.kind, key: entry.key }).then((d) => {
       if (!d) return
       setSpec(d.spec)
@@ -195,7 +265,7 @@ function SpForm({ entry, onChanged }) {
       </Card>
     )
 
-  if (load.loading && !spec)
+  if (!isNew && load.loading && !spec)
     return (
       <Card>
         <Spin /> <Typography.Text type="secondary">Читаю линию…</Typography.Text>
@@ -216,27 +286,81 @@ function SpForm({ entry, onChanged }) {
     typeof c === 'string' ? c : c?.column_name || c?.COLUMN_NAME || ''
   const slaveNames = (spec.slave_cols || []).map(colName)
 
-  // Перевод линии из «вся таблица» в явный список колонок. Ведомую снимаем
-  // тоже: в режиме «вся таблица» её колонки известны из Add.sql, но их порядок
-  // и есть то, на что молча полагался SELECT *, — сверить с БД надёжнее.
-  const convertFromAll = async () => {
-    const m = await snapMaster.run({ db: spec.db_master, table: spec.master_table })
+  // Снять колонки обеих сторон из БД.
+  //
+  // Нужно в двух случаях: у НОВОЙ линии колонок ещё нет вовсе, и у линии,
+  // которую переводят с «всей таблицы» на явный список. Ведущая снимается по
+  // тексту запроса, если режим «своё SELECT», — имена колонок там это его
+  // псевдонимы, ровно их и увидит рантайм.
+  //
+  // Пары подбираются по именам (api.match) и только у тех колонок, для
+  // которых пары ещё нет: уже расставленное руками не трогаем — это тот же
+  // принцип, что на вкладке колонок сложного ETL.
+  // Ключ фрагмента складывается на сервере (sp_key), здесь он нужен только
+  // для заголовка новой линии — показать заранее, как она будет называться.
+  const previewKey = `${spec.master_label || ''}${spec.db_master}${spec.db_slave}`
+
+  const snapping =
+    snapMaster.loading || snapQuery.loading || snapSlave.loading || match.loading
+  const snapError =
+    snapMaster.error || snapQuery.error || snapSlave.error || match.error
+
+  const snapColumns = async () => {
+    const sql = (spec.select_sql_text || '').trim()
+    const m =
+      spec.src_mode === 'custom' && sql
+        ? await snapQuery.run({ db: spec.db_master, sql })
+        : await snapMaster.run({ db: spec.db_master, table: spec.master_table })
     if (!m) return
     const s = await snapSlave.run({ db: spec.db_slave, table: spec.slave_table })
     if (!s) return
-    const fresh = s.columns.map(colName)
-    const known = (spec.pairs || []).map(([, sl]) => sl)
-    patch({
-      src_mode: 'table',
+    const known = new Map((spec.pairs || []).map(([mm, ss]) => [mm, ss]))
+    const positional = (spec.pairs || []).map(([, ss]) => ss)
+    const suggestion = await match.run({
+      master_cols: m.columns,
       slave_cols: s.columns,
-      // Пары строим по ПОЗИЦИИ — ровно так их и понимал прежний режим. Если
-      // ведомая уже была описана (Add.sql), её порядок и берём за основу.
-      pairs: m.columns.map((c, i) => [colName(c), known[i] || fresh[i] || null]),
+    })
+    patch({
+      src_mode: spec.src_mode === 'all' ? 'table' : spec.src_mode,
+      master_cols: m.columns,
+      slave_cols: s.columns,
+      pairs: m.columns.map((c, i) => {
+        const name = colName(c)
+        // 1) пара, расставленная руками; 2) для «всей таблицы» — прежний
+        // порядок (именно на него этот режим и полагался); 3) автоподбор
+        const kept = known.get(name)
+        const byPosition = spec.src_mode === 'all' ? positional[i] : null
+        return [name, kept || byPosition || suggestion?.suggestions?.[i] || null]
+      }),
     })
   }
 
+  // Занятый ключ — отказ при записи (overwrite: false), но узнать об этом
+  // лучше сразу, а не после того, как заполнил всю форму.
+  const keyTaken = isNew && spec.master_label && (existingKeys || []).includes(previewKey)
+
   const settings = (
     <Form layout="vertical">
+      {isNew && (
+        <Alert
+          type={keyTaken ? 'error' : 'info'}
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={
+            keyTaken
+              ? `Линия ${previewKey} уже есть — выберите другую метку`
+              : `Новая линия: ${KINDS[entry.kind].toLowerCase()}`
+          }
+          description={
+            keyTaken
+              ? 'Ключ фрагмента складывается из метки и пары БД, и он должен быть уникальным: запись откажется затирать чужие файлы.'
+              : 'Заполните таблицы и метку, снимите колонки на вкладке «Колонки», затем «Предпросмотр» → «Записать».' +
+                (entry.kind === 'regular'
+                  ? ' После создания не забудьте про аудитный триггер: без него справочник не обновится ни разу и ошибки не выдаст.'
+                  : '')
+          }
+        />
+      )}
       <Row gutter={16}>
         <Col span={8}>
           <Form.Item label="БД ведущей">
@@ -341,18 +465,14 @@ function SpForm({ entry, onChanged }) {
                 только для чтения таких линий; переведите её на явный список.
               </Typography.Text>
               <Space>
-                <Button
-                  type="primary"
-                  loading={snapMaster.loading || snapSlave.loading}
-                  onClick={convertFromAll}
-                >
+                <Button type="primary" loading={snapping} onClick={snapColumns}>
                   Снять колонки из БД и перевести
                 </Button>
                 <Typography.Text type="secondary">
                   {spec.master_table} → {spec.slave_table}
                 </Typography.Text>
               </Space>
-              <ActionError error={snapMaster.error || snapSlave.error} />
+              <ActionError error={snapError} />
             </Space>
           }
         />
@@ -379,6 +499,38 @@ function SpForm({ entry, onChanged }) {
 
   const mapping = (
     <>
+      <Space wrap style={{ marginBottom: 12 }}>
+        <Button
+          loading={snapping}
+          disabled={
+            !spec.slave_table ||
+            (spec.src_mode === 'custom' ? !spec.select_sql_text : !spec.master_table)
+          }
+          onClick={snapColumns}
+        >
+          Снять колонки из БД
+        </Button>
+        <Typography.Text type="secondary">
+          {spec.src_mode === 'custom' ? 'по тексту SELECT из формы' : spec.master_table || '—'} →{' '}
+          {spec.slave_table || '—'}
+        </Typography.Text>
+      </Space>
+      <ActionError error={snapError} />
+
+      {!(spec.pairs || []).length && (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="Колонок пока нет"
+          description={
+            spec.src_mode === 'custom'
+              ? 'Впишите запрос на вкладке SQL и нажмите «Снять колонки из БД» — имена возьмутся из его псевдонимов.'
+              : 'Заполните обе таблицы на вкладке «Настройки» и нажмите «Снять колонки из БД».'
+          }
+        />
+      )}
+
       {spec.src_mode === 'all' && (
         <Alert
           type="info"
@@ -603,8 +755,9 @@ function SpForm({ entry, onChanged }) {
       <Card
         title={
           <Space wrap>
-            <b>{entry.key}</b>
+            <b>{entry.key || (spec.master_label ? previewKey : 'Новая линия')}</b>
             <Tag>{KINDS[entry.kind]}</Tag>
+            {isNew && <Tag color="green">создаётся</Tag>}
             <Tag>{spec.db_master} → {spec.db_slave}</Tag>
             {dirty && <Tag color="orange">есть несохранённые правки</Tag>}
           </Space>
@@ -625,6 +778,7 @@ function SpForm({ entry, onChanged }) {
             <Button
               type="primary"
               loading={preview.loading}
+              disabled={keyTaken}
               onClick={() => {
                 write.reset()
                 preview.run({ ...spec, kind: entry.kind })
@@ -640,7 +794,22 @@ function SpForm({ entry, onChanged }) {
             { key: 'set', label: 'Настройки', children: settings },
             { key: 'map', label: `Колонки (${(spec.pairs || []).length})`, children: mapping },
             { key: 'sql', label: 'SQL', children: sql },
-            { key: 'act', label: 'Действия', children: actions },
+            {
+              key: 'act',
+              label: 'Действия',
+              // Перевод между типами и удаление относятся к тому, что уже лежит
+              // на диске: у несозданной линии их адресата попросту нет.
+              children: isNew ? (
+                <Alert
+                  type="info"
+                  showIcon
+                  message="Линия ещё не создана"
+                  description="Перевод между типами, удаление и DDL аудитного триггера появятся, как только вы её запишете."
+                />
+              ) : (
+                actions
+              ),
+            },
           ]}
         />
         <ActionError error={preview.error} onClose={preview.reset} />
@@ -658,12 +827,18 @@ function SpForm({ entry, onChanged }) {
             write
               .run({
                 files: chosen.map((f) => [f.path, f.content]),
-                overwrite: true,
+                // У НОВОЙ линии перезапись запрещена: если файл с таким именем
+                // уже есть, значит ключ занят — лучше отказ, чем молча съеденная
+                // чужая линия.
+                overwrite: !isNew,
               })
               .then((r) => {
                 if (!r) return
                 setOriginal(JSON.stringify(spec))
-                onChanged?.()
+                // onCreated сам обновляет список и выбирает новую линию,
+                // поэтому второй раз дёргать onChanged незачем
+                if (isNew) onCreated?.(preview.result.key)
+                else onChanged?.()
               })
           }
         />
