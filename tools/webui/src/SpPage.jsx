@@ -10,7 +10,6 @@ import {
   Popconfirm,
   Radio,
   Row,
-  Segmented,
   Select,
   Space,
   Spin,
@@ -18,9 +17,10 @@ import {
   Table,
   Tabs,
   Tag,
+  Tooltip,
   Typography,
 } from 'antd'
-import { UndoOutlined } from '@ant-design/icons'
+import { ReloadOutlined, UndoOutlined } from '@ant-design/icons'
 
 import { api } from './api'
 import { useAction } from './useAction'
@@ -49,8 +49,13 @@ const DBS = [
 
 const WORK = { any: 'Все', on: 'В работе', off: 'Отключённые' }
 
-export default function SpPage() {
-  const [kind, setKind] = useState('regular')
+// `kind` приходит СНАРУЖИ: справочники и разовый перенос — две вкладки
+// верхнего уровня, а не переключатель внутри одной. Общего у них меньше, чем
+// кажется по устройству файлов: справочник ждёт сигнала от аудитного триггера
+// (isokaudit = 0) и обновляется сам, разовый запускают руками под конкретную
+// задачу. Держать их на одной вкладке значило показывать вперемешку то, что и
+// делают в разное время, и по разным поводам.
+export default function SpPage({ kind }) {
   // Храним КЛЮЧ, а не сам объект линии. Объект после перезагрузки списка
   // становится копией из прошлого ответа, и форма продолжает показывать
   // прежнее состояние: выключаешь линию — в списке она краснеет, а
@@ -59,6 +64,7 @@ export default function SpPage() {
   const [selectedKey, setSelectedKey] = useState(null)
   const [filter, setFilter] = useState('')
   const [work, setWork] = useState('any')
+  const [direction, setDirection] = useState(null)
   // Создание новой линии — то же самое окно правки, но с пустой
   // спецификацией и без чтения с диска. Отдельной страницы не завожу: поля
   // ровно те же, а «создать» от «поправить» отличается только тем, откуда
@@ -77,11 +83,20 @@ export default function SpPage() {
     const needle = filter.trim().toLowerCase()
     return all.filter((l) => {
       if (l.kind !== kind) return false
+      if (direction && l.direction !== direction) return false
       if (work === 'on' && l.disabled) return false
       if (work === 'off' && !l.disabled) return false
       return !needle || l.key.toLowerCase().includes(needle)
     })
-  }, [lines.result, kind, filter, work])
+  }, [lines.result, kind, filter, work, direction])
+
+  // направления считаем по СВОЕМУ типу линий: на вкладке справочников
+  // незачем предлагать направление, которое есть только у разового переноса
+  const directions = useMemo(
+    () => [...new Set((lines.result?.lines || [])
+      .filter((l) => l.kind === kind).map((l) => l.direction))].sort(),
+    [lines.result, kind],
+  )
 
   const selected = useMemo(
     () => (lines.result?.lines || []).find((l) => l.key === selectedKey && l.kind === kind) || null,
@@ -93,7 +108,7 @@ export default function SpPage() {
       <Col xs={24} md={8} lg={6}>
         <Card
           size="small"
-          title="Линии"
+          title={KINDS[kind]}
           extra={
             <Space>
               <Button
@@ -106,28 +121,33 @@ export default function SpPage() {
               >
                 + Создать
               </Button>
-              <Button size="small" loading={lines.loading} onClick={() => lines.run()}>
-                Обновить
-              </Button>
+              {/* значком, как в списке линий сложного ETL: одна и та же
+                  кнопка не должна выглядеть на соседних вкладках по-разному */}
+              <Tooltip title="Перечитать список">
+                <Button
+                  size="small"
+                  icon={<ReloadOutlined />}
+                  loading={lines.loading}
+                  onClick={() => lines.run()}
+                />
+              </Tooltip>
             </Space>
           }
         >
-          <Segmented
-            block
-            value={kind}
-            onChange={(v) => {
-              setKind(v)
-              setSelectedKey(null)
-              setCreating(false)
-            }}
-            options={Object.entries(KINDS).map(([value, label]) => ({ value, label }))}
-          />
           <Input.Search
             allowClear
             style={{ margin: '8px 0' }}
             placeholder="фильтр по имени"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
+          />
+          <Select
+            style={{ width: '100%', marginBottom: 8 }}
+            allowClear
+            placeholder="направление"
+            value={direction}
+            onChange={setDirection}
+            options={directions.map((d) => ({ value: d }))}
           />
           <Select
             style={{ width: '100%', marginBottom: 8 }}
@@ -692,8 +712,8 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
         <Typography.Title level={5}>Перевести в другой тип</Typography.Title>
         <Typography.Paragraph type="secondary">
           {entry.kind === 'regular'
-            ? 'Сейчас это регулярный справочник: обновляется по заданию (isokaudit = 0). Перевод в разовый снимет с него это ожидание.'
-            : 'Сейчас это разовый перенос: запускается руками. Перевод в регулярный подключит его к дагу справочников.'}
+            ? 'Сейчас это регулярный справочник: обновляется по заданию (isokaudit = 0). Перевод в разовый снимет с него это ожидание — и линия переедет на соседнюю вкладку.'
+            : 'Сейчас это разовый перенос: запускается руками. Перевод в регулярный подключит его к дагу справочников — и линия переедет на соседнюю вкладку.'}
         </Typography.Paragraph>
         <Popconfirm
           title="Перевести линию?"
