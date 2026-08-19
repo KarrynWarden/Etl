@@ -89,9 +89,13 @@ sudo VHOST=/etc/apache2/sites-available/мой.conf URLPATH=/etl_configurator \
 Откатить всё:
 
 ```bash
-sudo cp -a /etc/apache2/sites-available/<vhost>.bak-<дата> /etc/apache2/sites-available/<vhost>
-sudo systemctl reload apache2
+sudo cp /etc/apache2/sites-available/<vhost>.bak-<дата> /etc/apache2/sites-available/<vhost>
+sudo apache2ctl configtest && sudo systemctl reload apache2
 ```
+
+**Проверяйте `configtest` после любой правки.** Apache держит конфиг в памяти:
+сломанный файл на диске ничего не роняет сразу, а сайт ложится при следующем
+перезапуске — когда причину уже никто не свяжет с правкой недельной давности.
 
 ### Б. Свой домен — вот тут уже нужна заявка
 

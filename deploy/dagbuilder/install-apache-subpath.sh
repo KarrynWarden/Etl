@@ -133,7 +133,19 @@ else
       ;;
   esac
 fi
-ok "vhost: $VHOST"
+# Разыменовываем ссылку. /etc/apache2/sites-enabled почти всегда состоит из
+# симлинков на sites-available, и это не мелочь: `cp -a` копирует САМ симлинк,
+# то есть «копия» указывает на тот же живой файл. Питон пишет сквозь ссылку в
+# настоящий файл — и откат `cp -a копия оригинал` кладёт симлинк поверх
+# симлинка, не восстанавливая содержимое. Правка остаётся на диске, а вы об
+# этом узнаёте при следующем перезапуске Apache.
+if [ -L "$VHOST" ]; then
+  REAL=$(readlink -f "$VHOST")
+  ok "vhost: $VHOST -> $REAL (ссылка разыменована)"
+  VHOST="$REAL"
+else
+  ok "vhost: $VHOST"
+fi
 
 grep -q '<VirtualHost \*:443>' "$VHOST" || warn "в файле нет <VirtualHost *:443> — проверьте вручную"
 
@@ -176,8 +188,21 @@ fi
 echo
 echo "== Правка vhost =="
 BACKUP="$VHOST.bak-$(date +%Y%m%d-%H%M%S)"
-cp -a "$VHOST" "$BACKUP"
+cp "$VHOST" "$BACKUP"          # cp, а не cp -a: нужна КОПИЯ, а не ссылка
 ok "копия: $BACKUP"
+
+# Откат с проверкой. Молчаливо «не откатиться» — худший исход: Apache работает
+# на старом конфиге из памяти, на диске лежит сломанный, и узнаётся это при
+# следующем перезапуске, когда сайт уже лёг.
+restore() {
+  cp "$BACKUP" "$VHOST"
+  if cmp -s "$BACKUP" "$VHOST"; then
+    ok "конфиг возвращён из копии (проверено побайтно)"
+  else
+    warn "ОТКАТ НЕ УДАЛСЯ. Верните вручную и проверьте:"
+    warn "  sudo cp $BACKUP $VHOST && sudo apache2ctl configtest"
+  fi
+}
 
 AUTH_BLOCK=""
 [ -n "${NO_AUTH:-}" ] || AUTH_BLOCK=$(cat <<EOF
@@ -213,6 +238,14 @@ path = os.environ["VHOST"]
 begin, end, block = os.environ["MARK_BEGIN"], os.environ["MARK_END"], os.environ["BLOCK"]
 text = open(path, encoding="utf-8").read()
 
+# $(...) в bash срезает ВСЕ завершающие переводы строк, поэтому блок приезжает
+# сюда без последнего \n — и приклеивается к строке, перед которой вставлен:
+#     # <<< etl_configurator    ProxyPass  /  http://localhost:8082/
+# Строка становится частью комментария и просто исчезает из конфига. Что
+# сломается — зависит от того, какая это была строка; у нас так пропал
+# ProxyPass airflow. Восстанавливаем перевод строки явно.
+block = block.rstrip("\n") + "\n\n"
+
 # Повторный запуск: свой прежний блок вырезаем целиком, чужое не трогаем.
 # Заодно убираем блок под ПРЕЖНИМ именем пути (etl_builder): если его успели
 # поставить, два ProxyPass на разные пути к одному сервису не поломают Apache,
@@ -236,10 +269,21 @@ else:
         sys.exit("не нашёл, куда вставить: нет ни 'ProxyPass /', ни </VirtualHost>")
     at = m.start()
 
-open(path, "w", encoding="utf-8").write(text[:at] + block + text[at:])
+result = text[:at] + block + text[at:]
+
+# Дешёвая проверка структуры ДО записи: парность секций. configtest поймает и
+# это, но скажет «<VirtualHost> was not closed» без единого намёка, где именно.
+for tag in ("VirtualHost", "Location", "Directory", "Proxy", "IfModule"):
+    op = len(re.findall(r"^[ \t]*<%s[ >]" % tag, result, re.M))
+    cl = len(re.findall(r"^[ \t]*</%s>" % tag, result, re.M))
+    if op != cl:
+        sys.exit(f"после вставки не сходятся секции <{tag}>: открыто {op}, "
+                 f"закрыто {cl} — записывать не стал")
+
+open(path, "w", encoding="utf-8").write(result)
 print(f"    (прежний блок удалён: {removed}); вставлено перед позицией {at}")
 PY
-[ $? -eq 0 ] || { cp -a "$BACKUP" "$VHOST"; bad "вставка не удалась — конфиг возвращён из копии"; }
+[ $? -eq 0 ] || { restore; bad "вставка не удалась — конфиг возвращён из копии"; }
 ok "блок вставлен перед общим ProxyPass /"
 
 # ── 6. проверка и применение ─────────────────────────────────────────────────
@@ -249,7 +293,7 @@ if out=$(apache2ctl configtest 2>&1); then
   ok "configtest: ${out##*$'\n'}"
 else
   echo "$out" | sed 's/^/     /'
-  cp -a "$BACKUP" "$VHOST"
+  restore
   bad "configtest не прошёл — конфиг возвращён из копии, ничего не изменилось"
 fi
 
