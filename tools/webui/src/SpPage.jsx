@@ -27,6 +27,7 @@ import { useAction } from './useAction'
 import ActionError from './ActionError'
 import ComboBox from './ComboBox'
 import FilesPreview from './FilesPreview'
+import TableNameInput from './TableNameInput'
 
 // Справочники и разовый перенос.
 //
@@ -384,18 +385,20 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
 
       <Row gutter={16}>
         <Col span={12}>
-          <Form.Item label="Ведущая таблица">
-            <Input
+          <Form.Item label={`Ведущая таблица (${spec.db_master})`}>
+            <TableNameInput
               value={spec.master_table || ''}
-              onChange={(e) => patch({ master_table: e.target.value })}
+              db={spec.db_master}
+              onChange={(v) => patch({ master_table: v })}
             />
           </Form.Item>
         </Col>
         <Col span={12}>
-          <Form.Item label="Ведомая таблица">
-            <Input
+          <Form.Item label={`Ведомая таблица (${spec.db_slave})`}>
+            <TableNameInput
               value={spec.slave_table || ''}
-              onChange={(e) => patch({ slave_table: e.target.value })}
+              db={spec.db_slave}
+              onChange={(v) => patch({ slave_table: v })}
             />
           </Form.Item>
         </Col>

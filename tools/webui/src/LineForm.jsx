@@ -26,6 +26,7 @@ import ActionError from './ActionError'
 import ComboBox from './ComboBox'
 import FilesPreview from './FilesPreview'
 import MappingEditor from './MappingEditor'
+import TableNameInput from './TableNameInput'
 import LineActions from './LineActions'
 
 const MODES = [
@@ -124,13 +125,21 @@ export default function LineForm({ lineKey, onChanged }) {
     <Form layout="vertical">
       <Row gutter={16}>
         <Col span={12}>
-          <Form.Item label="Ведущая таблица">
-            <Input value={spec.table_master} onChange={(e) => patch({ table_master: e.target.value })} />
+          <Form.Item label={`Ведущая таблица (${spec.db_master})`}>
+            <TableNameInput
+              value={spec.table_master}
+              db={spec.db_master}
+              onChange={(v) => patch({ table_master: v })}
+            />
           </Form.Item>
         </Col>
         <Col span={12}>
-          <Form.Item label="Ведомая таблица">
-            <Input value={spec.table_slave} onChange={(e) => patch({ table_slave: e.target.value })} />
+          <Form.Item label={`Ведомая таблица (${spec.db_slave})`}>
+            <TableNameInput
+              value={spec.table_slave}
+              db={spec.db_slave}
+              onChange={(v) => patch({ table_slave: v })}
+            />
           </Form.Item>
         </Col>
       </Row>

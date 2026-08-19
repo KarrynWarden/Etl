@@ -1539,6 +1539,11 @@ def to_db_case(name, db):
 
     'spmkb' + Orcl -> 'SPMKB';  'KOKNAEV.SPMKB' + Post -> 'koknaev.spmkb'.
     Кавычки сохраняем как есть (в них регистр значим — не корёжим).
+
+    То же правило живёт в интерфейсе (tools/webui/src/dbCase.js) — там оно
+    стоит за кнопкой «привести к регистру БД». Расходиться им нельзя: имя
+    линии, полученное этим правилом, сравнивается с etl_jobs.tablename
+    ДОСЛОВНО. Набор проверочных случаев один на обе стороны, см. _selftest.
     """
     name = (name or "").strip()
     if not name:
@@ -1546,7 +1551,10 @@ def to_db_case(name, db):
     f = str.upper if db == "Orcl" else str.lower
     out = []
     for part in name.split("."):
-        if part.startswith('"') and part.endswith('"'):
+        # Открывающей кавычки достаточно: имя набирают вживую, и пока вторая
+        # кавычка не поставлена, портить набранное нельзя. Незакрытая кавычка
+        # в SQL всё равно ошибка — поднимать регистр в ней незачем.
+        if part.startswith('"'):
             out.append(part)          # кавычки -> регистр значим, не меняем
         else:
             out.append(f(part))
@@ -2005,11 +2013,25 @@ def _selftest():
     assert body["demoPostOrcl"]["disabled"] is True, body
     assert "disabled" not in _FORM_CONFIG_KEYS
 
-    # приведение имени к диалекту БД
-    assert to_db_case("spmkb", "Orcl") == "SPMKB"
-    assert to_db_case("SPMKB", "Post") == "spmkb"
-    assert to_db_case("KOKNAEV.SPMKB", "Post") == "koknaev.spmkb"
-    assert to_db_case('sch."MixedCase"', "Orcl") == 'SCH."MixedCase"'
+    # ── приведение имени к диалекту БД ───────────────────────────────────────
+    # Этот же набор случаев проверяет интерфейс (tools/webui/src/dbCase.js):
+    # правило одно, и разойтись сторонам нельзя — имя линии, полученное им,
+    # сравнивается с etl_jobs.tablename дословно.
+    for name, db, want in (
+        ("spmkb", "Orcl", "SPMKB"),
+        ("SPMKB", "Post", "spmkb"),
+        ("KOKNAEV.SPMKB", "Post", "koknaev.spmkb"),
+        ("koknaev.iprkdept", "Orcl", "KOKNAEV.IPRKDEPT"),
+        ('sch."MixedCase"', "Orcl", 'SCH."MixedCase"'),
+        ('sch."MixedCase"', "Post", 'sch."MixedCase"'),
+        # незакрытая кавычка: имя набирают вживую, и до второй кавычки
+        # содержимое трогать нельзя
+        ('sch."Mix', "Orcl", 'SCH."Mix'),
+        ("  spmkb  ", "Orcl", "SPMKB"),
+        ("", "Orcl", ""),
+        (None, "Post", ""),
+    ):
+        assert to_db_case(name, db) == want, (name, db, to_db_case(name, db))
     print("selftest OK")
 
 

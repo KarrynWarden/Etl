@@ -21,6 +21,7 @@ import { useAction } from './useAction'
 import ActionError from './ActionError'
 import ComboBox from './ComboBox'
 import FilesPreview from './FilesPreview'
+import TableNameInput from './TableNameInput'
 
 const DBS = [
   { value: 'Orcl', label: 'Oracle' },
@@ -153,13 +154,24 @@ export default function NewLinePage({ onCreated }) {
 
           <Row gutter={16}>
             <Col span={12}>
-              <Form.Item label="Ведущая таблица" help="со схемой, если нужна: KOKNAEV.IPRKDEPT">
-                <Input value={form.table_master} onChange={(e) => patch({ table_master: e.target.value })} />
+              <Form.Item
+                label={`Ведущая таблица (${form.db_master})`}
+                help="со схемой, если нужна: KOKNAEV.IPRKDEPT"
+              >
+                <TableNameInput
+                  value={form.table_master}
+                  db={form.db_master}
+                  onChange={(v) => patch({ table_master: v })}
+                />
               </Form.Item>
             </Col>
             <Col span={12}>
-              <Form.Item label="Ведомая таблица">
-                <Input value={form.table_slave} onChange={(e) => patch({ table_slave: e.target.value })} />
+              <Form.Item label={`Ведомая таблица (${form.db_slave})`}>
+                <TableNameInput
+                  value={form.table_slave}
+                  db={form.db_slave}
+                  onChange={(v) => patch({ table_slave: v })}
+                />
               </Form.Item>
             </Col>
           </Row>
