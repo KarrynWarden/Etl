@@ -1,5 +1,5 @@
 # Вариант БЕЗ заявки в DNS: конструктор живёт подпутём на уже существующем
-# домене — https://airflow-test.oms66.ru/etl_builder/
+# домене — https://airflow-test.oms66.ru/etl_configurator/
 #
 # Годится, чтобы запустить сегодня и не ждать А-запись. Кусок ниже вставляется
 # в существующий <VirtualHost *:443> файла airflow-test (deploy/airflow-test-apache.conf)
@@ -13,21 +13,21 @@
     # Обязательно ПЕРЕД общим `ProxyPass /`.
 
     # Без завершающего слэша страница откроется, но не заработает: адрес API
-    # приложение считает от document.baseURI. На /etl_builder (без слэша) базой
+    # приложение считает от document.baseURI. На /etl_configurator (без слэша) базой
     # становится корень сайта, и запросы уходят в /api/ — то есть в airflow.
     # Один редирект снимает весь класс «открыл ссылку, а кнопки молчат».
-    RedirectMatch permanent ^/etl_builder$ /etl_builder/
+    RedirectMatch permanent ^/etl_configurator$ /etl_configurator/
 
-    ProxyPass        /etl_builder/  http://127.0.0.1:8085/
-    ProxyPassReverse /etl_builder/  http://127.0.0.1:8085/
+    ProxyPass        /etl_configurator/  http://127.0.0.1:8085/
+    ProxyPassReverse /etl_configurator/  http://127.0.0.1:8085/
 
-    <Location /etl_builder/>
+    <Location /etl_configurator/>
         # Своей авторизации у конструктора нет, а пишет он в репозиторий,
         # пушит в git и ходит в боевые БД. Если у airflow-test своя форма
         # входа — она конструктор НЕ закрывает: это разные приложения.
         AuthType Basic
         AuthName "Конструктор ETL-линий"
-        AuthUserFile /etc/apache2/etl_builder.htpasswd
+        AuthUserFile /etc/apache2/etl_configurator.htpasswd
         Require valid-user
     </Location>
 

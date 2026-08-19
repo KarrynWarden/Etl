@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Отдать конструктор по адресу https://airflow-test.oms66.ru/etl_builder/
+# Отдать конструктор по адресу https://airflow-test.oms66.ru/etl_configurator/
 # БЕЗ сисадминов: ни DNS-заявки, ни нового сертификата — только root на сервере.
 #
 #   sudo bash deploy/dagbuilder/install-apache-subpath.sh
@@ -8,7 +8,7 @@
 # Переменные (все необязательные):
 #   VHOST=/etc/apache2/sites-available/airflow-test.conf   файл vhost
 #   SERVER_NAME=airflow-test.oms66.ru                      как его найти
-#   URLPATH=/etl_builder                                   путь на домене
+#   URLPATH=/etl_configurator                              путь на домене
 #   PORT=8085                                              порт сервиса
 #   AUTH_USER=konkin                                       первый пользователь
 #   NO_AUTH=1                                              БЕЗ авторизации (см. ниже)
@@ -19,12 +19,12 @@
 set -uo pipefail
 
 SERVER_NAME="${SERVER_NAME:-airflow-test.oms66.ru}"
-URLPATH="${URLPATH:-/etl_builder}"
+URLPATH="${URLPATH:-/etl_configurator}"
 PORT="${PORT:-8085}"
-AUTH_FILE="${AUTH_FILE:-/etc/apache2/etl_builder.htpasswd}"
+AUTH_FILE="${AUTH_FILE:-/etc/apache2/etl_configurator.htpasswd}"
 UNIT="etl-dagbuilder-api"
-MARK_BEGIN="# >>> etl_builder (конструктор ETL-линий) — вставлено install-apache-subpath.sh"
-MARK_END="# <<< etl_builder"
+MARK_BEGIN="# >>> etl_configurator (конструктор ETL-линий) — вставлено install-apache-subpath.sh"
+MARK_END="# <<< etl_configurator"
 
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; }
 bad()  { printf '  \033[31m✗\033[0m %s\n' "$1"; exit 1; }
@@ -67,10 +67,9 @@ VHOST_MAP=$("$CTL" -S 2>&1)
 if [ -n "${VHOST:-}" ]; then
   [ -f "$VHOST" ] || bad "нет файла $VHOST"
 else
-  # строки вида:  *:443   airflow-test.oms66.ru (/etc/apache2/sites-enabled/x.conf:1)
-  # берём только :443 — на :80 обычно висит редирект, и правь мы его, ничего бы
-  # не заработало
-  # Разбор карты. Тонкость: у Apache два формата вывода, и в частом (Debian,
+  # Разбор карты. Строки вида: *:443  имя (/etc/…/x.conf:1). Берём только
+  # :443 — на :80 обычно висит редирект, и правь мы его, ничего бы не заработало.
+  # Тонкость: у Apache два формата вывода, и в частом (Debian,
   # NameVirtualHost) порт стоит НЕ в строке с именем, а в заголовке секции:
   #
   #   *:443                  is a NameVirtualHost
@@ -215,9 +214,15 @@ begin, end, block = os.environ["MARK_BEGIN"], os.environ["MARK_END"], os.environ
 text = open(path, encoding="utf-8").read()
 
 # Повторный запуск: свой прежний блок вырезаем целиком, чужое не трогаем.
-pattern = re.compile(r"[ \t]*" + re.escape(begin) + r".*?" + re.escape(end) + r"\n",
-                     re.S)
-text, removed = pattern.subn("", text)
+# Заодно убираем блок под ПРЕЖНИМ именем пути (etl_builder): если его успели
+# поставить, два ProxyPass на разные пути к одному сервису не поломают Apache,
+# но оставят в конфиге мусор, про который через месяц никто не вспомнит.
+removed = 0
+for b, e in ((begin, end),
+             ("# >>> etl_builder ", "# <<< etl_builder")):
+    pattern = re.compile(r"[ \t]*" + re.escape(b) + r".*?" + re.escape(e) + r"\n", re.S)
+    text, n = pattern.subn("", text)
+    removed += n
 
 # Наш ProxyPass обязан стоять ВЫШЕ общего `ProxyPass /`: Apache берёт первое
 # подходящее правило, и `/` подходит под всё. Ставим прямо перед ним.

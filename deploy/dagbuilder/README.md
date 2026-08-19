@@ -13,7 +13,7 @@ root на сервере: имя `airflow-test.oms66.ru` и сертификат
 
 ```
 браузер коллеги
-   │  https://airflow-test.oms66.ru/etl_builder/     ← имя и сертификат уже есть
+   │  https://airflow-test.oms66.ru/etl_configurator/     ← имя и сертификат уже есть
    ▼
 Apache (сервер, :443) ──proxy──► 127.0.0.1:8085 ──► dagbuilder_api.py (systemd)
                                                         │
@@ -52,7 +52,7 @@ ssh -L 18085:127.0.0.1:8085 devel@airflow    # → http://localhost:18085/
 
 ### А. Подпуть на существующем домене — сисадмины НЕ нужны
 
-**`https://airflow-test.oms66.ru/etl_builder/`** — ни заявки в DNS, ни нового
+**`https://airflow-test.oms66.ru/etl_configurator/`** — ни заявки в DNS, ни нового
 сертификата: имя и сертификат уже есть, добавляется только путь. Нужен лишь
 root на самом сервере.
 
@@ -76,15 +76,15 @@ sudo bash deploy/dagbuilder/install-apache-subpath.sh
 Параметры, если что-то называется иначе:
 
 ```bash
-sudo VHOST=/etc/apache2/sites-available/мой.conf URLPATH=/etl_builder \
+sudo VHOST=/etc/apache2/sites-available/мой.conf URLPATH=/etl_configurator \
      PORT=8085 AUTH_USER=konkin bash deploy/dagbuilder/install-apache-subpath.sh
 ```
 
 Одна тонкость, ради которой в конфиге стоит редирект: адрес API и пути к файлам
 сборки приложение считает от `document.baseURI`. Открытый без завершающего
-слэша `/etl_builder` даёт базой корень сайта — запросы уходят в `/api/`, то есть
+слэша `/etl_configurator` даёт базой корень сайта — запросы уходят в `/api/`, то есть
 в airflow, а скрипты в `/assets/`, где их нет; страница открывается **пустой**.
-Редирект `^/etl_builder$ → /etl_builder/` снимает весь этот класс жалоб разом.
+Редирект `^/etl_configurator$ → /etl_configurator/` снимает весь этот класс жалоб разом.
 
 Откатить всё:
 
@@ -154,8 +154,8 @@ IP сервера airflow; подтвердить, покрывает ли те�
 Завести пользователей:
 
 ```bash
-sudo htpasswd -c /etc/apache2/etl_builder.htpasswd konkin   # -c только для первого
-sudo htpasswd    /etc/apache2/etl_builder.htpasswd ivanov
+sudo htpasswd -c /etc/apache2/etl_configurator.htpasswd konkin   # -c только для первого
+sudo htpasswd    /etc/apache2/etl_configurator.htpasswd ivanov
 ```
 
 ## Обновление после правок в интерфейсе
@@ -180,7 +180,7 @@ Ctrl+F5.
 |---|---|
 | страница пустая, белая | сначала консоль браузера: 404 на `assets/…js` = `dist` неполный или разъехался. Затем `journalctl -u etl-dagbuilder-api` — при старте сервис сам пишет `ФРОНТЕНД: …` |
 | 503 от Apache | сервис лежит: `systemctl status etl-dagbuilder-api` |
-| страница есть, кнопки молчат | открыли адрес без завершающего слэша: нужен `/etl_builder/`, а не `/etl_builder` (редирект ставит скрипт) |
+| страница есть, кнопки молчат | открыли адрес без завершающего слэша: нужен `/etl_configurator/`, а не `/etl_configurator` (редирект ставит скрипт) |
 | «нет связи с сервисом конструктора» | Apache проксирует не туда: проверьте порт в `ProxyPass` и `ss -ltnp | grep 8085` |
 | кнопка «запушить» падает | `sudo -u jupyter git -C <репо> push --dry-run` |
 | «не нашёл включённый vhost» | скрипт печатает всю карту `apache2ctl -S` — посмотрите, под каким именем сайт там записан, и запустите с `SERVER_NAME='<это имя>'` или `VHOST=/путь/к/файлу.conf`. Если имени нет вовсе — сайт отдаёт другая машина: `getent hosts <имя>` и `hostname -I` |
