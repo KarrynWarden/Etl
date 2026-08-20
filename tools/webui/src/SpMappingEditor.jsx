@@ -34,7 +34,6 @@ const nameOf = (c) => (typeof c === 'string' ? c : c?.column_name || c?.COLUMN_N
 export default function SpMappingEditor({ spec, onChange, onSnap, snapping }) {
   const [filter, setFilter] = useState('all')
   const [allowReuse, setAllowReuse] = useState(false)
-  const [newSlave, setNewSlave] = useState('')
   const [nameError, setNameError] = useState(null)
   const [lastSource, setLastSource] = useState(null)
 
@@ -43,7 +42,18 @@ export default function SpMappingEditor({ spec, onChange, onSnap, snapping }) {
   const hasSql = Boolean((spec.select_sql_text || '').trim())
 
   const pairs = spec.pairs || []
-  const slaveNames = useMemo(() => (spec.slave_cols || []).map(nameOf), [spec.slave_cols])
+  // Имена ведомой ЖИВУТ В ПАРАХ, а не в отдельном списке: INSERT собирается
+  // ровно из них (sp_builder.build_sp_all берёт s_order из pairs). Список
+  // slave_cols — только подсказки, восстановленные из текущего Add.sql, и
+  // править его отдельно значило бы править то, что ни во что не превращается.
+  // Поэтому здесь объединение: и разобранное из файла, и уже набранное руками.
+  const slaveNames = useMemo(
+    () => [...new Set([
+      ...(spec.slave_cols || []).map(nameOf),
+      ...pairs.map(([, s]) => s).filter(Boolean),
+    ])],
+    [spec.slave_cols, pairs],
+  )
   const masterNames = useMemo(() => pairs.map(([m]) => m), [pairs])
   const usedSlaves = useMemo(
     () => new Set(pairs.map(([, s]) => s).filter(Boolean)),
@@ -76,27 +86,6 @@ export default function SpMappingEditor({ spec, onChange, onSnap, snapping }) {
     setPair(i, name, pairs[i][1])
   }
 
-  const renameSlave = (from, event) => {
-    const name = event.target.value.trim()
-    if (name === from) return
-    if (!name || slaveNames.includes(name)) {
-      setNameError(
-        !name
-          ? `Пустое имя колонке не годится — ${from} оставлен как был.`
-          : `Колонка ${name} у ведомой уже есть — в INSERT имена не повторяются.`,
-      )
-      event.target.value = from
-      return
-    }
-    setNameError(null)
-    onChange({
-      slave_cols: (spec.slave_cols || []).map((c) =>
-        nameOf(c) === from ? { ...(typeof c === 'string' ? {} : c), column_name: name } : c,
-      ),
-      pairs: pairs.map(([m, s]) => [m, s === from ? name : s]),
-    })
-  }
-
   // Приведение регистра сразу у всех имён — по колонке за раз это полсотни
   // нажатий. Ведущая правится только там, где запрос собирается конструктором.
   const offCase = [
@@ -106,10 +95,6 @@ export default function SpMappingEditor({ spec, onChange, onSnap, snapping }) {
   const fixCase = () => {
     setNameError(null)
     onChange({
-      slave_cols: (spec.slave_cols || []).map((c) => ({
-        ...(typeof c === 'string' ? {} : c),
-        column_name: toDbCase(nameOf(c), spec.db_slave),
-      })),
       pairs: pairs.map(([m, s]) => [
         masterEditable && m ? toDbCase(m, spec.db_master) : m,
         s ? toDbCase(s, spec.db_slave) : s,
@@ -118,13 +103,6 @@ export default function SpMappingEditor({ spec, onChange, onSnap, snapping }) {
   }
 
   const removeRow = (i) => onChange({ pairs: pairs.filter((_p, j) => j !== i) })
-
-  const addSlave = () => {
-    const name = newSlave.trim()
-    if (!name || slaveNames.includes(name)) return
-    onChange({ slave_cols: [...(spec.slave_cols || []), { column_name: name }] })
-    setNewSlave('')
-  }
 
   const addPair = () =>
     onChange({ pairs: [...pairs, [`колонка ${pairs.length + 1}`, null]] })
@@ -268,8 +246,8 @@ export default function SpMappingEditor({ spec, onChange, onSnap, snapping }) {
           type="info"
           showIcon
           style={{ marginBottom: 12 }}
-          message={`Колонки ведомой без пары: ${orphanSlaves.join(', ')}`}
-          description="Они останутся в таблице, но перенос их не заполняет."
+          message={`Есть в текущем Add.sql, но ни одной паре не отданы: ${orphanSlaves.join(', ')}`}
+          description="INSERT собирается из пар, поэтому при следующей записи этих колонок в нём не будет — таблица их сохранит, но перенос заполнять перестанет."
         />
       )}
 
@@ -300,14 +278,17 @@ export default function SpMappingEditor({ spec, onChange, onSnap, snapping }) {
           },
           {
             title: `Ведомая (${spec.db_slave})`,
+            // Одно поле и выбирает, и называет: имя колонки ведомой живёт
+            // здесь, и ровно оно попадает в INSERT. Список — подсказки; любое
+            // другое имя вписывается как есть.
             render: (_v, r) => (
               <ComboBox
                 style={{ width: '100%' }}
                 size="small"
                 value={r.s || ''}
                 options={slaveOptions(r.s)}
-                placeholder="— нет пары —"
-                onChange={(v) => setPair(r.i, r.m, v || null)}
+                placeholder="выбрать из списка или вписать имя"
+                onChange={(v) => setPair(r.i, r.m, v ? v.trim() : null)}
               />
             ),
           },
@@ -344,46 +325,11 @@ export default function SpMappingEditor({ spec, onChange, onSnap, snapping }) {
             строку сопоставления
           </Button>
         )}
-        <Space.Compact>
-          <Input
-            size="small"
-            style={{ width: 200 }}
-            placeholder="имя колонки ведомой"
-            value={newSlave}
-            onChange={(e) => setNewSlave(e.target.value)}
-            onPressEnter={addSlave}
-          />
-          <Button size="small" icon={<PlusOutlined />} onClick={addSlave}>
-            колонка ведомой
-          </Button>
-        </Space.Compact>
         <Typography.Text type="secondary">
           сопоставлено {pairs.length - unmatched} из {pairs.length}
         </Typography.Text>
       </Space>
 
-      {/* Переименование колонки ведомой — это правка INSERT, поэтому список
-          имён редактируемый и здесь: в паре выбирается имя, а само имя живёт
-          тут. */}
-      {Boolean(slaveNames.length) && (
-        <div style={{ marginTop: 16 }}>
-          <Typography.Text type="secondary">
-            Колонки ведомой (правка имени меняет INSERT):
-          </Typography.Text>
-          <Space wrap style={{ marginTop: 6 }}>
-            {(spec.slave_cols || []).map((c) => (
-              <Input
-                key={nameOf(c)}
-                size="small"
-                style={{ width: 170, fontFamily: 'monospace' }}
-                defaultValue={nameOf(c)}
-                onBlur={(e) => renameSlave(nameOf(c), e)}
-                onPressEnter={(e) => renameSlave(nameOf(c), e)}
-              />
-            ))}
-          </Space>
-        </div>
-      )}
     </>
   )
 }
