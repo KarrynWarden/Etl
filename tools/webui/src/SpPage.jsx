@@ -28,6 +28,7 @@ import ActionError from './ActionError'
 import ComboBox from './ComboBox'
 import FilesPreview from './FilesPreview'
 import TableNamePair from './TableNamePair'
+import { toDbCase } from './dbCase'
 import SpMappingEditor from './SpMappingEditor'
 
 // Справочники и разовый перенос.
@@ -257,6 +258,7 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
   const match = useAction(api.match)
   const buildSql = useAction(api.spBuildSql)
   const parseSql = useAction(api.spParseSql)
+  const renameCol = useAction(api.spRenameSelectColumn)
 
   const isNew = Boolean(entry) && !entry.key
 
@@ -365,6 +367,56 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
   const patchMapping = (next) => {
     setSpec((p) => ({ ...p, ...next }))
     rebuildSql(next)
+  }
+
+  // Переименование колонки ведущей. РЕЖИМ ПРАВКИ ОДИН: имя меняется здесь
+  // всегда и всегда меняет запрос. Что именно поменяется в тексте, решает не
+  // «режим линии», а сам запрос — правило одно на сервере
+  // (sp_builder.rename_select_column): голое имя заменяется целиком, у
+  // выражения меняется псевдоним, не было псевдонима — добавляется.
+  //
+  // patchMapping в конце не случаен: в режиме «выбранные колонки» он соберёт
+  // SELECT из имён заново и придёт к тому же результату, а в режиме «своё
+  // SELECT» оставит наш переименованный текст. Одна дорога на оба случая.
+  const renameMasterColumn = async (index, name) => {
+    const pairs = (spec.pairs || []).map((p, i) =>
+      i === index ? [name, p[1]] : p,
+    )
+    const sql = (spec.select_sql_text || '').trim()
+    let select_sql_text = spec.select_sql_text
+    if (sql) {
+      const r = await renameCol.run({
+        select_sql_text: spec.select_sql_text,
+        index,
+        new_name: name,
+      })
+      if (!r) return
+      select_sql_text = r.select_sql_text
+    }
+    patchMapping({ pairs, select_sql_text })
+  }
+
+  // Регистр имён — тем же путём: каждое имя ведущей проходит через
+  // переименование, поэтому запрос остаётся согласован со списком колонок.
+  const fixColumnCase = async () => {
+    let next = { ...spec }
+    const pairs = (spec.pairs || []).map((p) => [...p])
+    for (let i = 0; i < pairs.length; i++) {
+      const want = toDbCase(pairs[i][0], spec.db_master)
+      if (pairs[i][0] && want !== pairs[i][0]) {
+        pairs[i][0] = want
+        if ((next.select_sql_text || '').trim()) {
+          const r = await renameCol.run({
+            select_sql_text: next.select_sql_text,
+            index: i,
+            new_name: want,
+          })
+          if (r) next = { ...next, select_sql_text: r.select_sql_text }
+        }
+      }
+      if (pairs[i][1]) pairs[i][1] = toDbCase(pairs[i][1], spec.db_slave)
+    }
+    patchMapping({ pairs, select_sql_text: next.select_sql_text })
   }
 
   // Правка запроса: разбираем его обратно в колонки. По уходу из поля, а не на
@@ -580,6 +632,8 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
       <SpMappingEditor
         spec={spec}
         onChange={patchMapping}
+        onRenameMaster={renameMasterColumn}
+        onFixCase={fixColumnCase}
         onSnap={snapColumns}
         snapping={snapping || buildSql.loading}
       />

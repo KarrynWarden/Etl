@@ -31,7 +31,14 @@ import { toDbCase, matchesDbCase } from './dbCase'
 // запроса, поэтому правка имени здесь и есть правка SQL.
 const nameOf = (c) => (typeof c === 'string' ? c : c?.column_name || c?.COLUMN_NAME || '')
 
-export default function SpMappingEditor({ spec, onChange, onSnap, snapping }) {
+export default function SpMappingEditor({
+  spec,
+  onChange,
+  onRenameMaster,
+  onFixCase,
+  onSnap,
+  snapping,
+}) {
   const [filter, setFilter] = useState('all')
   const [allowReuse, setAllowReuse] = useState(false)
   const [nameError, setNameError] = useState(null)
@@ -60,12 +67,12 @@ export default function SpMappingEditor({ spec, onChange, onSnap, snapping }) {
     [pairs],
   )
 
-  // Имя ведущей попадает в СГЕНЕРИРОВАННЫЙ SELECT только в режиме «выбранные
-  // колонки». В режиме «своё SELECT» запрос принадлежит человеку, и менять там
-  // регистр имени, не тронув сам запрос, — верный способ развести структуру с
-  // тем, что вернёт драйвер.
-  const masterEditable = spec.src_mode !== 'custom'
-
+  // Режим правки ОДИН. «Из таблицы» и «из запроса» — это два способа
+  // ЗАПОЛНИТЬ колонки, а не два способа их править: имя колонки ведущей
+  // меняется здесь всегда, и всегда меняет запрос. Разница только в том, ЧТО
+  // именно в запросе меняется, и это забота одного правила на сервере
+  // (sp_builder.rename_select_column): голое имя заменяется целиком,
+  // у выражения меняется псевдоним, а не было псевдонима — добавляется.
   const setPair = (i, m, s) =>
     onChange({ pairs: pairs.map((p, j) => (j === i ? [m, s] : p)) })
 
@@ -83,23 +90,18 @@ export default function SpMappingEditor({ spec, onChange, onSnap, snapping }) {
       return
     }
     setNameError(null)
-    setPair(i, name, pairs[i][1])
+    onRenameMaster(i, name)
   }
 
   // Приведение регистра сразу у всех имён — по колонке за раз это полсотни
   // нажатий. Ведущая правится только там, где запрос собирается конструктором.
   const offCase = [
-    ...(masterEditable ? masterNames.filter((n) => n && !matchesDbCase(n, spec.db_master)) : []),
+    ...masterNames.filter((n) => n && !matchesDbCase(n, spec.db_master)),
     ...slaveNames.filter((n) => n && !matchesDbCase(n, spec.db_slave)),
   ]
   const fixCase = () => {
     setNameError(null)
-    onChange({
-      pairs: pairs.map(([m, s]) => [
-        masterEditable && m ? toDbCase(m, spec.db_master) : m,
-        s ? toDbCase(s, spec.db_slave) : s,
-      ]),
-    })
+    onFixCase()
   }
 
   const removeRow = (i) => onChange({ pairs: pairs.filter((_p, j) => j !== i) })
@@ -173,9 +175,7 @@ export default function SpMappingEditor({ spec, onChange, onSnap, snapping }) {
           title={
             offCase.length
               ? `Привести к регистру диалекта: ведущая ${spec.db_master}, ведомая ${spec.db_slave}`
-              : masterEditable
-                ? 'Регистр всех имён уже соответствует диалекту'
-                : 'Имена ведущей приходят из вашего SELECT — их регистр здесь не трогается; проверяется только ведомая'
+              : 'Регистр всех имён уже соответствует диалекту'
           }
         >
           <Button
@@ -229,7 +229,7 @@ export default function SpMappingEditor({ spec, onChange, onSnap, snapping }) {
           showIcon
           style={{ marginBottom: 12 }}
           message="Для своего SELECT сопоставлены должны быть ВСЕ колонки"
-          description="Вставка идёт по порядку колонок запроса, пропуски недопустимы. Имена ведущей здесь — псевдонимы запроса: правьте их на вкладке SQL, оттуда они и читаются."
+          description="Вставка идёт по порядку колонок запроса, пропуски недопустимы. Имена ведущей здесь — имена выходных колонок запроса: правьте их прямо тут, псевдоним в SELECT поменяется сам."
         />
       )}
       {doubled.length > 0 && (
@@ -262,19 +262,19 @@ export default function SpMappingEditor({ spec, onChange, onSnap, snapping }) {
           { title: '#', dataIndex: 'i', width: 48, render: (v) => v + 1 },
           {
             title: `Ведущая (${spec.db_master})`,
-            render: (_v, r) =>
-              masterEditable ? (
-                <Input
-                  size="small"
-                  key={r.m}
-                  defaultValue={r.m}
-                  style={{ fontFamily: 'monospace' }}
-                  onBlur={(e) => renameMaster(r.i, e)}
-                  onPressEnter={(e) => renameMaster(r.i, e)}
-                />
-              ) : (
-                <Typography.Text code>{r.m}</Typography.Text>
-              ),
+            // Правится всегда. Что при этом произойдёт с запросом, зависит от
+            // самого запроса, а не от «режима»: у `code` поменяется имя
+            // колонки, у `m.code kod` — только псевдоним.
+            render: (_v, r) => (
+              <Input
+                size="small"
+                key={r.m}
+                defaultValue={r.m}
+                style={{ fontFamily: 'monospace' }}
+                onBlur={(e) => renameMaster(r.i, e)}
+                onPressEnter={(e) => renameMaster(r.i, e)}
+              />
+            ),
           },
           {
             title: `Ведомая (${spec.db_slave})`,
@@ -320,11 +320,9 @@ export default function SpMappingEditor({ spec, onChange, onSnap, snapping }) {
       />
 
       <Space style={{ marginTop: 12 }} wrap>
-        {masterEditable && (
-          <Button size="small" icon={<PlusOutlined />} onClick={addPair}>
-            строку сопоставления
-          </Button>
-        )}
+        <Button size="small" icon={<PlusOutlined />} onClick={addPair}>
+          строку сопоставления
+        </Button>
         <Typography.Text type="secondary">
           сопоставлено {pairs.length - unmatched} из {pairs.length}
         </Typography.Text>

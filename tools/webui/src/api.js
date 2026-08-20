@@ -96,6 +96,7 @@ export const api = {
   spPreview: (spec) => call('POST', 'sp/preview', { spec }),
   spParseSql: (params) => call('POST', 'sp/parse-sql', params),
   spBuildSql: (params) => call('POST', 'sp/build-sql', params),
+  spRenameSelectColumn: (params) => call('POST', 'sp/rename-select-column', params),
   spMove: (params) => call('POST', 'sp/move', params),
   spDeleteTargets: (params) => call('POST', 'sp/delete-targets', params),
   spDelete: (params) => call('POST', 'sp/delete', params),

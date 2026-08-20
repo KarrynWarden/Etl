@@ -507,6 +507,23 @@ def r_sp_parse_sql(params):
             "pairs": [list(p) for p in pairs]}
 
 
+def r_sp_rename_select_column(params):
+    """Переименовать выходную колонку №index в SELECT справочника.
+
+    Ради ОДНОГО правила правки: «поменял колонку в списке — поменялась колонка
+    запроса» должно работать и для сгенерированного запроса, и для написанного
+    руками. Голое имя заменяется целиком, у выражения меняется только
+    псевдоним, а если его не было — добавляется. Разобрать не вышло (нет FROM,
+    '*') — текст возвращается как есть: молча испортить чужой запрос хуже, чем
+    не переименовать.
+    """
+    text, name = _need(params, "select_sql_text", "new_name")
+    index = params.get("index")
+    if not isinstance(index, int) or index < 0:
+        raise BadRequest(f"index должен быть неотрицательным целым, получено {index!r}")
+    return {"select_sql_text": SP.rename_select_column(text, index, name)}
+
+
 def r_sp_build_sql(params):
     """Колонки и сопоставление -> SQL справочника. Вторая половина связи.
 
@@ -627,6 +644,7 @@ POST_ROUTES = {
     "sp/preview": r_sp_preview,
     "sp/parse-sql": r_sp_parse_sql,
     "sp/build-sql": r_sp_build_sql,
+    "sp/rename-select-column": r_sp_rename_select_column,
     "sp/move": r_sp_move,
     "sp/delete-targets": r_sp_delete_targets,
     "sp/delete": r_sp_delete,

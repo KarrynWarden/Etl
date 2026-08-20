@@ -494,6 +494,84 @@ def parse_select_columns(text):
     return cols
 
 
+def _split_top_level_spans(s):
+    """То же, что _split_top_level, но с границами каждого куска в исходной
+    строке: [(начало, конец), ...]. Нужно, чтобы править ОДИН элемент списка
+    точечно, не пересобирая и не переформатируя остальные."""
+    spans, depth, start = [], 0, 0
+    for i, ch in enumerate(s):
+        if ch in "([":
+            depth += 1
+        elif ch in ")]":
+            depth = max(0, depth - 1)
+        elif ch == "," and depth == 0:
+            spans.append((start, i))
+            start = i + 1
+    spans.append((start, len(s)))
+    # обрезаем пробелы по краям, пустые куски выбрасываем
+    out = []
+    for a, b in spans:
+        piece = s[a:b]
+        left = len(piece) - len(piece.lstrip())
+        right = len(piece) - len(piece.rstrip())
+        if piece.strip():
+            out.append((a + left, b - right))
+    return out
+
+
+# Хвостовой псевдоним: «… kod» или «… AS kod». Имя — обычный идентификатор либо
+# в кавычках (в кавычках регистр значим, поэтому их сохраняем как есть).
+_ALIAS_TAIL_RE = re.compile(
+    r"(?:\s+AS)?\s+(\"[^\"]+\"|[A-Za-z_][A-Za-z0-9_$#]*)\s*$", re.I)
+_BARE_NAME_RE = re.compile(r"^(?:\"[^\"]+\"|[A-Za-z_][A-Za-z0-9_$#.]*)$")
+# слова, которые псевдонимом не бывают: иначе «CAST(x AS int)» или «… END»
+# приняли бы за имя выходной колонки
+_NOT_ALIAS = {"end", "null", "distinct", "all", "unique"}
+
+
+def rename_select_column(text, index, new_name):
+    """Переименовать ВЫХОДНУЮ колонку №index (с нуля) в SELECT-списке.
+
+    Одно правило на все случаи, поэтому «правка колонки» значит одно и то же и
+    для сгенерированного запроса, и для написанного руками:
+
+      code                 -> kod              голое имя заменяется целиком
+                                               (в запросе «из таблицы» это и
+                                               есть выбор другой колонки);
+      m.code kod           -> m.code naim      меняется ТОЛЬКО псевдоним,
+      m.code AS kod        -> m.code AS naim   выражение остаётся вашим;
+      TRUNC(dt)            -> TRUNC(dt) naim   псевдонима не было — добавляется.
+
+    Возвращает новый текст запроса. Если разобрать список не удалось (нет FROM,
+    '*', индекс за пределами) — возвращает текст БЕЗ ИЗМЕНЕНИЙ: молча испортить
+    чужой запрос хуже, чем не переименовать.
+    """
+    new_name = (new_name or "").strip()
+    if not text or not new_name:
+        return text
+    m = _SELECT_LIST_RE.search(text)
+    if not m:
+        return text
+    body = m.group(1)
+    spans = _split_top_level_spans(body)
+    if not (0 <= index < len(spans)):
+        return text
+    a, b = spans[index]
+    item = body[a:b]
+    if item == "*" or item.endswith(".*"):
+        return text
+
+    if _BARE_NAME_RE.match(item):
+        replacement = new_name                      # голое имя — целиком
+    else:
+        tail = _ALIAS_TAIL_RE.search(item)
+        if tail and tail.group(1).strip('"').lower() not in _NOT_ALIAS:
+            replacement = item[:tail.start(1)] + new_name
+        else:
+            replacement = f"{item} {new_name}"      # псевдонима не было
+    return text[:m.start(1) + a] + replacement + text[m.start(1) + b:]
+
+
 def parse_insert_columns(text):
     """(таблица, [колонки]) из `INSERT INTO t (c1, c2, ...) VALUES ...`.
     Если распарсить нельзя — (None, [])."""
@@ -505,6 +583,27 @@ def parse_insert_columns(text):
     table = m.group(1)
     cols = [c for c in _split_top_level(m.group(2))]
     return table, cols
+
+
+def output_name(item):
+    """Имя ВЫХОДНОЙ колонки для элемента SELECT-списка.
+
+    'code' -> 'code';  'm.code kod' -> 'kod';  'm.code AS kod' -> 'kod';
+    'TRUNC(dt)' -> 'TRUNC(dt)' (имени нет — показываем выражение).
+
+    Нужно, чтобы колонки назывались одинаково, откуда бы ни пришли: снятие по
+    запросу берёт имена у драйвера (то есть псевдонимы), а чтение с диска
+    разбирает текст. Без этого одна и та же колонка звалась то 'kod', то
+    'm.code kod' — в зависимости от того, открыли линию заново или только что
+    сняли структуру.
+    """
+    item = (item or "").strip()
+    if not item or _BARE_NAME_RE.match(item):
+        return item
+    tail = _ALIAS_TAIL_RE.search(item)
+    if tail and tail.group(1).strip('"').lower() not in _NOT_ALIAS:
+        return tail.group(1)
+    return item
 
 
 def _cols_as_dicts(names):
@@ -524,7 +623,8 @@ def restore_mapping(select_text, add_text):
     _tbl, ins_cols = parse_insert_columns(add_text)
     if not ins_cols:
         return [], [], []
-    sel_cols = parse_select_columns(select_text)
+    # Имена ВЫХОДНЫХ колонок, а не выражения целиком: см. output_name.
+    sel_cols = [output_name(c) for c in parse_select_columns(select_text)]
     if len(sel_cols) != len(ins_cols):
         sel_cols = [f"(колонка {i + 1})" for i in range(len(ins_cols))]
     pairs = list(zip(sel_cols, ins_cols))
@@ -661,6 +761,52 @@ def _selftest():
                              "db_master": "Orcl", "db_slave": "Post", "master_label": "T",
                              "select_mode": "table", "pairs": _p, "append": True})
     assert "append" not in json.loads(dict(f_reg)["etlFolder/SpTableName.d/TOrclPost.json"])["TOrclPost"]
+    # ── правка колонки = правка запроса, одним правилом ──────────────────────
+    # Режим правки ОДИН: «поменял колонку в списке — поменялась колонка
+    # запроса» должно значить одно и то же и для сгенерированного запроса, и
+    # для написанного руками. Разница только в том, ЧТО именно меняется в
+    # тексте, и решает это сам текст, а не «режим линии».
+    for sql, idx, name, want, note in (
+        ("SELECT code, name FROM t\n", 0, "kod",
+         "SELECT kod, name FROM t\n", "голое имя заменяется целиком"),
+        ("SELECT m.code kod, b FROM t m\n", 0, "naim",
+         "SELECT m.code naim, b FROM t m\n", "меняется только псевдоним"),
+        ("SELECT m.code AS kod, b FROM t m\n", 0, "naim",
+         "SELECT m.code AS naim, b FROM t m\n", "форма AS сохраняется"),
+        ("SELECT TRUNC(dt), b FROM t\n", 0, "dat",
+         "SELECT TRUNC(dt) dat, b FROM t\n", "псевдонима не было — добавляется"),
+        ("SELECT f(a, b) x, c FROM t\n", 0, "y",
+         "SELECT f(a, b) y, c FROM t\n", "запятая в скобках не сбивает разбор"),
+        ("SELECT CASE WHEN a=1 THEN 2 ELSE 3 END, c FROM t\n", 0, "flag",
+         "SELECT CASE WHEN a=1 THEN 2 ELSE 3 END flag, c FROM t\n",
+         "END не принят за псевдоним"),
+        # разобрать нельзя — текст возвращается КАК ЕСТЬ: молча испортить чужой
+        # запрос хуже, чем не переименовать
+        ("SELECT * FROM t\n", 0, "x", "SELECT * FROM t\n", "звёздочка не трогается"),
+        ("SELECT a, b FROM t\n", 9, "x", "SELECT a, b FROM t\n", "индекс за пределами"),
+        ("не запрос вовсе", 0, "x", "не запрос вовсе", "не разобралось"),
+    ):
+        got = rename_select_column(sql, idx, name)
+        assert got == want, (note, got)
+
+    # имя ВЫХОДНОЙ колонки — одно и то же, откуда бы колонки ни пришли:
+    # снятие по запросу берёт имена у драйвера (псевдонимы), чтение с диска
+    # разбирает текст. Без output_name одна колонка звалась то 'kod', то
+    # 'm.code kod' — смотря открыли линию заново или только что сняли структуру
+    for item, want in (("code", "code"), ("m.code kod", "kod"),
+                       ("m.code AS kod", "kod"), ("TRUNC(dt)", "TRUNC(dt)"),
+                       ('m."Mixed" mc', "mc"), ("CASE WHEN a=1 THEN 2 END",
+                                                "CASE WHEN a=1 THEN 2 END")):
+        assert output_name(item) == want, (item, output_name(item))
+
+    # круг: переименовал -> разобрал -> имя стало новым, выражение цело
+    sel = "SELECT m.code kod,\n       TRUNC(m.dt)\nFROM t m\nWHERE m.dend IS NULL\n"
+    add = "INSERT INTO t (kod, dat)\nVALUES %s\n"
+    sel = rename_select_column(sel, 1, "data_nach")
+    _m, _s, pairs = restore_mapping(sel, add)
+    assert [p[0] for p in pairs] == ["kod", "data_nach"], pairs
+    assert "TRUNC(m.dt)" in sel and "WHERE m.dend IS NULL" in sel, sel
+
     print("sp_builder selftest OK")
 
 
