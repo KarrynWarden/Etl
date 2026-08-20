@@ -1201,6 +1201,23 @@ def _selftest():
             "onRemoveMaster: пары и рукописный SELECT разойдутся по длине, и "
             "перенос справочника упадёт на привязке при каждом прогоне")
 
+    # ── замок стоит там, где на него натыкаются ──────────────────────────────
+    # Переключатель один (SqlLock), но показан в ДВУХ местах: на вкладке SQL,
+    # где лежит текст запроса, и на вкладке колонок, где его правят походя —
+    # переименованием и регистром. Первая версия жила только в колонках, а на
+    # вкладке SQL вместо него стояло окошко с кнопкой «Запрос мой, не
+    # пересобирать» — тот же смысл под другим именем, из-за чего управление
+    # читалось как два разных, да ещё и не на своих местах.
+    for path in (("tools", "webui", "src", "SpPage.jsx"),
+                 ("tools", "webui", "src", "SpMappingEditor.jsx")):
+        f = os.path.join(ROOT, *path)
+        if os.path.exists(f):
+            with open(f, encoding="utf-8") as fp:
+                text = fp.read()
+            assert "SqlLock" in text, (
+                f"в {path[-1]} пропал переключатель замка: он должен быть и там, "
+                f"где запрос лежит, и там, где его правят не глядя")
+
     # ── регистр имени таблицы: правило одно на обе стороны ───────────────────
     # to_db_case живёт и в питоне (им получается имя линии), и в интерфейсе
     # (tools/webui/src/dbCase.js — за кнопкой «привести к регистру БД»).
@@ -1213,7 +1230,10 @@ def _selftest():
         with open(case_js, encoding="utf-8") as fp:
             text = fp.read()
         for token in ("split('.')", "startsWith('\"')", "toUpperCase", "toLowerCase",
-                      "'Orcl'", "export function toDbCase"):
+                      "'Orcl'", "export function toDbCase",
+                      # без него «привести к регистру» переписывало бы и
+                      # выражения: TRUNC(dt) -> TRUNC(DT)
+                      "export function isPlainName"):
             assert token in text, (
                 f"в dbCase.js пропало {token!r} — правило регистра разошлось с "
                 f"dag_builder.to_db_case, а имя линии сравнивается с "

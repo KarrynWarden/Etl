@@ -15,14 +15,14 @@ import {
 import {
   DeleteOutlined,
   FontSizeOutlined,
-  LockOutlined,
   PlusOutlined,
+  QuestionCircleOutlined,
   ReloadOutlined,
-  UnlockOutlined,
 } from '@ant-design/icons'
 
 import ComboBox from './ComboBox'
-import { toDbCase, matchesDbCase } from './dbCase'
+import SqlLock from './SqlLock'
+import { isPlainName, matchesDbCase } from './dbCase'
 
 // Сопоставление колонок справочника.
 //
@@ -37,6 +37,17 @@ import { toDbCase, matchesDbCase } from './dbCase'
 // Имена нужны человеку, а не рантайму, — но именно из них собираются оба
 // запроса, поэтому правка имени здесь и есть правка SQL.
 const nameOf = (c) => (typeof c === 'string' ? c : c?.column_name || c?.COLUMN_NAME || '')
+
+// Имя колонки — это либо обычный идентификатор, либо имя в кавычках. Всё
+// остальное в этой ячейке — ВЫРАЖЕНИЕ без псевдонима: `TRUNC(dt)`, `''`,
+// многострочный CASE. Имени у такой колонки нет ни в запросе, ни в БД, и
+// показывать его как имя нечестно — но и прятать нельзя: сопоставлять-то её
+// надо. Показываем как есть и рядом говорим, что делать: вписать имя, и
+// псевдоним появится в запросе сам.
+// Многострочное выражение в однострочном поле — каша из отступов. Схлопываем
+// пробелы ДЛЯ ПОКАЗА; правку сравниваем и с исходным, и со схлопнутым, иначе
+// уход из поля, которого никто не трогал, считался бы переименованием.
+const flat = (s) => String(s || '').replace(/\s+/g, ' ').trim()
 
 export default function SpMappingEditor({
   spec,
@@ -89,7 +100,7 @@ export default function SpMappingEditor({
   const renameMaster = (i, event) => {
     const name = event.target.value.trim()
     const from = pairs[i][0]
-    if (name === from) return
+    if (name === from || name === flat(from)) return
     if (!name || masterNames.some((n, j) => j !== i && n === name)) {
       setNameError(
         !name
@@ -104,9 +115,14 @@ export default function SpMappingEditor({
   }
 
   // Приведение регистра сразу у всех имён — по колонке за раз это полсотни
-  // нажатий. Ведущая правится только там, где запрос собирается конструктором.
+  // нажатий. Ведущая — только при открытом замке и только там, где в ячейке
+  // ИМЯ: у выражения регистр менять нечему, из `TRUNC(dt)` вышло бы `TRUNC(DT)`.
   const offCase = [
-    ...(locked ? [] : masterNames.filter((n) => n && !matchesDbCase(n, spec.db_master))),
+    ...(locked
+      ? []
+      : masterNames.filter(
+          (n) => n && isPlainName(n) && !matchesDbCase(n, spec.db_master),
+        )),
     ...slaveNames.filter((n) => n && !matchesDbCase(n, spec.db_slave)),
   ]
   const fixCase = () => {
@@ -202,22 +218,12 @@ export default function SpMappingEditor({
             Регистр имён{offCase.length ? ` (${offCase.length})` : ''}
           </Button>
         </Tooltip>
+        {/* Тот же переключатель, что на вкладке SQL, и намеренно тот же
+            компонент: замок ставят, глядя на запрос, а натыкаются на него
+            здесь — переименованием колонки и регистром. Отправлять за ним на
+            соседнюю вкладку значило бы делать работу из ничего. */}
         {locked !== undefined && (
-          <Tooltip
-            title={
-              locked
-                ? 'Запрос заперт: правится только ведомая сторона — пары, имена колонок ведомой и Add.sql. Снимите замок, чтобы менять сам SELECT.'
-                : 'Запрос открыт: имена колонок ведущей и текст SELECT правятся свободно.'
-            }
-          >
-            <Button
-              icon={locked ? <LockOutlined /> : <UnlockOutlined />}
-              type={locked ? 'primary' : 'default'}
-              onClick={() => onLockChange(!locked)}
-            >
-              {locked ? 'SELECT заперт' : 'SELECT открыт'}
-            </Button>
-          </Tooltip>
+          <SqlLock locked={locked} onChange={onLockChange} />
         )}
         <Segmented
           value={filter}
@@ -288,19 +294,44 @@ export default function SpMappingEditor({
             // Правится всегда. Что при этом произойдёт с запросом, зависит от
             // самого запроса, а не от «режима»: у `code` поменяется имя
             // колонки, у `m.code kod` — только псевдоним.
-            render: (_v, r) =>
-              locked ? (
-                <Typography.Text code>{r.m}</Typography.Text>
+            render: (_v, r) => {
+              const plain = isPlainName(r.m)
+              const shown = plain ? r.m : flat(r.m)
+              const hint = plain ? null : (
+                <Tooltip
+                  title={
+                    <>
+                      У этой колонки в запросе нет имени — это выражение:
+                      <div style={{ fontFamily: 'monospace', margin: '4px 0' }}>
+                        {flat(r.m)}
+                      </div>
+                      Впишите имя — и в запросе появится псевдоним, а колонка
+                      станет называться так же, как её увидит рантайм.
+                    </>
+                  }
+                >
+                  <QuestionCircleOutlined style={{ color: '#faad14' }} />
+                </Tooltip>
+              )
+              return locked ? (
+                <Space size={4}>
+                  <Typography.Text code ellipsis style={{ maxWidth: 320 }}>
+                    {shown}
+                  </Typography.Text>
+                  {hint}
+                </Space>
               ) : (
                 <Input
                   size="small"
                   key={r.m}
-                  defaultValue={r.m}
+                  defaultValue={shown}
+                  suffix={hint}
                   style={{ fontFamily: 'monospace' }}
                   onBlur={(e) => renameMaster(r.i, e)}
                   onPressEnter={(e) => renameMaster(r.i, e)}
                 />
-              ),
+              )
+            },
           },
           {
             title: `Ведомая (${spec.db_slave})`,

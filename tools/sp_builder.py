@@ -465,28 +465,76 @@ def _master_from_select(text):
     return m.group(1) if m else None
 
 
-def _split_top_level(s):
-    """Разбить список через запятую по верхнему уровню (запятые внутри скобок
-    не считаются разделителями): 'a, f(x, y), b' -> ['a', 'f(x, y)', 'b']."""
-    parts, depth, cur = [], 0, ""
-    for ch in s:
-        if ch in "([":
-            depth += 1
-        elif ch in ")]":
-            depth = max(0, depth - 1)
-        if ch == "," and depth == 0:
-            parts.append(cur.strip())
-            cur = ""
-        else:
-            cur += ch
-    if cur.strip():
-        parts.append(cur.strip())
-    return [p for p in parts if p]
+# Комментарии, строковые литералы, имена в кавычках. Внутри них бывает что
+# угодно — запятая, скобка, слово SELECT, — и разбор об это спотыкался.
+_MASKED_RE = re.compile(r"--[^\n]*|/\*.*?\*/|'(?:[^']|'')*'|\"[^\"]*\"", re.S)
+
+
+def _mask(text):
+    """Копия текста ТОЙ ЖЕ длины: содержимое комментариев, строковых литералов
+    и имён в кавычках заменено пробелами.
+
+    Границы (список колонок, запятые верхнего уровня, глубина скобок) ищутся по
+    маске, а куски берутся из ИСХОДНОГО текста по тем же смещениям — ради этого
+    длина и сохраняется. Без маски разбор ломался на живых файлах:
+
+      * `when ffinsource = '1,2,3,4' then 1` — запятые внутри литерала делили
+        одну колонку на четыре, число колонок не сходилось с INSERT, и вся
+        линия показывалась заглушками «(колонка N)» (SPEINDEXFORM);
+      * `-- на проде этот SELECT отрабатывал` — слово SELECT в комментарии
+        забирало разбор себе, и «списком колонок» становился хвост комментария
+        (разовый перенос SPEINDEX).
+
+    Кавычки остаются на месте: по ним видно границы имени, а содержимое для
+    поиска границ неважно. Комментарий гасится целиком, вместе со скобками.
+    """
+    out = list(text)
+    for m in _MASKED_RE.finditer(text):
+        a, b = m.span()
+        keep = 0 if text[a] in "-/" else 1     # у литерала кавычки сохраняем
+        for i in range(a + keep, b - keep):
+            out[i] = " "
+    return "".join(out)
 
 
 _SELECT_LIST_RE = re.compile(r"\bSELECT\b(.*?)\bFROM\b", re.S | re.I)
+# DISTINCT / UNIQUE / ALL — свойство всей выборки, а не первая колонка. Пока
+# слово считалось её частью, колонка звалась «distinct t.code», а удаление
+# первой колонки унесло бы с ней и сам DISTINCT — молча, вместе со смыслом
+# запроса.
+_SET_QUANT_RE = re.compile(r"\s*(?:DISTINCT|UNIQUE|ALL)\b", re.I)
 _INSERT_COLS_RE = re.compile(
     r"\bINSERT\s+INTO\s+([A-Za-z0-9_.\"]+)\s*\(([^)]*)\)\s*VALUES", re.S | re.I)
+
+
+def _select_list(text):
+    """(маска, начало, конец) списка колонок: после SELECT [DISTINCT] и до FROM.
+    None — разобрать не удалось."""
+    if not text:
+        return None
+    mask = _mask(text)
+    m = _SELECT_LIST_RE.search(mask)
+    if not m:
+        return None
+    a, b = m.span(1)
+    quant = _SET_QUANT_RE.match(mask, a, b)
+    if quant:
+        a = quant.end()
+    return mask, a, b
+
+
+def _column_spans(text):
+    """Границы каждого элемента SELECT-списка в ИСХОДНОМ тексте: [(нач, кон)].
+
+    Одна точка входа на весь разбор: и на чтение имён, и на точечную правку. Без
+    неё «прочитать колонку» и «поправить колонку» считали границы порознь, и
+    достаточно было одной запятой в литерале, чтобы они разошлись.
+    """
+    sel = _select_list(text)
+    if not sel:
+        return []
+    mask, a, b = sel
+    return [(a + x, a + y) for x, y in _split_top_level_spans(mask[a:b])]
 
 
 def parse_select_columns(text):
@@ -495,21 +543,21 @@ def parse_select_columns(text):
     Для сгенерированного запроса «из таблицы» вернёт чистые имена колонок. Для
     своего SELECT — выражения как есть (напр. 'a.ID'); если распарсить нельзя
     (нет FROM, '*' и т.п.) — пустой список."""
-    if not text:
-        return []
-    m = _SELECT_LIST_RE.search(text)
-    if not m:
-        return []
-    cols = _split_top_level(m.group(1))
+    cols = [text[a:b] for a, b in _column_spans(text)]
     if any(c == "*" or c.endswith(".*") for c in cols):
         return []
     return cols
 
 
 def _split_top_level_spans(s):
-    """То же, что _split_top_level, но с границами каждого куска в исходной
-    строке: [(начало, конец), ...]. Нужно, чтобы править ОДИН элемент списка
-    точечно, не пересобирая и не переформатируя остальные."""
+    """Разбить список через запятую по верхнему уровню, вернув границы кусков:
+    'a, f(x, y), b' -> [(0,1), (3,11), (13,14)]. Запятые внутри скобок
+    разделителями не считаются.
+
+    Границы, а не сами куски: так один элемент списка правится точечно, не
+    пересобирая и не переформатируя остальные. Строку сюда передают
+    ЗАМАСКИРОВАННУЮ (см. _mask) — иначе запятая внутри литерала делит колонку
+    пополам."""
     spans, depth, start = [], 0, 0
     for i, ch in enumerate(s):
         if ch in "([":
@@ -535,7 +583,15 @@ def _split_top_level_spans(s):
 # в кавычках (в кавычках регистр значим, поэтому их сохраняем как есть).
 _ALIAS_TAIL_RE = re.compile(
     r"(?:\s+AS)?\s+(\"[^\"]+\"|[A-Za-z_][A-Za-z0-9_$#]*)\s*$", re.I)
-_BARE_NAME_RE = re.compile(r"^(?:\"[^\"]+\"|[A-Za-z_][A-Za-z0-9_$#.]*)$")
+_NAME_SEG = r"\"[^\"]+\"|[A-Za-z_][A-Za-z0-9_$#]*"
+_BARE_NAME_RE = re.compile(rf"^(?:{_NAME_SEG})$")
+# Имя с уточнением — `m.code`, `s.t.code`. Отдельно от голого, потому что это
+# ВЫРАЖЕНИЕ, а не просто выбор колонки: переименовать его надо псевдонимом
+# (`m.code kod`), иначе замена целиком выбросит из запроса псевдоним таблицы, а
+# показывать в списке колонок надо последнюю часть — ровно так колонку назовёт
+# сама БД.
+_QUALIFIED_NAME_RE = re.compile(rf"^(?:{_NAME_SEG})(?:\.(?:{_NAME_SEG}))+$")
+_NAME_SEG_RE = re.compile(_NAME_SEG)
 # слова, которые псевдонимом не бывают: иначе «CAST(x AS int)» или «… END»
 # приняли бы за имя выходной колонки
 _NOT_ALIAS = {"end", "null", "distinct", "all", "unique"}
@@ -550,6 +606,7 @@ def rename_select_column(text, index, new_name):
       code                 -> kod              голое имя заменяется целиком
                                                (в запросе «из таблицы» это и
                                                есть выбор другой колонки);
+      m.code               -> m.code kod       имя с уточнением — выражение:
       m.code kod           -> m.code naim      меняется ТОЛЬКО псевдоним,
       m.code AS kod        -> m.code AS naim   выражение остаётся вашим;
       TRUNC(dt)            -> TRUNC(dt) naim   псевдонима не было — добавляется.
@@ -561,15 +618,11 @@ def rename_select_column(text, index, new_name):
     new_name = (new_name or "").strip()
     if not text or not new_name:
         return text
-    m = _SELECT_LIST_RE.search(text)
-    if not m:
-        return text
-    body = m.group(1)
-    spans = _split_top_level_spans(body)
+    spans = _column_spans(text)
     if not (0 <= index < len(spans)):
         return text
     a, b = spans[index]
-    item = body[a:b]
+    item = text[a:b]
     if item == "*" or item.endswith(".*"):
         return text
 
@@ -581,7 +634,7 @@ def rename_select_column(text, index, new_name):
             replacement = item[:tail.start(1)] + new_name
         else:
             replacement = f"{item} {new_name}"      # псевдонима не было
-    return text[:m.start(1) + a] + replacement + text[m.start(1) + b:]
+    return text[:a] + replacement + text[b:]
 
 
 def parse_insert_columns(text):
@@ -589,12 +642,15 @@ def parse_insert_columns(text):
     Если распарсить нельзя — (None, [])."""
     if not text:
         return None, []
-    m = _INSERT_COLS_RE.search(text)
+    # По маске — ровно как SELECT: у половины файлов над INSERT висит шапка
+    # комментария, и слово INSERT в ней не должно забирать разбор себе.
+    mask = _mask(text)
+    m = _INSERT_COLS_RE.search(mask)
     if not m:
         return None, []
-    table = m.group(1)
-    cols = [c for c in _split_top_level(m.group(2))]
-    return table, cols
+    a, b = m.span(2)
+    return text[m.start(1):m.end(1)], [
+        text[a + x:a + y] for x, y in _split_top_level_spans(mask[a:b])]
 
 
 def remove_select_column(text, index):
@@ -615,16 +671,10 @@ def remove_select_column(text, index):
     элемент списка, остальной текст (выражения, переносы, WHERE) остаётся байт
     в байт. Разобрать не вышло — текст возвращается как есть.
     """
-    if not text:
-        return text
-    m = _SELECT_LIST_RE.search(text)
-    if not m:
-        return text
-    body = m.group(1)
-    spans = _split_top_level_spans(body)
+    spans = _column_spans(text)
     if not (0 <= index < len(spans)) or len(spans) < 2:
         return text          # последнюю колонку не убираем: SELECT без списка
-    if any(body[a:b] == "*" or body[a:b].endswith(".*") for a, b in spans):
+    if any(text[a:b] == "*" or text[a:b].endswith(".*") for a, b in spans):
         return text
 
     a, b = spans[index]
@@ -634,13 +684,14 @@ def remove_select_column(text, index):
         cut_a, cut_b = a, spans[index + 1][0]
     else:
         cut_a, cut_b = spans[index - 1][1], b
-    return text[:m.start(1) + cut_a] + text[m.start(1) + cut_b:]
+    return text[:cut_a] + text[cut_b:]
 
 
 def output_name(item):
     """Имя ВЫХОДНОЙ колонки для элемента SELECT-списка.
 
     'code' -> 'code';  'm.code kod' -> 'kod';  'm.code AS kod' -> 'kod';
+    'm.code' -> 'code' (так колонку назовёт и сама БД);
     'TRUNC(dt)' -> 'TRUNC(dt)' (имени нет — показываем выражение).
 
     Нужно, чтобы колонки назывались одинаково, откуда бы ни пришли: снятие по
@@ -652,6 +703,8 @@ def output_name(item):
     item = (item or "").strip()
     if not item or _BARE_NAME_RE.match(item):
         return item
+    if _QUALIFIED_NAME_RE.match(item):
+        return _NAME_SEG_RE.findall(item)[-1]
     tail = _ALIAS_TAIL_RE.search(item)
     if tail and tail.group(1).strip('"').lower() not in _NOT_ALIAS:
         return tail.group(1)
@@ -841,6 +894,42 @@ def _selftest():
         got = rename_select_column(sql, idx, name)
         assert got == want, (note, got)
 
+    # ── разбор не спотыкается о комментарии, литералы и DISTINCT ─────────────
+    # Всё это взято из живых файлов, и каждое ломало разбор так, что линия
+    # показывалась заглушками «(колонка N)» — то есть конструктор говорил «я не
+    # знаю, что тут за колонки» про совершенно обычный запрос.
+    lit = ("SELECT code, name, period,\ncase \nwhen f = '1,2,3,4' then 1\n"
+           "when f = '2,3,4' then 3\nend as ffinsource, \n'', idrw from t\n")
+    assert parse_select_columns(lit) == [
+        "code", "name", "period",
+        "case \nwhen f = '1,2,3,4' then 1\nwhen f = '2,3,4' then 3\nend as ffinsource",
+        "''", "idrw"], parse_select_columns(lit)
+
+    commented = ("-- на проде этот SELECT отрабатывал\n"
+                 "-- порядок колонок обязан совпадать с Add.sql\n"
+                 "SELECT code, name\n  FROM speindex\n")
+    assert parse_select_columns(commented) == ["code", "name"], \
+        parse_select_columns(commented)
+    assert parse_insert_columns(
+        "-- вставка в ведомую, INSERT INTO чего-то другого тут нет\n"
+        "INSERT INTO t (a, b)\nVALUES %s\n") == ("t", ["a", "b"])
+
+    # DISTINCT — свойство выборки, а не первая колонка
+    for sql, want in (
+        ("SELECT DISTINCT code, name FROM t\n", ["code", "name"]),
+        ("SELECT distinct 0 fil, cont FROM t\n", ["0 fil", "cont"]),
+        ("select unique a, b from t\n", ["a", "b"]),
+    ):
+        assert parse_select_columns(sql) == want, parse_select_columns(sql)
+    # …и остаётся на месте, что бы с колонками ни делали
+    assert remove_select_column("SELECT DISTINCT a, b FROM t\n", 0) == \
+        "SELECT DISTINCT b FROM t\n"
+    assert rename_select_column("SELECT DISTINCT a, b FROM t\n", 0, "kod") == \
+        "SELECT DISTINCT kod, b FROM t\n"
+    # запятая в литерале не делит колонку пополам и при правке
+    assert remove_select_column("SELECT a, f('x,y') b, c FROM t\n", 1) == \
+        "SELECT a, c FROM t\n"
+
     # имя ВЫХОДНОЙ колонки — одно и то же, откуда бы колонки ни пришли:
     # снятие по запросу берёт имена у драйвера (псевдонимы), чтение с диска
     # разбирает текст. Без output_name одна колонка звалась то 'kod', то
@@ -848,8 +937,15 @@ def _selftest():
     for item, want in (("code", "code"), ("m.code kod", "kod"),
                        ("m.code AS kod", "kod"), ("TRUNC(dt)", "TRUNC(dt)"),
                        ('m."Mixed" mc', "mc"), ("CASE WHEN a=1 THEN 2 END",
-                                                "CASE WHEN a=1 THEN 2 END")):
+                                                "CASE WHEN a=1 THEN 2 END"),
+                       # имя с уточнением: так его назовёт и сама БД
+                       ("m.code", "code"), ('m."Mixed"', '"Mixed"'),
+                       ('"account"', '"account"')):
         assert output_name(item) == want, (item, output_name(item))
+    # …а переименование такого имени идёт псевдонимом: замена целиком выбросила
+    # бы из запроса псевдоним таблицы, и запрос перестал бы работать
+    assert rename_select_column("SELECT m.code, b FROM t m\n", 0, "kod") == \
+        "SELECT m.code kod, b FROM t m\n"
 
     # круг: переименовал -> разобрал -> имя стало новым, выражение цело
     sel = "SELECT m.code kod,\n       TRUNC(m.dt)\nFROM t m\nWHERE m.dend IS NULL\n"

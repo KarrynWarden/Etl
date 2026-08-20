@@ -28,8 +28,9 @@ import ActionError from './ActionError'
 import ComboBox from './ComboBox'
 import FilesPreview from './FilesPreview'
 import TableNamePair from './TableNamePair'
-import { toDbCase } from './dbCase'
+import { isPlainName, toDbCase } from './dbCase'
 import SpMappingEditor from './SpMappingEditor'
+import SqlLock from './SqlLock'
 
 // Справочники и разовый перенос.
 //
@@ -325,12 +326,19 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
   if (!spec) return null
 
   const patch = (c) => setSpec((p) => ({ ...p, ...c }))
-  // Запирать имеет смысл только рукописный запрос: собранный конструктором и
-  // так пересобирается из колонок при каждой правке, замок на нём ничего не
-  // защищает и только сбивал бы с толку. Поэтому в остальных режимах
-  // переключателя нет вовсе (SpMappingEditor рисует его по `locked !== undefined`).
-  const lockable = spec.src_mode === 'custom'
+  // Замок предлагается там, где есть что запирать: у линии в режиме «вся
+  // таблица» файла Select.sql нет вовсе (см. build_sp_all), запирать нечего.
+  const lockable = spec.src_mode !== 'all'
   const selectLocked = lockable && locked
+
+  // Запереть — значит объявить запрос СВОИМ. Иначе замок был бы обманом: текст
+  // защищён от правки колонками, но при первой же правке пересобран целиком,
+  // потому что режим остался «из колонок». Обратный ход отдельным действием и
+  // с подтверждением — он затирает текст, а такое не делают переключателем.
+  const setSelectLock = (on) => {
+    setLocked(on)
+    if (on && spec.src_mode !== 'custom') patch({ src_mode: 'custom' })
+  }
   const colName = (c) =>
     typeof c === 'string' ? c : c?.column_name || c?.COLUMN_NAME || ''
   const slaveNames = (spec.slave_cols || []).map(colName)
@@ -449,7 +457,9 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
     const pairs = (spec.pairs || []).map((p) => [...p])
     for (let i = 0; i < pairs.length; i++) {
       const want = toDbCase(pairs[i][0], spec.db_master)
-      if (!selectLocked && pairs[i][0] && want !== pairs[i][0]) {
+      // Выражение без псевдонима регистру не подлежит: `TRUNC(dt)` стало бы
+      // `TRUNC(DT)` — это правка запроса, а не косметика имени.
+      if (!selectLocked && isPlainName(pairs[i][0]) && want !== pairs[i][0]) {
         pairs[i][0] = want
         if ((next.select_sql_text || '').trim()) {
           const r = await renameCol.run({
@@ -617,6 +627,7 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
               ) : (
                 <Tag>собирается из сопоставленных колонок</Tag>
               )}
+              {selectLocked && <Tag icon={<LockOutlined />}>заперт</Tag>}
             </Space>
           </Form.Item>
         </Col>
@@ -677,8 +688,8 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
     <>
       <SpMappingEditor
         spec={spec}
-        locked={lockable ? locked : undefined}
-        onLockChange={setLocked}
+        locked={lockable ? selectLocked : undefined}
+        onLockChange={setSelectLock}
         onChange={patchMapping}
         onRenameMaster={renameMasterColumn}
         onRemoveMaster={removeMasterColumn}
@@ -700,69 +711,43 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
           «настоящее» и «только для чтения». Разбор идёт по уходу из поля:
           недописанный SELECT разбирать нечего.
 
-          В режиме «выбранные колонки» Select собирает конструктор, поэтому
-          ручная правка там будет затёрта следующим же изменением колонок — об
-          этом сказано прямо, а рядом кнопка перевода в «своё SELECT», после
-          которой запрос принадлежит человеку. */}
-      {/* Один вопрос, а не выбор варианта: кто сейчас хозяин Select.sql. От
-          ответа зависит ровно одно — перезапишет ли конструктор ваш текст,
-          когда вы поправите колонки. Всё остальное работает одинаково: колонки
-          читаются из запроса, запрос собирается из колонок, оба направления
-          доступны в любой момент. */}
-      {spec.src_mode !== 'custom' ? (
-        <Alert
-          type="info"
-          showIcon
-          style={{ marginBottom: 16 }}
-          message="Select.sql сейчас собирает конструктор — из ведущей таблицы и сопоставления"
-          description={
-            <Space direction="vertical" style={{ display: 'flex' }}>
-              <span>
-                Правьте его свободно: чтобы текст закрепился за вами и больше не
-                пересобирался, нажмите кнопку ниже — или просто снимите колонки
-                кнопкой «Снять по запросу» на вкладке «Колонки», и запрос станет
-                вашим сам.
-              </span>
-              <Button size="small" onClick={() => patch({ src_mode: 'custom' })}>
-                Запрос мой, не пересобирать
-              </Button>
-            </Space>
-          }
-        />
-      ) : (
-        <Alert
-          type="info"
-          showIcon
-          style={{ marginBottom: 16 }}
-          message="Select.sql ваш — сохраняется как есть"
-          description={
-            <Space direction="vertical" style={{ display: 'flex' }}>
-              <span>
-                Имена колонок ведущей читаются из его псевдонимов: поправили
-                запрос — колонки обновятся, нажали «Снять по запросу» — обновятся
-                и типы с ключами. Вернуть сборку из колонок можно в любой момент.
-              </span>
-              <Popconfirm
-                title="Собирать Select.sql из колонок?"
-                description="Ваш текст запроса будет заменён сгенерированным по текущему сопоставлению."
-                okText="Собирать"
-                cancelText="Нет"
-                disabled={selectLocked}
-                onConfirm={() => patchMapping({ src_mode: 'table' })}
-              >
-                {/* Заперт — значит и этой кнопке нельзя: она затирает запрос
-                    целиком, а замок ровно от этого и поставлен. */}
-                <Tooltip
-                  title={selectLocked ? 'Снимите замок на вкладке «Колонки»' : ''}
+          Управление здесь ОДНО — замок. Раньше на этом месте стояло окошко с
+          пояснением и кнопкой «Запрос мой, не пересобирать»: тот же смысл, но
+          названный так, что связь с замочком на соседней вкладке не читалась
+          вовсе, — а сам замок при этом жил там, где запроса нет. Теперь
+          переключатель настоящий и стоит в обоих местах: здесь, где лежит
+          текст, и в колонках, где его правят походя. */}
+      {lockable && (
+        <Card size="small" style={{ marginBottom: 16 }}>
+          <Space direction="vertical" size={4} style={{ display: 'flex' }}>
+            <SqlLock locked={selectLocked} onChange={setSelectLock} note />
+            <Space wrap>
+              <Typography.Text type="secondary">
+                {spec.src_mode === 'custom'
+                  ? 'Запрос ваш — сохраняется как есть, конструктор его не пересобирает.'
+                  : 'Запрос собирает конструктор из ведущей таблицы и сопоставления: правки в поле ниже будут затёрты при следующем изменении колонок. Заприте его — и текст станет вашим.'}
+              </Typography.Text>
+              {spec.src_mode === 'custom' && (
+                <Popconfirm
+                  title="Собирать Select.sql из колонок?"
+                  description="Ваш текст запроса будет заменён сгенерированным по текущему сопоставлению."
+                  okText="Собирать"
+                  cancelText="Нет"
+                  disabled={selectLocked}
+                  onConfirm={() => patchMapping({ src_mode: 'table' })}
                 >
-                  <Button size="small" disabled={selectLocked}>
-                    Собирать из колонок
-                  </Button>
-                </Tooltip>
-              </Popconfirm>
+                  {/* Заперт — значит и этой кнопке нельзя: она затирает запрос
+                      целиком, а замок ровно от этого и поставлен. */}
+                  <Tooltip title={selectLocked ? 'Сначала снимите замок' : ''}>
+                    <Button size="small" disabled={selectLocked}>
+                      Собирать из колонок
+                    </Button>
+                  </Tooltip>
+                </Popconfirm>
+              )}
             </Space>
-          }
-        />
+          </Space>
+        </Card>
       )}
 
       <Form.Item
@@ -774,7 +759,7 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
         }
         help={
           selectLocked
-            ? 'Замок снимается кнопкой на вкладке «Колонки». Убрать колонку можно и не снимая его — вырежется ровно она одна.'
+            ? 'Заперт переключателем выше. Убрать колонку можно и не снимая замок — вырежется ровно она одна.'
             : 'имена колонок ведущей читаются отсюда — правка видна на вкладке «Колонки»'
         }
       >
