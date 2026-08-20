@@ -22,6 +22,32 @@ export function toDbCase(name, db) {
     .join('.')
 }
 
+// Имя без схемы: 'KOKNAEV.PRBDIR' -> 'PRBDIR'. Зеркало dag_builder.bare.
+export function bare(table) {
+  const parts = String(table ?? '').trim().split('.')
+  return parts[parts.length - 1]
+}
+
+// Схема из имени ('KOKNAEV.PRBDIR' -> 'KOKNAEV.'), либо пустая строка.
+export function schemaOf(table) {
+  const text = String(table ?? '').trim()
+  const at = text.lastIndexOf('.')
+  return at < 0 ? '' : text.slice(0, at + 1)
+}
+
+// Перенести имя таблицы с одной стороны на другую.
+//
+// В корпусе имя совпадает у 69 линий из 87 — ради этих 69 кнопка и нужна. Но
+// «совпадает» здесь про имя, а не про строку целиком: схемы у сторон сплошь
+// разные (KOKNAEV.MEDREE_PRDISP → medree_prdisp, iaddress → KOKNAEV.IADDRESS).
+// Поэтому переносится ИМЯ БЕЗ СХЕМЫ, в регистре принимающей БД, а схема, если
+// она в поле уже набрана, остаётся своя — её человек писал не просто так.
+export function carryName(source, target, targetDb) {
+  const name = bare(source)
+  if (!name) return target ?? ''
+  return schemaOf(target) + toDbCase(name, targetDb)
+}
+
 // Совпадает ли имя с диалектом. Нужно, чтобы отличить «человек только что
 // ввёл» от «так лежит в конфиге с давних пор»: у восемнадцати линий
 // справочников ведомая записана не тем регистром, работают они прекрасно

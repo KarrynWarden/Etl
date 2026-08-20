@@ -174,6 +174,8 @@ export default function NewLinePage({ onCreated, onCancel }) {
                 <TableNameInput
                   value={form.table_master}
                   db={form.db_master}
+                  carryFrom={form.table_slave}
+                  carryLabel="Ведомая таблица"
                   onChange={(v) => patch({ table_master: v })}
                 />
               </Form.Item>
@@ -183,6 +185,8 @@ export default function NewLinePage({ onCreated, onCancel }) {
                 <TableNameInput
                   value={form.table_slave}
                   db={form.db_slave}
+                  carryFrom={form.table_master}
+                  carryLabel="Ведущая таблица"
                   onChange={(v) => patch({ table_slave: v })}
                 />
               </Form.Item>

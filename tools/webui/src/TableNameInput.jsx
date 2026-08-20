@@ -1,7 +1,7 @@
 import { Button, Input, Space, Tooltip, Typography } from 'antd'
-import { FontSizeOutlined } from '@ant-design/icons'
+import { FontSizeOutlined, SwapOutlined } from '@ant-design/icons'
 
-import { toDbCase, matchesDbCase } from './dbCase'
+import { toDbCase, matchesDbCase, carryName } from './dbCase'
 
 // Поле имени таблицы с приведением регистра к диалекту БД — ОТДЕЛЬНОЙ КНОПКОЙ.
 //
@@ -19,15 +19,36 @@ import { toDbCase, matchesDbCase } from './dbCase'
 // складываются имя линии (tableNameEtlJobs) и пути структур, а имя линии
 // сравнивается с etl_jobs.tablename ДОСЛОВНО. Ошибка здесь — это «Конфиг для
 // ключа ... не найден» при переносе и молчаливый ноль групп в аудите.
-export default function TableNameInput({ value, db, onChange, ...rest }) {
+export default function TableNameInput({ value, db, onChange, carryFrom, carryLabel, ...rest }) {
   const fixed = toDbCase(value, db)
   const off = Boolean(value) && !matchesDbCase(value, db)
   const want = db === 'Orcl' ? 'ВЕРХНЕМУ' : 'нижнему'
+  // Перенос имени с другой стороны. В корпусе имя совпадает у 69 линий из 87,
+  // поэтому набирать его дважды — работа на ровном месте.
+  const carried = carryFrom ? carryName(carryFrom, value, db) : ''
+  const canCarry = Boolean(carried) && carried !== (value || '')
 
   return (
     <Space direction="vertical" size={2} style={{ display: 'flex' }}>
       <Space.Compact style={{ width: '100%' }}>
         <Input value={value || ''} onChange={(e) => onChange(e.target.value)} {...rest} />
+        {carryFrom !== undefined && (
+          <Tooltip
+            title={
+              !carryFrom
+                ? `Сначала заполните: ${carryLabel}`
+                : canCarry
+                  ? `Взять имя из «${carryLabel}»: ${carryFrom} → ${carried}`
+                  : `Имя уже совпадает с «${carryLabel}»`
+            }
+          >
+            <Button
+              icon={<SwapOutlined />}
+              disabled={!canCarry}
+              onClick={() => onChange(carried)}
+            />
+          </Tooltip>
+        )}
         <Tooltip
           title={
             off

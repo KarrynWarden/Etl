@@ -475,6 +475,8 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
             <TableNameInput
               value={spec.master_table || ''}
               db={spec.db_master}
+              carryFrom={spec.slave_table || ''}
+              carryLabel="Ведомая таблица"
               onChange={(v) => patch({ master_table: v })}
             />
           </Form.Item>
@@ -484,6 +486,8 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
             <TableNameInput
               value={spec.slave_table || ''}
               db={spec.db_slave}
+              carryFrom={spec.master_table || ''}
+              carryLabel="Ведущая таблица"
               onChange={(v) => patch({ slave_table: v })}
             />
           </Form.Item>

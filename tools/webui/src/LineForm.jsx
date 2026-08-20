@@ -139,6 +139,8 @@ export default function LineForm({ lineKey, onChanged }) {
             <TableNameInput
               value={spec.table_master}
               db={spec.db_master}
+              carryFrom={spec.table_slave}
+              carryLabel="Ведомая таблица"
               onChange={(v) => patch({ table_master: v })}
             />
           </Form.Item>
@@ -148,6 +150,8 @@ export default function LineForm({ lineKey, onChanged }) {
             <TableNameInput
               value={spec.table_slave}
               db={spec.db_slave}
+              carryFrom={spec.table_master}
+              carryLabel="Ведущая таблица"
               onChange={(v) => patch({ table_slave: v })}
             />
           </Form.Item>
