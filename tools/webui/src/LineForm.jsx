@@ -26,7 +26,7 @@ import ActionError from './ActionError'
 import ComboBox from './ComboBox'
 import FilesPreview from './FilesPreview'
 import MappingEditor from './MappingEditor'
-import TableNameInput from './TableNameInput'
+import TableNamePair from './TableNamePair'
 import LineActions from './LineActions'
 
 const MODES = [
@@ -133,30 +133,15 @@ export default function LineForm({ lineKey, onChanged }) {
 
   const settings = (
     <Form layout="vertical">
-      <Row gutter={16}>
-        <Col span={12}>
-          <Form.Item label={`Ведущая таблица (${spec.db_master})`}>
-            <TableNameInput
-              value={spec.table_master}
-              db={spec.db_master}
-              carryFrom={spec.table_slave}
-              carryLabel="Ведомая таблица"
-              onChange={(v) => patch({ table_master: v })}
-            />
-          </Form.Item>
-        </Col>
-        <Col span={12}>
-          <Form.Item label={`Ведомая таблица (${spec.db_slave})`}>
-            <TableNameInput
-              value={spec.table_slave}
-              db={spec.db_slave}
-              carryFrom={spec.table_master}
-              carryLabel="Ведущая таблица"
-              onChange={(v) => patch({ table_slave: v })}
-            />
-          </Form.Item>
-        </Col>
-      </Row>
+      <TableNamePair
+        resetKey={lineKey}
+        masterValue={spec.table_master}
+        masterDb={spec.db_master}
+        onMasterChange={(v) => patch({ table_master: v })}
+        slaveValue={spec.table_slave}
+        slaveDb={spec.db_slave}
+        onSlaveChange={(v) => patch({ table_slave: v })}
+      />
 
       <Row gutter={16}>
         <Col span={8}>

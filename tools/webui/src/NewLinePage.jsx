@@ -21,7 +21,7 @@ import { useAction } from './useAction'
 import ActionError from './ActionError'
 import ComboBox from './ComboBox'
 import FilesPreview from './FilesPreview'
-import TableNameInput from './TableNameInput'
+import TableNamePair from './TableNamePair'
 
 const DBS = [
   { value: 'Orcl', label: 'Oracle' },
@@ -165,33 +165,15 @@ export default function NewLinePage({ onCreated, onCancel }) {
             </Col>
           </Row>
 
-          <Row gutter={16}>
-            <Col span={12}>
-              <Form.Item
-                label={`Ведущая таблица (${form.db_master})`}
-                help="со схемой, если нужна: KOKNAEV.IPRKDEPT"
-              >
-                <TableNameInput
-                  value={form.table_master}
-                  db={form.db_master}
-                  carryFrom={form.table_slave}
-                  carryLabel="Ведомая таблица"
-                  onChange={(v) => patch({ table_master: v })}
-                />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item label={`Ведомая таблица (${form.db_slave})`}>
-                <TableNameInput
-                  value={form.table_slave}
-                  db={form.db_slave}
-                  carryFrom={form.table_master}
-                  carryLabel="Ведущая таблица"
-                  onChange={(v) => patch({ table_slave: v })}
-                />
-              </Form.Item>
-            </Col>
-          </Row>
+          <TableNamePair
+            masterValue={form.table_master}
+            masterDb={form.db_master}
+            masterHelp="со схемой, если нужна: KOKNAEV.IPRKDEPT"
+            onMasterChange={(v) => patch({ table_master: v })}
+            slaveValue={form.table_slave}
+            slaveDb={form.db_slave}
+            onSlaveChange={(v) => patch({ table_slave: v })}
+          />
 
           {form.source === 'sql' && (
             <Form.Item

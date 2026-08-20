@@ -27,7 +27,7 @@ import { useAction } from './useAction'
 import ActionError from './ActionError'
 import ComboBox from './ComboBox'
 import FilesPreview from './FilesPreview'
-import TableNameInput from './TableNameInput'
+import TableNamePair from './TableNamePair'
 import SpMappingEditor from './SpMappingEditor'
 
 // Справочники и разовый перенос.
@@ -469,30 +469,15 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
         </Col>
       </Row>
 
-      <Row gutter={16}>
-        <Col span={12}>
-          <Form.Item label={`Ведущая таблица (${spec.db_master})`}>
-            <TableNameInput
-              value={spec.master_table || ''}
-              db={spec.db_master}
-              carryFrom={spec.slave_table || ''}
-              carryLabel="Ведомая таблица"
-              onChange={(v) => patch({ master_table: v })}
-            />
-          </Form.Item>
-        </Col>
-        <Col span={12}>
-          <Form.Item label={`Ведомая таблица (${spec.db_slave})`}>
-            <TableNameInput
-              value={spec.slave_table || ''}
-              db={spec.db_slave}
-              carryFrom={spec.master_table || ''}
-              carryLabel="Ведущая таблица"
-              onChange={(v) => patch({ slave_table: v })}
-            />
-          </Form.Item>
-        </Col>
-      </Row>
+      <TableNamePair
+        resetKey={entry.key || `new-${entry.kind}`}
+        masterValue={spec.master_table || ''}
+        masterDb={spec.db_master}
+        onMasterChange={(v) => patch({ master_table: v })}
+        slaveValue={spec.slave_table || ''}
+        slaveDb={spec.db_slave}
+        onSlaveChange={(v) => patch({ slave_table: v })}
+      />
 
       <Row gutter={16}>
         <Col span={12}>
