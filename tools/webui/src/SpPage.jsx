@@ -267,7 +267,6 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
   const buildSql = useAction(api.spBuildSql)
   const parseSql = useAction(api.spParseSql)
   const renameCol = useAction(api.spRenameSelectColumn)
-  const removeCol = useAction(api.spRemoveSelectColumn)
 
   const isNew = Boolean(entry) && !entry.key
 
@@ -395,95 +394,66 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
     rebuildSql(next)
   }
 
-  // Переименование колонки ведущей. РЕЖИМ ПРАВКИ ОДИН: имя меняется здесь
-  // всегда и всегда меняет запрос. Что именно поменяется в тексте, решает не
-  // «режим линии», а сам запрос — правило одно на сервере
-  // (sp_builder.rename_select_column): голое имя заменяется целиком, у
-  // выражения меняется псевдоним, не было псевдонима — добавляется.
+  // Дать имя колонке запроса, у которой его нет (`TRUNC(dt)`, `''`).
   //
-  // patchMapping в конце не случаен: в режиме «выбранные колонки» он соберёт
-  // SELECT из имён заново и придёт к тому же результату, а в режиме «своё
-  // SELECT» оставит наш переименованный текст. Одна дорога на оба случая.
-  const renameMasterColumn = async (index, name) => {
-    const pairs = (spec.pairs || []).map((p, i) =>
-      i === index ? [name, p[1]] : p,
-    )
-    const sql = (spec.select_sql_text || '').trim()
-    let select_sql_text = spec.select_sql_text
-    if (sql) {
-      const r = await renameCol.run({
-        select_sql_text: spec.select_sql_text,
-        index,
-        new_name: name,
-      })
-      if (!r) return
-      select_sql_text = r.select_sql_text
-    }
-    patchMapping({ pairs, select_sql_text })
+  // Единственная правка, которую страница колонок делает в тексте запроса, — и
+  // она неизбежна: внешний список ссылается на колонку ПО ИМЕНИ, а у выражения
+  // имени нет. Правит сервер (sp_builder.rename_select_column) и правит
+  // точечно: приписывает псевдоним к этому выражению, остальной текст остаётся
+  // байт в байт. Индекс здесь — номер колонки В ЗАПРОСЕ, а не в парах: список
+  // колонок ведущей и есть список выходных колонок запроса.
+  const nameMasterColumn = async (index, name) => {
+    const was = (spec.pairs || [])[index]?.[0]
+    const at = (spec.master_cols || []).findIndex((c) => colName(c) === was)
+    const r = await renameCol.run({
+      select_sql_text: spec.select_sql_text,
+      index: at < 0 ? index : at,
+      new_name: name,
+    })
+    if (!r) return
+    // Колонка теперь называется `name` — и в парах, и в списке доступных.
+    patchMapping({
+      select_sql_text: r.select_sql_text,
+      pairs: (spec.pairs || []).map((p) => (p[0] === was ? [name, p[1]] : p)),
+      master_cols: (spec.master_cols || []).map((c) =>
+        colName(c) === was ? { ...c, column_name: name } : c,
+      ),
+    })
   }
 
-  // Убрать колонку из линии.
-  //
-  // Из ПАР и из SELECT одновременно, всегда. Не «на всякий случай»: рантайм
-  // справочника не проецирует выборку — spEtlNew берёт cursor.fetchmany(...) и
-  // отдаёт строки как есть в executemany(Add.sql). Значит число колонок в
-  // SELECT обязано совпадать с числом колонок в INSERT, и колонка, оставшаяся
-  // в запросе после того, как её убрали из сопоставления, — это не лишнее поле
-  // в выборке, а ошибка привязки на каждом прогоне («not all variables bound»
-  // в Oracle, «INSERT has more expressions than target columns» в Postgres).
-  //
-  // Поэтому даже запертый запрос здесь правится — но хирургически: сервер
-  // (sp_builder.remove_select_column) вырезает ровно один элемент списка
-  // вместе с прилегающей запятой, остальной текст остаётся байт в байт. Если
-  // разобрать не вышло («*», нет FROM, осталась одна колонка), текст вернётся
-  // как есть, и предупредит уже предпросмотр расхождением списков.
-  const removeMasterColumn = async (index) => {
-    const pairs = (spec.pairs || []).filter((_p, i) => i !== index)
-    let select_sql_text = spec.select_sql_text
-    if ((select_sql_text || '').trim()) {
-      const r = await removeCol.run({ select_sql_text, index })
-      if (!r) return
-      select_sql_text = r.select_sql_text
-    }
-    patchMapping({ pairs, select_sql_text })
-  }
+  // Регистр имён. Ведущую сторону не трогаем вовсе: её имена — это имена
+  // колонок ЗАПРОСА (или таблицы), менять их отсюда значит переписывать чужой
+  // текст. Регистр ведомой — другое дело: эти имена конструктор и пишет.
+  const fixColumnCase = () =>
+    patchMapping({
+      pairs: (spec.pairs || []).map(([m, s]) => [
+        m, s ? toDbCase(s, spec.db_slave) : s,
+      ]),
+    })
 
-  // Регистр имён — тем же путём: каждое имя ведущей проходит через
-  // переименование, поэтому запрос остаётся согласован со списком колонок.
-  // При запертом запросе ведущую не трогаем вовсе: замок и заведён ради того,
-  // чтобы такие пакетные правки не переписывали чужой SELECT.
-  const fixColumnCase = async () => {
-    let next = { ...spec }
-    const pairs = (spec.pairs || []).map((p) => [...p])
-    for (let i = 0; i < pairs.length; i++) {
-      const want = toDbCase(pairs[i][0], spec.db_master)
-      // Выражение без псевдонима регистру не подлежит: `TRUNC(dt)` стало бы
-      // `TRUNC(DT)` — это правка запроса, а не косметика имени.
-      if (!selectLocked && isPlainName(pairs[i][0]) && want !== pairs[i][0]) {
-        pairs[i][0] = want
-        if ((next.select_sql_text || '').trim()) {
-          const r = await renameCol.run({
-            select_sql_text: next.select_sql_text,
-            index: i,
-            new_name: want,
-          })
-          if (r) next = { ...next, select_sql_text: r.select_sql_text }
-        }
-      }
-      if (pairs[i][1]) pairs[i][1] = toDbCase(pairs[i][1], spec.db_slave)
-    }
-    patchMapping({ pairs, select_sql_text: next.select_sql_text })
-  }
-
-  // Правка запроса: разбираем его обратно в колонки. По уходу из поля, а не на
-  // каждой букве — недописанный SELECT разбирать нечего, да и незачем.
+  // Правка запроса: перечитываем, какие колонки он теперь отдаёт. Пары при этом
+  // НЕ трогаем — выбор колонок живёт в них, а не в тексте; колонка, исчезнувшая
+  // из запроса, останется в парах и на неё пожалуется предпросмотр, назвав её
+  // по имени. По уходу из поля, а не на каждой букве: недописанный SELECT
+  // разбирать нечего.
   const reparseSql = async (next) => {
     const merged = { ...spec, ...next }
     const parsed = await parseSql.run({
       select_sql_text: merged.select_sql_text || '',
       add_sql_text: merged.add_sql_text || '',
     })
-    setSpec((p) => ({ ...p, ...next, ...(parsed || {}) }))
+    if (!parsed) return
+    // Правили INSERT руками — значит хотели поменять колонки ведомой: он
+    // собирается ИЗ ПАР, и другого способа его переписать нет. Переносим имена
+    // по позиции, ведущую сторону оставляем как была.
+    const extra = {}
+    if (next.add_sql_text !== undefined) {
+      const olds = spec.pairs || []
+      extra.pairs = (parsed.slave_cols || []).map((c, i) => [
+        olds[i]?.[0] || '', colName(c),
+      ])
+    }
+    setSpec((p) => ({ ...p, ...next, ...parsed, ...extra }))
   }
 
   // Снять колонки. `source` — откуда брать ВЕДУЩУЮ: 'table' или 'query'.
@@ -512,6 +482,11 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
       master_cols: m.columns,
       slave_cols: s.columns,
     })
+    // Снятие обновляет ДОСТУПНОЕ. Сопоставление — уже расставленное человеком —
+    // остаётся: колонка, которую он убрал из линии, не должна возвращаться от
+    // того, что он перечитал структуру. Пары складываются заново только у
+    // линии, где их ещё нет, — там «взять всё» и есть то, чего ждут.
+    const fresh = (spec.pairs || []).length === 0 || spec.src_mode === 'all'
     const next = {
       // Снятие по запросу означает, что хозяин запроса — человек: имена
       // колонок теперь берутся из его псевдонимов, и пересобирать SELECT из
@@ -519,14 +494,16 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
       src_mode: byQuery ? 'custom' : 'table',
       master_cols: m.columns,
       slave_cols: s.columns,
-      pairs: m.columns.map((c, i) => {
+    }
+    if (fresh) {
+      next.pairs = m.columns.map((c, i) => {
         const name = colName(c)
         // 1) пара, расставленная руками; 2) для прежнего режима «вся таблица» —
         // порядок, на который он и полагался; 3) автоподбор по именам
         const kept = known.get(name)
         const byPosition = spec.src_mode === 'all' ? positional[i] : null
         return [name, kept || byPosition || suggestion?.suggestions?.[i] || null]
-      }),
+      })
     }
     // По таблице — сразу пересобираем Select.sql: иначе колонки уже новые, а
     // запрос ещё старый, и увидеть это можно только в предпросмотре.
@@ -691,15 +668,14 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
         locked={lockable ? selectLocked : undefined}
         onLockChange={setSelectLock}
         onChange={patchMapping}
-        onRenameMaster={renameMasterColumn}
-        onRemoveMaster={removeMasterColumn}
+        onNameMaster={nameMasterColumn}
         onFixCase={fixColumnCase}
         onSnap={snapColumns}
         snapping={snapping || buildSql.loading}
       />
       <ActionError error={snapError} />
       <ActionError error={buildSql.error} />
-      <ActionError error={removeCol.error} />
+      <ActionError error={renameCol.error} />
     </>
   )
 
@@ -724,7 +700,7 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
             <Space wrap>
               <Typography.Text type="secondary">
                 {spec.src_mode === 'custom'
-                  ? 'Запрос ваш — сохраняется как есть, конструктор его не пересобирает.'
+                  ? 'Запрос ваш — на диск он уходит дословно, а конструктор надстраивает над ним список сопоставленных колонок. Поэтому лишние колонки в нём безвредны, а порядок ничего не решает.'
                   : 'Запрос собирает конструктор из ведущей таблицы и сопоставления: правки в поле ниже будут затёрты при следующем изменении колонок. Заприте его — и текст станет вашим.'}
               </Typography.Text>
               {spec.src_mode === 'custom' && (
@@ -753,14 +729,17 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
       <Form.Item
         label={
           <Space>
-            <span>{`Select.sql${spec.select_sql ? ` — ${spec.select_sql}` : ''}`}</span>
+            <span>
+              {spec.src_mode === 'custom' ? 'Ваш запрос' : 'Select.sql'}
+              {spec.select_sql ? ` — ${spec.select_sql}` : ''}
+            </span>
             {selectLocked && <Tag icon={<LockOutlined />}>заперт</Tag>}
           </Space>
         }
         help={
           selectLocked
-            ? 'Заперт переключателем выше. Убрать колонку можно и не снимая замок — вырежется ровно она одна.'
-            : 'имена колонок ведущей читаются отсюда — правка видна на вкладке «Колонки»'
+            ? 'Заперт переключателем выше — ничто в конструкторе его не тронет.'
+            : 'какие колонки он отдаёт, видно на вкладке «Колонки»; что из них переносится, решают там же'
         }
       >
         <Input.TextArea

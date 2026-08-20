@@ -4,6 +4,7 @@ import {
   Button,
   Checkbox,
   Input,
+  Modal,
   Popconfirm,
   Segmented,
   Space,
@@ -54,8 +55,7 @@ export default function SpMappingEditor({
   locked,
   onLockChange,
   onChange,
-  onRenameMaster,
-  onRemoveMaster,
+  onNameMaster,
   onFixCase,
   onSnap,
   snapping,
@@ -64,6 +64,10 @@ export default function SpMappingEditor({
   const [allowReuse, setAllowReuse] = useState(false)
   const [nameError, setNameError] = useState(null)
   const [lastSource, setLastSource] = useState(null)
+  // {index, name} — какой колонке сейчас дают псевдоним. Единственная правка
+  // запроса, оставшаяся на этой странице, поэтому она через отдельное окно с
+  // подтверждением, а не «набрал в ячейке и ушёл».
+  const [naming, setNaming] = useState(null)
 
   const hasTable = Boolean((spec.master_table || '').trim())
   const hasSlave = Boolean((spec.slave_table || '').trim())
@@ -87,58 +91,64 @@ export default function SpMappingEditor({
     () => new Set(pairs.map(([, s]) => s).filter(Boolean)),
     [pairs],
   )
+  // Что вообще МОЖНО взять с ведущей стороны: колонки таблицы или выходные
+  // колонки запроса. Не то же самое, что выбранное: с тех пор как список
+  // колонок надстраивается НАД запросом (sp_builder.build_sp_select_over),
+  // выбрать можно не всё — лишние колонки в запросе никому не мешают.
+  const masterAvail = useMemo(
+    () => [...new Set([
+      ...(spec.master_cols || []).map(nameOf),
+      ...masterNames.filter(Boolean),
+    ])],
+    [spec.master_cols, masterNames],
+  )
+  const unusedMasters = masterAvail.filter(
+    (n) => n && isPlainName(n) && !masterNames.includes(n),
+  )
 
-  // Режим правки ОДИН. «Из таблицы» и «из запроса» — это два способа
-  // ЗАПОЛНИТЬ колонки, а не два способа их править: имя колонки ведущей
-  // меняется здесь всегда, и всегда меняет запрос. Разница только в том, ЧТО
-  // именно в запросе меняется, и это забота одного правила на сервере
-  // (sp_builder.rename_select_column): голое имя заменяется целиком,
-  // у выражения меняется псевдоним, а не было псевдонима — добавляется.
+  // Ячейка ведущей ВЫБИРАЕТ колонку, а не называет её. Это следствие обёртки:
+  // внешний список ссылается на колонку запроса по имени, поэтому «назвать её
+  // иначе» здесь нечем — имя живёт в запросе, и меняют его там. Раньше ячейка
+  // была полем ввода, и правка имени тихо переписывала чужой SELECT.
   const setPair = (i, m, s) =>
     onChange({ pairs: pairs.map((p, j) => (j === i ? [m, s] : p)) })
 
-  const renameMaster = (i, event) => {
-    const name = event.target.value.trim()
+  const setMaster = (i, name) => {
     const from = pairs[i][0]
-    if (name === from || name === flat(from)) return
-    if (!name || masterNames.some((n, j) => j !== i && n === name)) {
-      setNameError(
-        !name
-          ? `Пустое имя колонке не годится — ${from} оставлен как был.`
-          : `Колонка ${name} в запросе уже есть — имена должны быть разными.`,
-      )
-      event.target.value = from
+    if (!name || name === from) return
+    if (masterNames.some((n, j) => j !== i && n === name)) {
+      setNameError(`Колонка ${name} уже выбрана другой парой.`)
       return
     }
     setNameError(null)
-    onRenameMaster(i, name)
+    setPair(i, name, pairs[i][1])
   }
 
   // Приведение регистра сразу у всех имён — по колонке за раз это полсотни
-  // нажатий. Ведущая — только при открытом замке и только там, где в ячейке
-  // ИМЯ: у выражения регистр менять нечему, из `TRUNC(dt)` вышло бы `TRUNC(DT)`.
-  const offCase = [
-    ...(locked
-      ? []
-      : masterNames.filter(
-          (n) => n && isPlainName(n) && !matchesDbCase(n, spec.db_master),
-        )),
-    ...slaveNames.filter((n) => n && !matchesDbCase(n, spec.db_slave)),
-  ]
+  // нажатий. Только ВЕДОМАЯ сторона: её имена конструктор и пишет (они идут в
+  // INSERT), а имена ведущей — это имена колонок запроса или таблицы, и менять
+  // их отсюда значило бы править чужой текст.
+  const offCase = slaveNames.filter((n) => n && !matchesDbCase(n, spec.db_slave))
   const fixCase = () => {
     setNameError(null)
     onFixCase()
   }
 
-  // Удаление идёт ОДНОЙ дорогой — через страницу, которая уберёт колонку и из
-  // пар, и из SELECT. Отфильтровать пары здесь было бы короче и неверно:
-  // рантайм справочника кладёт строку выборки в INSERT без проекции, так что
-  // колонка, оставшаяся в запросе, роняет каждый прогон. Работает и при
-  // запертом запросе — вырезается ровно она одна.
-  const removeRow = (i) => onRemoveMaster(i)
+  // Убрать колонку из ЛИНИИ, а не из запроса. Запрос при этом не меняется
+  // вовсе: колонка просто перестаёт попадать во внешний список, который
+  // конструктор надстраивает над ним. До обёртки так было нельзя — состав и
+  // порядок SELECT обязаны были совпадать с INSERT, и удаление лезло в чужой
+  // текст.
+  const removeRow = (i) => onChange({ pairs: pairs.filter((_p, j) => j !== i) })
 
+  // Добавить пару: сразу с первой свободной колонкой ведущей — выдумывать
+  // «колонка N» больше нечего, ведущая сторона теперь ВЫБИРАЕТСЯ из готового
+  // списка, а имени, которого в запросе нет, конструктор всё равно не примет.
   const addPair = () =>
-    onChange({ pairs: [...pairs, [`колонка ${pairs.length + 1}`, null]] })
+    onChange({ pairs: [...pairs, [unusedMasters[0] || '', null]] })
+
+  const addMissing = () =>
+    onChange({ pairs: [...pairs, ...unusedMasters.map((m) => [m, null])] })
 
   const rows = pairs
     .map(([m, s], i) => ({ i, m, s }))
@@ -205,8 +215,8 @@ export default function SpMappingEditor({
         <Tooltip
           title={
             offCase.length
-              ? `Привести к регистру диалекта: ведущая ${spec.db_master}, ведомая ${spec.db_slave}`
-              : 'Регистр всех имён уже соответствует диалекту'
+              ? `Привести имена колонок ведомой к регистру ${spec.db_slave}. Ведущую сторону не трогает: там имена колонок ЗАПРОСА, менять их можно только в нём самом.`
+              : 'Регистр имён ведомой уже соответствует диалекту'
           }
         >
           <Button
@@ -215,7 +225,7 @@ export default function SpMappingEditor({
             danger={offCase.length > 0}
             onClick={fixCase}
           >
-            Регистр имён{offCase.length ? ` (${offCase.length})` : ''}
+            Регистр ведомой{offCase.length ? ` (${offCase.length})` : ''}
           </Button>
         </Tooltip>
         {/* Тот же переключатель, что на вкладке SQL, и намеренно тот же
@@ -247,10 +257,20 @@ export default function SpMappingEditor({
           showIcon
           closable
           style={{ marginBottom: 12 }}
-          message="Переименовать не вышло"
+          message="Так не получится"
           description={nameError}
           onClose={() => setNameError(null)}
         />
+      )}
+      {/* Главное, что изменилось с появлением обёртки, — и сказать об этом
+          надо один раз и тихо, а не предупреждением на каждый экран. */}
+      {hasSql && pairs.length > 0 && (
+        <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+          Переносятся только сопоставленные колонки: конструктор надстраивает
+          над вашим запросом <Typography.Text code>SELECT …</Typography.Text> с
+          ними — поэтому лишние колонки в запросе безвредны, а их порядок
+          ничего не решает.
+        </Typography.Paragraph>
       )}
       {!pairs.length && (
         <Alert
@@ -291,45 +311,52 @@ export default function SpMappingEditor({
           { title: '#', dataIndex: 'i', width: 48, render: (v) => v + 1 },
           {
             title: `Ведущая (${spec.db_master})`,
-            // Правится всегда. Что при этом произойдёт с запросом, зависит от
-            // самого запроса, а не от «режима»: у `code` поменяется имя
-            // колонки, у `m.code kod` — только псевдоним.
+            // ВЫБОР колонки, а не её имя. Имя колонки живёт в запросе (или в
+            // таблице), и меняют его там; здесь решают только, какая из них
+            // поедет в ведомую и в каком порядке.
             render: (_v, r) => {
+              // Колонка без имени: выражение вроде `TRUNC(dt)` или `''`.
+              // Сослаться на неё по имени нельзя — внешний список именно так и
+              // ссылается, — поэтому предлагаем ровно то, что нужно: дать
+              // псевдоним. Это единственная правка запроса, которая осталась на
+              // этой странице, и она явная.
               const plain = isPlainName(r.m)
-              const shown = plain ? r.m : flat(r.m)
-              const hint = plain ? null : (
-                <Tooltip
-                  title={
-                    <>
-                      У этой колонки в запросе нет имени — это выражение:
-                      <div style={{ fontFamily: 'monospace', margin: '4px 0' }}>
-                        {flat(r.m)}
-                      </div>
-                      Впишите имя — и в запросе появится псевдоним, а колонка
-                      станет называться так же, как её увидит рантайм.
-                    </>
-                  }
-                >
-                  <QuestionCircleOutlined style={{ color: '#faad14' }} />
-                </Tooltip>
-              )
-              return locked ? (
-                <Space size={4}>
-                  <Typography.Text code ellipsis style={{ maxWidth: 320 }}>
-                    {shown}
-                  </Typography.Text>
-                  {hint}
-                </Space>
-              ) : (
-                <Input
+              return plain ? (
+                <ComboBox
+                  style={{ width: '100%' }}
                   size="small"
-                  key={r.m}
-                  defaultValue={shown}
-                  suffix={hint}
-                  style={{ fontFamily: 'monospace' }}
-                  onBlur={(e) => renameMaster(r.i, e)}
-                  onPressEnter={(e) => renameMaster(r.i, e)}
+                  value={r.m || ''}
+                  options={masterAvail.filter(
+                    (n) => n === r.m || !masterNames.includes(n),
+                  )}
+                  placeholder="выбрать колонку запроса"
+                  onChange={(v) => setMaster(r.i, v ? v.trim() : '')}
                 />
+              ) : (
+                <Space size={4}>
+                  <Tooltip title={flat(r.m)}>
+                    <Typography.Text code ellipsis style={{ maxWidth: 260 }}>
+                      {flat(r.m)}
+                    </Typography.Text>
+                  </Tooltip>
+                  <Tooltip
+                    title={
+                      locked
+                        ? 'У колонки нет имени, а выбирается она по имени. Снимите замок, чтобы задать псевдоним в запросе.'
+                        : 'У колонки нет имени, а выбирается она по имени — задайте псевдоним, он появится в запросе'
+                    }
+                  >
+                    <Button
+                      size="small"
+                      danger
+                      icon={<QuestionCircleOutlined />}
+                      disabled={locked}
+                      onClick={() => setNaming({ index: r.i, name: '' })}
+                    >
+                      дать имя
+                    </Button>
+                  </Tooltip>
+                </Space>
               )
             },
           },
@@ -365,11 +392,7 @@ export default function SpMappingEditor({
             render: (_v, r) => (
               <Popconfirm
                 title="Убрать колонку из линии?"
-                description={
-                  hasSql
-                    ? `Уйдёт и из SELECT — вырежется ровно ${r.m}, остальной запрос останется как есть.`
-                    : undefined
-                }
+                description="Запрос не изменится: колонка просто перестанет переноситься."
                 okText="Убрать"
                 cancelText="Нет"
                 onConfirm={() => removeRow(r.i)}
@@ -382,22 +405,58 @@ export default function SpMappingEditor({
       />
 
       <Space style={{ marginTop: 12 }} wrap>
-        {!locked && (
-          <Button size="small" icon={<PlusOutlined />} onClick={addPair}>
-            строку сопоставления
+        <Button
+          size="small"
+          icon={<PlusOutlined />}
+          disabled={!unusedMasters.length}
+          onClick={addPair}
+        >
+          строку сопоставления
+        </Button>
+        {unusedMasters.length > 0 && (
+          <Button size="small" onClick={addMissing}>
+            добавить все свободные ({unusedMasters.length})
           </Button>
         )}
         <Typography.Text type="secondary">
           сопоставлено {pairs.length - unmatched} из {pairs.length}
+          {unusedMasters.length > 0 &&
+            `; ${unusedMasters.length} колонок ведущей не переносятся`}
         </Typography.Text>
-        {locked && (
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            убранная колонка уходит и из SELECT — рантайм кладёт строку выборки
-            в INSERT как есть, лишняя колонка в запросе его роняет
-          </Typography.Text>
-        )}
       </Space>
 
+      {/* Дать имя колонке — единственное, что эта страница пишет в запрос.
+          Явно, с подтверждением и с показом того, к чему псевдоним приписан. */}
+      <Modal
+        open={Boolean(naming)}
+        title="Дать колонке имя"
+        okText="Приписать псевдоним"
+        cancelText="Отмена"
+        okButtonProps={{ disabled: !isPlainName((naming?.name || '').trim()) }}
+        onCancel={() => setNaming(null)}
+        onOk={() => {
+          onNameMaster(naming.index, naming.name.trim())
+          setNaming(null)
+        }}
+      >
+        <Typography.Paragraph type="secondary">
+          Колонка выбирается по имени, а у этой его нет — в запросе стоит
+          выражение:
+        </Typography.Paragraph>
+        <Typography.Paragraph>
+          <Typography.Text code>{flat(pairs[naming?.index]?.[0])}</Typography.Text>
+        </Typography.Paragraph>
+        <Input
+          autoFocus
+          placeholder="имя колонки, например excltypeline"
+          value={naming?.name || ''}
+          onChange={(e) => setNaming({ ...naming, name: e.target.value })}
+        />
+        <Typography.Paragraph type="secondary" style={{ marginTop: 8 }}>
+          Псевдоним допишется в запрос к этому выражению — остальной текст
+          останется как есть.
+        </Typography.Paragraph>
+      </Modal>
     </>
   )
 }

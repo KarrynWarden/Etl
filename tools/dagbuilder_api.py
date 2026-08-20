@@ -494,17 +494,26 @@ def r_sp_preview(params):
 
 
 def r_sp_parse_sql(params):
-    """SQL справочника -> колонки и сопоставление.
+    """SQL справочника -> какие колонки ДОСТУПНЫ с каждой стороны.
 
-    Половина связи «правлю запрос — вижу колонки». Разбирает ровно тот же
-    restore_mapping, каким линия читается с диска, поэтому набранный руками
-    текст и сохранённый разбираются ОДИНАКОВО — иначе правка запроса меняла бы
-    сопоставление не так, как его потом прочитает конструктор.
+    Половина связи «правлю запрос — вижу колонки». Отдаёт именно доступное, а не
+    сопоставление: с обёрткой (build_sp_select_over) выбор колонок живёт в
+    парах, а не в тексте запроса, и переразбор текста не вправе его менять.
+    Раньше здесь возвращались ещё и пары, и правка запроса молча перекладывала
+    сопоставление заново.
+
+    Имена — ВЫХОДНЫЕ (output_name): ровно так колонку назовёт БД, и ровно так
+    её вернёт «Снять по запросу». Иначе одна колонка звалась бы то `kod`, то
+    `m.code kod` — смотря чем её сегодня прочитали.
     """
-    master_cols, slave_cols, pairs = SP.restore_mapping(
-        params.get("select_sql_text") or "", params.get("add_sql_text") or "")
-    return {"master_cols": master_cols, "slave_cols": slave_cols,
-            "pairs": [list(p) for p in pairs]}
+    select_text = params.get("select_sql_text") or ""
+    inner = SP.unwrap_select(select_text)
+    if inner is not None:
+        select_text = inner
+    master = [SP.output_name(c) for c in SP.parse_select_columns(select_text)]
+    _table, slave = SP.parse_insert_columns(params.get("add_sql_text") or "")
+    return {"master_cols": SP._cols_as_dicts(master),
+            "slave_cols": SP._cols_as_dicts(slave)}
 
 
 def r_sp_rename_select_column(params):
@@ -522,21 +531,6 @@ def r_sp_rename_select_column(params):
     if not isinstance(index, int) or index < 0:
         raise BadRequest(f"index должен быть неотрицательным целым, получено {index!r}")
     return {"select_sql_text": SP.rename_select_column(text, index, name)}
-
-
-def r_sp_remove_select_column(params):
-    """Убрать выходную колонку №index из SELECT справочника.
-
-    Приходится делать даже при «запертом» запросе: рантайм кладёт строки из
-    SELECT в INSERT без проекции, поэтому лишняя колонка в запросе — это не
-    «немного лишних данных», а ошибка привязки на каждом прогоне. Вырезается
-    ровно один элемент списка, остальной текст остаётся байт в байт.
-    """
-    (text,) = _need(params, "select_sql_text")
-    index = params.get("index")
-    if not isinstance(index, int) or index < 0:
-        raise BadRequest(f"index должен быть неотрицательным целым, получено {index!r}")
-    return {"select_sql_text": SP.remove_select_column(text, index)}
 
 
 def r_sp_build_sql(params):
@@ -660,7 +654,6 @@ POST_ROUTES = {
     "sp/parse-sql": r_sp_parse_sql,
     "sp/build-sql": r_sp_build_sql,
     "sp/rename-select-column": r_sp_rename_select_column,
-    "sp/remove-select-column": r_sp_remove_select_column,
     "sp/move": r_sp_move,
     "sp/delete-targets": r_sp_delete_targets,
     "sp/delete": r_sp_delete,
@@ -1073,7 +1066,14 @@ def _selftest():
                           {"select_sql_text": sp["select_sql_text"],
                            "add_sql_text": sp["add_sql_text"]})
     assert code == 200, body
-    assert body["result"]["pairs"] == [list(p) for p in sp["pairs"]], body["result"]["pairs"]
+    # Разбор отдаёт ДОСТУПНОЕ, а не выбранное: сопоставление живёт в парах, и
+    # переразбор текста не вправе его перекладывать. Здесь запрос собран из
+    # колонок, поэтому доступное и выбранное совпадают.
+    got = [c["column_name"] for c in body["result"]["master_cols"]]
+    assert got == [p[0] for p in sp["pairs"]], got
+    assert [c["column_name"] for c in body["result"]["slave_cols"]] == \
+        [p[1] for p in sp["pairs"]]
+    assert "pairs" not in body["result"], body["result"]
 
     build_args = {"db_slave": sp["db_slave"], "master_table": sp["master_table"],
                   "slave_table": sp["slave_table"], "src_mode": sp["src_mode"],
@@ -1143,12 +1143,7 @@ def _selftest():
                "git/push", "rename-apply"}
     # …а эти только ПОКАЗЫВАЮТ, что будет удалено, — их и зовут перед
     # подтверждением удаления
-    # …а эти только СЧИТАЮТ и возвращают результат, ничего не трогая на диске.
-    # sp/remove-select-column попал сюда не по недосмотру: слово «remove» в имени
-    # содержит «move», и проверка ниже честно на него сработала — он правит текст
-    # запроса В ОТВЕТЕ, а запишется этот текст всё той же кнопкой «Записать».
-    read_only = {"delete-targets", "sp/delete-targets", "rename-plan",
-                 "sp/remove-select-column"}
+    read_only = {"delete-targets", "sp/delete-targets", "rename-plan"}
     unexpected = {r for r in POST_ROUTES
                   if r not in writing and r not in read_only and (
                       "delete" in r or "set" in r or "write" in r
@@ -1184,22 +1179,58 @@ def _selftest():
                 f"в {path[-1]} пропал key на форме линии: состояние прежней линии "
                 f"переживёт переход на другую, и кнопки начнут относиться не к той")
 
-    # ── убранная колонка справочника уходит и из SELECT ──────────────────────
-    # Рантайм справочника (Functions/spEtlNew.py) кладёт строки выборки в INSERT
-    # без проекции: rows = cursor.fetchmany(...) -> executemany(Add.sql, rows).
-    # Значит колонка, убранная из сопоставления, но оставшаяся в рукописном
-    # SELECT, роняет КАЖДЫЙ прогон («not all variables bound» / «INSERT has more
-    # expressions than target columns»). Соблазн велик — отфильтровать пары
-    # прямо в таблице одной строкой, — а в режиме «своё SELECT» конструктор
-    # запрос не пересобирает, и расхождение уходит на диск незамеченным.
+    # ── страница колонок не правит чужой запрос ──────────────────────────────
+    # Единственная её правка в тексте — псевдоним безымянной колонке
+    # (onNameMaster), и та через отдельное окно с подтверждением. Всё остальное
+    # — выбор, снятие, удаление — живёт в парах: внешний список конструктор
+    # соберёт сам. Стоит вернуть сюда правку текста, и «запертый SELECT» снова
+    # начнёт меняться сам по себе, ради чего замок и заводили.
     editor = os.path.join(ROOT, "tools", "webui", "src", "SpMappingEditor.jsx")
     if os.path.exists(editor):
         with open(editor, encoding="utf-8") as fp:
             text = fp.read()
-        assert re.search(r"const removeRow = \(i\) => onRemoveMaster\(i\)", text), (
-            "в SpMappingEditor удаление колонки перестало идти через "
-            "onRemoveMaster: пары и рукописный SELECT разойдутся по длине, и "
-            "перенос справочника упадёт на привязке при каждом прогоне")
+        assert re.search(r"const removeRow = \(i\) =>\s*onChange\(\{ pairs:", text), (
+            "в SpMappingEditor удаление колонки снова лезет куда-то помимо пар: "
+            "убрать колонку из линии — это убрать пару, запрос при этом не "
+            "меняется вовсе")
+        # читать текст запроса ей можно (по нему видно, есть ли он вообще),
+        # а вот ОТДАВАТЬ новый — уже правка: `select_sql_text:` как ключ объекта
+        assert "onNameMaster" in text and "select_sql_text:" not in text, (
+            "страница колонок начала править текст запроса напрямую — правка "
+            "текста живёт на вкладке SQL, здесь только псевдоним по кнопке")
+
+    # ── пересборка любой линии справочника ничего не теряет ──────────────────
+    # Обёртка (SELECT колонки FROM ( ваш запрос ) src) меняет ФОРМУ файла у линий
+    # со своим запросом: файл станет другим при первой же записи такой линии.
+    # Значит нужен постоянный, а не разовый ответ на вопрос «а не потеряется ли
+    # там что-нибудь». Он такой: для КАЖДОЙ линии пересборка даёт либо тот же
+    # файл байт в байт, либо ровно обёртку вокруг текущего текста — запрос
+    # внутри дословный, список колонок тот же и в том же порядке.
+    for kind in ("regular", "once"):
+        for key in SP.list_sp_lines(kind):
+            spec = SP.load_sp_line(kind, key)
+            try:
+                files, _k = SP.build_sp_all(dict(spec, kind=kind))
+            except ValueError:
+                continue          # линия требует правки (см. текст ошибки в форме)
+            for rel, fresh in files:
+                if not rel.endswith("Select.sql"):
+                    continue
+                path = os.path.join(ROOT, rel)
+                if not os.path.exists(path):
+                    continue
+                with open(path, encoding="utf-8") as fp:
+                    old = fp.read()
+                if old == fresh:
+                    continue
+                inner = SP.unwrap_select(fresh)
+                assert inner is not None and inner == old.strip().rstrip(";").rstrip(), (
+                    f"{key}: пересборка изменила ТЕКСТ запроса, а не только "
+                    f"список колонок — так рукописный SELECT и теряют")
+                assert ([SP.output_name(c) for c in SP.parse_select_columns(fresh)]
+                        == [SP.output_name(c) for c in SP.parse_select_columns(old)]), (
+                    f"{key}: пересборка изменила состав или порядок колонок — "
+                    f"вставка идёт позиционно, значения лягут не в свои столбцы")
 
     # ── замок стоит там, где на него натыкаются ──────────────────────────────
     # Переключатель один (SqlLock), но показан в ДВУХ местах: на вкладке SQL,

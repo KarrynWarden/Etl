@@ -97,7 +97,6 @@ export const api = {
   spParseSql: (params) => call('POST', 'sp/parse-sql', params),
   spBuildSql: (params) => call('POST', 'sp/build-sql', params),
   spRenameSelectColumn: (params) => call('POST', 'sp/rename-select-column', params),
-  spRemoveSelectColumn: (params) => call('POST', 'sp/remove-select-column', params),
   spMove: (params) => call('POST', 'sp/move', params),
   spDeleteTargets: (params) => call('POST', 'sp/delete-targets', params),
   spDelete: (params) => call('POST', 'sp/delete', params),

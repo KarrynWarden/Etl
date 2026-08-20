@@ -21,11 +21,25 @@
   1. Либо пользователь называет ведущую таблицу — тогда Select.sql генерится
      автоматически как `SELECT <колонки> FROM <ведущая>` (в порядке маппинга),
      а Add.sql — как `INSERT INTO <ведомая> (<колонки>) VALUES ...`.
-  2. Либо пользователь даёт свой SELECT-запрос — тогда его колонки снимаются
-     из курсора (snap_query_columns), сопоставляются со столбцами ведомой, и
-     генерится только Add.sql (INSERT в ведомую). Select.sql = текст запроса.
+  2. Либо пользователь даёт свой SELECT-запрос — тогда Select.sql это список
+     сопоставленных колонок, НАДСТРОЕННЫЙ над его запросом:
+         SELECT kod, naim
+           FROM ( <запрос пользователя дословно> ) src
+     Ровно так же берёт данные сложный ETL (`SELECT {fields_str} FROM
+     ( {select_sql} ) p`, etlFolder/queries/general/newEtl/*.sql), только там
+     обёртку собирает рантайм из json-структуры, а здесь — конструктор, потому
+     что у справочника структур нет.
 
-Сопоставление колонок — ПОЗИЦИОННОЕ: строки SELECT ложатся в INSERT по порядку.
+     Смысл обёртки: переносятся ТОЛЬКО сопоставленные колонки и берутся ПО
+     ИМЕНИ. Значит лишняя колонка в запросе безвредна, порядок в нём ничего не
+     решает, а убрать колонку из линии можно, не тронув чужой текст. Раньше
+     Select.sql был текстом запроса как есть, состав и порядок обязаны были
+     совпадать с INSERT (рантайм кладёт строку выборки без проекции), и правка
+     сопоставления лезла в запрос.
+
+Сопоставление колонок — ПОЗИЦИОННОЕ: строки SELECT-СПИСКА ложатся в INSERT по
+порядку. Для обёрнутого запроса это внешний список, который собирает сам
+конструктор, поэтому разойтись они не могут.
 Регистр имён берётся из БД как есть (Oracle — ВЕРХНИЙ, Postgres — нижний);
 авто-сопоставление (dag_builder.auto_match) сверяет имена без учёта регистра.
 
@@ -87,6 +101,77 @@ def build_sp_select(master_table, master_cols):
     return f"SELECT {cols}\nFROM {master_table}\n"
 
 
+# Обёртка вокруг рукописного запроса. Ровно то же, что делает сложный ETL:
+#     SELECT {fields_str}
+#     FROM ( {select_sql} ) p
+# (etlFolder/queries/general/newEtl/RecordSelectGroupPost.sql и соседние) —
+# только там её собирает рантайм из json-структуры, а здесь конструктор, потому
+# что у справочника структур нет: линия описана двумя SQL.
+_WRAP_HEAD = "  FROM (\n"
+_WRAP_TAIL = "\n) src\n"
+
+
+def build_sp_select_over(inner_sql, master_cols):
+    """`SELECT c1, c2 FROM ( <ваш запрос> ) src` — колонки берутся ПО ИМЕНИ.
+
+    Зачем обёртка. Рантайм справочника кладёт строку выборки в INSERT без
+    проекции, поэтому раньше состав и ПОРЯДОК колонок запроса были обязаны
+    совпадать с INSERT — а значит любая правка сопоставления лезла в чужой
+    текст: убрал колонку из пары, и её приходилось вырезать из SELECT. Обёртка
+    снимает это целиком: список колонок собирает конструктор, запрос внутри
+    остаётся байт в байт, лишние колонки в нём никому не мешают, порядок
+    неважен.
+
+    Текст вставляется ДОСЛОВНО и без отступов — так `unwrap_select` достаёт его
+    обратно точно таким же, и «запрос не менялся» значит именно это.
+    """
+    if not master_cols:
+        raise ValueError("Нет колонок для SELECT.")
+    inner = (inner_sql or "").strip()
+    if not inner:
+        raise ValueError("Пустой SELECT-запрос.")
+    # Точка с запятой законна в конце файла, но не внутри подзапроса.
+    inner = inner.rstrip().rstrip(";").rstrip()
+    cols = ",\n       ".join(master_cols)
+    return (
+        "-- Список колонок собирает конструктор: они берутся ПО ИМЕНИ из запроса\n"
+        "-- ниже и идут один в один с Add.sql. Поэтому в самом запросе порядок\n"
+        "-- колонок ничего не решает, а лишние колонки безвредны.\n"
+        f"SELECT {cols}\n" + _WRAP_HEAD + inner + _WRAP_TAIL
+    )
+
+
+def unwrap_select(text):
+    """Достать рукописный запрос из обёртки. None — обёртки нет.
+
+    Обратная к build_sp_select_over и обязана быть ТОЧНОЙ: по этому тексту
+    человек правит свой запрос, и вернуться на диск он должен без единого
+    изменённого пробела.
+    """
+    if not text:
+        return None
+    mask = _mask(text)
+    at = mask.find(_WRAP_HEAD)
+    if at < 0:
+        return None
+    start = at + len(_WRAP_HEAD)
+    # Ищем скобку, парную открывающей, — по маске, чтобы скобки внутри строк и
+    # комментариев не сбивали счёт.
+    depth = 1
+    for i in range(start, len(mask)):
+        if mask[i] == "(":
+            depth += 1
+        elif mask[i] == ")":
+            depth -= 1
+            if depth == 0:
+                break
+    else:
+        return None
+    if text[i:] != _WRAP_TAIL.lstrip("\n") or text[i - 1] != "\n":
+        return None                      # закрывается не концом файла — не наша
+    return text[start:i - 1]
+
+
 def build_sp_add(slave_table, slave_cols, db_slave):
     """INSERT в ведомую. Плейсхолдеры под диалект (см. модульную docstring)."""
     if not slave_cols:
@@ -97,6 +182,48 @@ def build_sp_add(slave_table, slave_cols, db_slave):
         return f"INSERT INTO {slave_table} ({cols})\nVALUES ({binds})\n"
     # Postgres: execute_values подставит строки вместо единственного %s
     return f"INSERT INTO {slave_table} ({cols})\nVALUES %s\n"
+
+
+def _ident_key(item):
+    """Ключ сравнения имени. У НЕэкранированного идентификатора регистр не
+    значим ни в Oracle, ни в Postgres, поэтому `KOKNAEV.SPACC` и
+    `KOKNAEV.spacc` — одно и то же имя; в кавычках регистр значим и остаётся.
+    Выражение (не имя) сравнивается как есть — в нём могут быть литералы, где
+    регистр решает всё."""
+    s = (item or "").strip()
+    if _BARE_NAME_RE.match(s) or _QUALIFIED_NAME_RE.match(s):
+        return ".".join(p if p.startswith('"') else p.lower()
+                        for p in _NAME_SEG_RE.findall(s))
+    return s
+
+
+def _select_key(text):
+    return ([_ident_key(c) for c in parse_select_columns(text)],
+            _ident_key(_master_from_select(text) or ""))
+
+
+def _insert_key(text):
+    table, cols = parse_insert_columns(text)
+    return _ident_key(table or ""), [_ident_key(c) for c in cols]
+
+
+def _keep_if_same(current, fresh, parse):
+    """Оставить текущий текст, если он значит ТО ЖЕ, что свежесобранный.
+
+    Файлы писаны руками и разложены по-своему: у SPMKB все семнадцать колонок в
+    одну строку, а генератор ставит перенос после каждой. Без этой проверки
+    правка любого поля линии показывала бы в предпросмотре переписанный SQL —
+    правку, которой человек не делал, — и приучала бы снимать галочки не глядя.
+
+    Сравниваются не тексты, а смысл: список колонок (и таблица). Разошлись —
+    берём свежий.
+    """
+    if not (current or "").strip():
+        return fresh
+    try:
+        return current if parse(current) == parse(fresh) else fresh
+    except Exception:
+        return fresh
 
 
 def build_sp_all(spec):
@@ -150,29 +277,49 @@ def build_sp_all(spec):
             raise ValueError("Не сопоставлено ни одной колонки ведомой.")
         select_content = None
     elif select_mode == "custom":
-        # своё SELECT: порядок колонок задаёт запрос — сопоставить надо все.
+        # Своё SELECT. Переносятся ТОЛЬКО сопоставленные колонки, и берутся они
+        # по имени — конструктор надстраивает над вашим запросом список колонок
+        # (build_sp_select_over). Поэтому лишняя колонка в запросе безвредна, а
+        # порядок в нём ничего не решает.
         #
-        # Проверка стоит ЗДЕСЬ, на пути записи, а не отдельным предупреждением
-        # на вкладке колонок: висящее предупреждение читается как требование
-        # переписать запрос, а требование ровно одно и совсем другое — рантайм
-        # кладёт строку выборки в INSERT без проекции, так что колонок в SELECT
-        # должно быть столько же, сколько в INSERT. Отсюда и два выхода, оба
-        # законные: дать колонке пару — или убрать её (кнопкой в строке; из
-        # запроса она вырежется точечно, remove_select_column).
-        if not pairs or any(s is None for _m, s in pairs):
-            orphans = [str(m) for m, s in pairs if s is None] if pairs else []
-            raise ValueError(
-                "Для своего SELECT сопоставь КАЖДУЮ колонку запроса со столбцом "
-                "ведомой — вставка идёт по порядку, пропуски недопустимы"
-                + (f". Без пары: {', '.join(orphans)}" if orphans else "")
-                + ". Ненужную колонку можно убрать кнопкой в её строке — "
-                  "из запроса она уйдёт вместе с парой."
-            )
-        s_order = [s for _m, s in pairs]
-        select_text = (spec.get("select_sql_text") or "").strip()
-        if not select_text:
+        # Раньше требовалось сопоставить каждую колонку запроса, и убрать
+        # ненужную можно было только вырезав её из текста: рантайм кладёт строку
+        # выборки в INSERT без проекции, так что состав и порядок обязаны были
+        # совпадать. То есть правка сопоставления лезла в чужой текст — а
+        # «запертый» запрос при этом всё равно менялся.
+        m_order = [m for m, s in pairs if m and s]
+        s_order = [s for m, s in pairs if m and s]
+        if not s_order:
+            raise ValueError("Не сопоставлено ни одной колонки.")
+        inner = (spec.get("select_sql_text") or "").strip()
+        if not inner:
             raise ValueError("Пустой SELECT-запрос.")
-        select_content = select_text + ("" if select_text.endswith("\n") else "\n")
+        # Обёртка выбирает колонки ПО ИМЕНИ, поэтому имя обязано быть — и
+        # обязано найтись в запросе. Без проверки линия ушла бы на диск и упала
+        # на первом же прогоне с «invalid identifier», а виноватым назначили бы
+        # перенос.
+        nameless = [m for m in m_order if not _BARE_NAME_RE.match(m)]
+        if nameless:
+            raise ValueError(
+                "Колонки без имени выбрать из запроса нельзя: "
+                + ", ".join(nameless)
+                + ". Задайте им псевдоним в запросе (кнопка «дать имя» в строке "
+                  "колонки) — или снимите с них сопоставление.")
+        avail = [output_name(c) for c in parse_select_columns(inner)]
+        if avail:                      # '*' и неразобранный запрос не проверяем
+            lost = [m for m in m_order if m not in avail]
+            if lost:
+                raise ValueError(
+                    "В запросе нет таких колонок: " + ", ".join(lost)
+                    + ". Доступны: " + ", ".join(avail) + ".")
+            dup = sorted({m for m in m_order if avail.count(m) > 1})
+            if dup:
+                raise ValueError(
+                    "В запросе несколько колонок с одним именем: "
+                    + ", ".join(dup)
+                    + " — какую из них брать, неоднозначно. Дайте им разные "
+                      "псевдонимы.")
+        select_content = build_sp_select_over(inner, m_order)
     else:
         if not master_table:
             raise ValueError("Не задана ведущая таблица.")
@@ -180,9 +327,13 @@ def build_sp_all(spec):
         s_order = [s for m, s in pairs if m and s]
         if not s_order:
             raise ValueError("Не сопоставлено ни одной колонки.")
-        select_content = build_sp_select(master_table, m_order)
+        select_content = _keep_if_same(
+            spec.get("select_sql_text"),
+            build_sp_select(master_table, m_order), _select_key)
 
-    add_content = build_sp_add(slave_table, s_order, dbs)
+    add_content = _keep_if_same(
+        spec.get("add_sql_text"), build_sp_add(slave_table, s_order, dbs),
+        _insert_key)
 
     sql_name = spec.get("sql_dir_name") or re.sub(r"[^A-Za-z0-9_]", "",
                                                   str(master_label)) or "sp"
@@ -411,10 +562,14 @@ def load_sp_line(kind, key):
             return ""
 
     select_rel = body.get("selectSql")
-    select_text = _text(select_rel)
+    select_file = _text(select_rel)
     add_text = _text(body.get("addSql"))
+    # Форме отдаём ВАШ запрос, а не файл целиком: внешний список колонок собирает
+    # конструктор, и правит его человек на вкладке колонок, а не руками в тексте.
+    inner = unwrap_select(select_file)
+    select_text = select_file if inner is None else inner
     # если Select.sql — это простой `SELECT ... FROM <master>`, режим 'table'
-    master_from = _master_from_select(select_text)
+    master_from = _master_from_select(select_file)
     # Режим источника: сохранённый флаг — источник истины. У фрагментов,
     # созданных до его появления, флага нет — там остаётся прежняя эвристика
     # «простой SELECT ... FROM t => из таблицы» (она может ошибиться на своём
@@ -424,10 +579,13 @@ def load_sp_line(kind, key):
     # эвристика ниже могла бы что-то определить, и она давала «custom».
     if not select_rel:
         src_mode = "all"
+    elif inner is not None:
+        src_mode = "custom"          # обёртка бывает только у своего запроса
     else:
-        src_mode = body.get("srcMode") or ("table" if master_from else "custom")
+        src_mode = body.get("srcMode") or (
+            "table" if _looks_generated(select_file) else "custom")
     # текущее сопоставление колонок — прямо из сохранённых SQL (без обращения к БД)
-    master_cols, slave_cols, pairs = restore_mapping(select_text, add_text)
+    master_cols, slave_cols, pairs = restore_mapping(select_file, add_text)
     return {
         "key": key, "kind": kind,
         "master_label": line, "db_master": dbm, "db_slave": dbs,
@@ -457,12 +615,33 @@ _SELECT_FROM_RE = re.compile(
 
 
 def _master_from_select(text):
-    """Достать имя ведущей из простого `SELECT ... FROM <table>` (или None,
-    если запрос сложнее — тогда это «своё SELECT»)."""
+    """Достать имя ведущей из простого `SELECT ... FROM <table>` (или None)."""
     if not text:
         return None
     m = _SELECT_FROM_RE.match(text.strip())
     return m.group(1) if m else None
+
+
+def _looks_generated(text):
+    """Похоже ли на запрос, СОБРАННЫЙ конструктором из списка колонок.
+
+    Нужно только для старых фрагментов, где нет ключа srcMode: по одному тексту
+    режим не восстановить, и раньше хватало «простой SELECT ... FROM t». Этого
+    мало. `SELECT IDROW IDRW, MO, ... FROM KOKNAEV.SPSTRUCTURE` подходит под тот
+    признак, но собран руками — в нём переименование, и колонки IDRW в таблице
+    нет. Признай такую линию «собранной из колонок», и первая же пересборка
+    напишет `SELECT IDRW, ...`, то есть сломает работающий перенос.
+
+    Поэтому требование строгое: КАЖДЫЙ элемент списка — голое имя. Всё
+    остальное — псевдонимы, выражения, DISTINCT — писал человек, и трогать это
+    конструктор не вправе.
+    """
+    if not _master_from_select(text):
+        return False
+    if re.search(r"\bSELECT\s+(?:DISTINCT|UNIQUE|ALL)\b", _mask(text), re.I):
+        return False                 # конструктор такого не пишет — значит рука
+    cols = parse_select_columns(text)
+    return bool(cols) and all(_BARE_NAME_RE.match(c) for c in cols)
 
 
 # Комментарии, строковые литералы, имена в кавычках. Внутри них бывает что
@@ -653,40 +832,6 @@ def parse_insert_columns(text):
         text[a + x:a + y] for x, y in _split_top_level_spans(mask[a:b])]
 
 
-def remove_select_column(text, index):
-    """Убрать выходную колонку №index (с нуля) из SELECT-списка.
-
-    Почему это приходится делать, даже когда запрос «заперт». Рантайм
-    справочника кладёт строки из SELECT в INSERT БЕЗ ПРОЕКЦИИ:
-
-        rows = cursor.fetchmany(...)          # весь кортеж как есть
-        cursor2.executemany(addAllSpSql, rows)
-
-    Значит число колонок в SELECT обязано совпадать с числом в INSERT.
-    Оставить в запросе лишнюю колонку «просто так» нельзя: Oracle ответит
-    «not all variables bound», Postgres — «INSERT has more expressions than
-    target columns», и так каждый прогон.
-
-    Поэтому убранная колонка уходит и из запроса — но ТОЧЕЧНО: вырезается один
-    элемент списка, остальной текст (выражения, переносы, WHERE) остаётся байт
-    в байт. Разобрать не вышло — текст возвращается как есть.
-    """
-    spans = _column_spans(text)
-    if not (0 <= index < len(spans)) or len(spans) < 2:
-        return text          # последнюю колонку не убираем: SELECT без списка
-    if any(text[a:b] == "*" or text[a:b].endswith(".*") for a, b in spans):
-        return text
-
-    a, b = spans[index]
-    # Съедаем и разделитель — тот, что со стороны соседа, чтобы не осталось
-    # висящей запятой и чтобы отступ следующей строки не поехал.
-    if index + 1 < len(spans):
-        cut_a, cut_b = a, spans[index + 1][0]
-    else:
-        cut_a, cut_b = spans[index - 1][1], b
-    return text[:cut_a] + text[cut_b:]
-
-
 def output_name(item):
     """Имя ВЫХОДНОЙ колонки для элемента SELECT-списка.
 
@@ -719,21 +864,37 @@ def _cols_as_dicts(names):
 def restore_mapping(select_text, add_text):
     """Восстановить (master_cols, slave_cols, pairs) из сохранённых SQL — без БД.
 
-    Позиционное сопоставление: SELECT-колонка i <-> INSERT-колонка i. Если число
-    колонок в SELECT и INSERT не совпало (или SELECT не распарсился), метки
-    ведущей заменяются заглушками «(колонка N)», а порядок берётся из INSERT —
-    так текущее сопоставление всё равно видно, пусть и без имён из ведущей.
-    Возвращает пустые списки, если INSERT распарсить не удалось.
+    Сопоставление позиционное: i-я колонка SELECT-СПИСКА ложится в i-ю колонку
+    INSERT. Для обёрнутого запроса «SELECT-список» — это внешний список,
+    собранный конструктором; сам запрос внутри может отдавать сколько угодно
+    колонок в любом порядке, и на сопоставление это не влияет.
+
+    master_cols — что ДОСТУПНО (колонки запроса), pairs — что ВЫБРАНО. Пока
+    обёртки не было, это было одно и то же, и разница ни на что не влияла; с
+    обёрткой она и есть весь смысл: выбрать можно не всё.
+
+    Если число колонок внешнего списка и INSERT не совпало (или SELECT не
+    распарсился), метки ведущей заменяются заглушками «(колонка N)», а порядок
+    берётся из INSERT — так текущее сопоставление всё равно видно, пусть и без
+    имён. Возвращает пустые списки, если INSERT распарсить не удалось.
     """
     _tbl, ins_cols = parse_insert_columns(add_text)
     if not ins_cols:
         return [], [], []
     # Имена ВЫХОДНЫХ колонок, а не выражения целиком: см. output_name.
-    sel_cols = [output_name(c) for c in parse_select_columns(select_text)]
-    if len(sel_cols) != len(ins_cols):
-        sel_cols = [f"(колонка {i + 1})" for i in range(len(ins_cols))]
-    pairs = list(zip(sel_cols, ins_cols))
-    return _cols_as_dicts(sel_cols), _cols_as_dicts(ins_cols), pairs
+    chosen = [output_name(c) for c in parse_select_columns(select_text)]
+    inner = unwrap_select(select_text)
+    avail = ([output_name(c) for c in parse_select_columns(inner)]
+             if inner is not None else list(chosen))
+    if len(chosen) != len(ins_cols):
+        chosen = [f"(колонка {i + 1})" for i in range(len(ins_cols))]
+    pairs = list(zip(chosen, ins_cols))
+    # Доступные — объединение: колонка, выбранная в паре, обязана быть в списке,
+    # даже если запрос внутри разобрать не удалось (`SELECT *`).
+    for name in chosen:
+        if name not in avail:
+            avail.append(name)
+    return _cols_as_dicts(avail), _cols_as_dicts(ins_cols), pairs
 
 
 # ─────────────────────────── самопроверка (без БД) ───────────────────────────
@@ -779,25 +940,30 @@ def _selftest():
     add2 = dict(files2)["etlFolder/queries/sp/SPACC/Add.sql"]
     assert add2 == "INSERT INTO KOKNAEV.spacc (id, name, code)\nVALUES (:1, :2, :3)\n", add2
 
-    # 3) свой SELECT: все колонки должны быть сопоставлены
+    # 3) свой SELECT: запрос уходит на диск внутри обёртки, колонки — сверху
+    inner3 = "SELECT a.ID, a.NAME FROM KOKNAEV.IPERSON a WHERE a.ACT = 1"
     spec3 = {
         "kind": "once", "master_table": "", "slave_table": "ipersonact",
         "db_master": "Orcl", "db_slave": "Post", "master_label": "ipersonact",
-        "select_mode": "custom",
-        "select_sql_text": "SELECT a.ID, a.NAME FROM KOKNAEV.IPERSON a WHERE a.ACT = 1",
+        "select_mode": "custom", "select_sql_text": inner3,
         "pairs": [("ID", "id"), ("NAME", "name")],
     }
     files3, key3 = build_sp_all(spec3)
     assert key3 == "ipersonactOrclPost", key3
     d3 = dict(files3)
     assert "etlFolder/SpOnce.d/ipersonactOrclPost.json" in d3
-    assert d3["etlFolder/queries/sp/ipersonact/Select.sql"].startswith("SELECT a.ID")
-    # пропуск сопоставления в custom -> ошибка
-    try:
-        build_sp_all(dict(spec3, pairs=[("ID", "id"), ("NAME", None)]))
-        raise AssertionError("ожидалась ошибка о неполном сопоставлении")
-    except ValueError:
-        pass
+    sel3 = d3["etlFolder/queries/sp/ipersonact/Select.sql"]
+    assert unwrap_select(sel3) == inner3, sel3
+    assert parse_select_columns(sel3) == ["ID", "NAME"], sel3
+    # Колонка без пары больше НЕ ошибка: переносятся только сопоставленные, а
+    # лишняя в запросе никому не мешает — она просто не попадает во внешний
+    # список. Раньше здесь был отказ, и убрать колонку можно было лишь вырезав
+    # её из чужого текста.
+    part = dict(build_sp_all(dict(spec3, pairs=[("ID", "id"), ("NAME", None)]))[0])
+    assert parse_select_columns(
+        part["etlFolder/queries/sp/ipersonact/Select.sql"]) == ["ID"]
+    assert part["etlFolder/queries/sp/ipersonact/Add.sql"] == \
+        "INSERT INTO ipersonact (id)\nVALUES %s\n"
 
     # 4) разбор ведущей из простого SELECT
     assert _master_from_select("SELECT ID, NAME\nFROM KOKNAEV.SPMKB\n") == "KOKNAEV.SPMKB"
@@ -922,13 +1088,8 @@ def _selftest():
     ):
         assert parse_select_columns(sql) == want, parse_select_columns(sql)
     # …и остаётся на месте, что бы с колонками ни делали
-    assert remove_select_column("SELECT DISTINCT a, b FROM t\n", 0) == \
-        "SELECT DISTINCT b FROM t\n"
     assert rename_select_column("SELECT DISTINCT a, b FROM t\n", 0, "kod") == \
         "SELECT DISTINCT kod, b FROM t\n"
-    # запятая в литерале не делит колонку пополам и при правке
-    assert remove_select_column("SELECT a, f('x,y') b, c FROM t\n", 1) == \
-        "SELECT a, c FROM t\n"
 
     # имя ВЫХОДНОЙ колонки — одно и то же, откуда бы колонки ни пришли:
     # снятие по запросу берёт имена у драйвера (псевдонимы), чтение с диска
@@ -955,39 +1116,70 @@ def _selftest():
     assert [p[0] for p in pairs] == ["kod", "data_nach"], pairs
     assert "TRUNC(m.dt)" in sel and "WHERE m.dend IS NULL" in sel, sel
 
-    # ── убранная колонка уходит и из запроса ────────────────────────────────
-    # Не «на всякий случай»: рантайм справочника отдаёт строки выборки в INSERT
-    # без проекции, поэтому лишняя колонка в SELECT — ошибка привязки на каждом
-    # прогоне, а не безобидное лишнее поле. Вырезается ровно один элемент,
-    # остальной текст обязан остаться байт в байт — иначе «убрал одну колонку»
-    # показывалось бы в предпросмотре переписанным запросом.
-    for sql, idx, want, note in (
-        ("SELECT a, b, c FROM t\n", 1, "SELECT a, c FROM t\n", "середина списка"),
-        ("SELECT a, b, c FROM t\n", 0, "SELECT b, c FROM t\n", "первая"),
-        ("SELECT a, b, c FROM t\n", 2, "SELECT a, b FROM t\n", "последняя"),
-        ("SELECT f(a, b) x, c FROM t\n", 0, "SELECT c FROM t\n",
-         "запятая в скобках не сбивает разбор"),
-        ("SELECT m.code kod,\n       m.name AS naim,\n       TRUNC(m.dt) dat\n"
-         "FROM t m\nWHERE m.dend IS NULL\n", 1,
-         "SELECT m.code kod,\n       TRUNC(m.dt) dat\n"
-         "FROM t m\nWHERE m.dend IS NULL\n", "раскладка и WHERE целы"),
-        # разобрать нельзя — текст как есть
-        ("SELECT * FROM t\n", 0, "SELECT * FROM t\n", "звёздочка не трогается"),
-        ("SELECT a FROM t\n", 0, "SELECT a FROM t\n", "последнюю колонку не убираем"),
-        ("SELECT a, b FROM t\n", 9, "SELECT a, b FROM t\n", "индекс за пределами"),
-        ("не запрос вовсе", 0, "не запрос вовсе", "не разобралось"),
-    ):
-        got = remove_select_column(sql, idx)
-        assert got == want, (note, got)
+    # ── обёртка: список колонок сверху, ваш запрос внутри ───────────────────
+    # Главное свойство — ТОЧНЫЙ круг. По этому тексту человек правит свой
+    # запрос, и вернуться на диск он обязан без единого изменённого пробела:
+    # «запрос не менялся» значит именно это, а не «почти не менялся».
+    inner = ("select distinct t.code kod, t.\"name\" naim, -- лишняя, но пусть\n"
+             "       trunc(t.dt) dat\n"
+             "  from kok.spr t\n where t.dend is null")
+    wrapped = build_sp_select_over(inner, ["kod", "dat"])
+    assert unwrap_select(wrapped) == inner, repr(unwrap_select(wrapped))
+    assert parse_select_columns(wrapped) == ["kod", "dat"], wrapped
+    assert wrapped.endswith("\n) src\n"), wrapped
+    # запрос внутри лежит дословно — ни отступов, ни переносов от себя
+    assert "\n" + inner + "\n) src\n" in wrapped, wrapped
+    # у обычного файла обёртки нет, и выдумывать её нельзя
+    assert unwrap_select("SELECT a, b FROM t\n") is None
+    assert unwrap_select("") is None
+    # ') src' внутри запроса не принимается за конец обёртки
+    tricky = "select * from (select 1 x\n) src\nwhere x = 1"
+    assert unwrap_select(build_sp_select_over(tricky, ["x"])) == tricky
 
-    # круг: убрал колонку -> разобрал -> её нет ни в парах, ни в запросе,
-    # а число колонок SELECT и INSERT сошлось (иначе рантайм упадёт)
-    sel = "SELECT m.code kod,\n       m.name naim,\n       TRUNC(m.dt) dat\nFROM t m\n"
-    sel = remove_select_column(sel, 1)
-    add = build_sp_add("t", ["kod", "dat"], "Post")
-    _m, _s, pairs = restore_mapping(sel, add)
-    assert [p[0] for p in pairs] == ["kod", "dat"], pairs
-    assert len(parse_select_columns(sel)) == len(parse_insert_columns(add)), sel
+    # сопоставление читается по ВНЕШНЕМУ списку, а доступные колонки — по
+    # внутреннему запросу: в этом вся разница, ради которой обёртка и заведена
+    add = build_sp_add("spr", ["kod", "dat"], "Post")
+    master, slave, pairs = restore_mapping(wrapped, add)
+    assert [c["column_name"] for c in master] == ["kod", "naim", "dat"], master
+    assert [c["column_name"] for c in slave] == ["kod", "dat"], slave
+    assert pairs == [("kod", "kod"), ("dat", "dat")], pairs
+
+    # круг через build_sp_all: убрали пару — запрос внутри БАЙТ В БАЙТ прежний,
+    # изменился только внешний список
+    base = {"kind": "regular", "master_table": "kok.spr", "slave_table": "spr",
+            "db_master": "Orcl", "db_slave": "Post", "master_label": "SPR",
+            "select_mode": "custom", "select_sql_text": inner}
+    f_all, _k = build_sp_all(dict(base, pairs=[("kod", "kod"), ("naim", "naim"),
+                                               ("dat", "dat")]))
+    f_less, _k = build_sp_all(dict(base, pairs=[("kod", "kod"), ("dat", "dat")]))
+    sel_all = dict(f_all)["etlFolder/queries/sp/SPR/Select.sql"]
+    sel_less = dict(f_less)["etlFolder/queries/sp/SPR/Select.sql"]
+    assert unwrap_select(sel_all) == unwrap_select(sel_less) == inner
+    assert parse_select_columns(sel_less) == ["kod", "dat"], sel_less
+    assert len(parse_select_columns(sel_less)) == \
+        len(parse_insert_columns(dict(f_less)["etlFolder/queries/sp/SPR/Add.sql"])[1])
+
+    # колонку, которой в запросе нет, выбрать нельзя — иначе линия уедет на диск
+    # и упадёт на первом прогоне с «invalid identifier»
+    for bad_pairs, needle in (
+        ([("kod", "kod"), ("nosuch", "x")], "нет таких колонок"),
+        ([("kod", "kod"), ("trunc(t.dt)", "x")], "без имени"),
+    ):
+        try:
+            build_sp_all(dict(base, pairs=bad_pairs))
+        except ValueError as e:
+            assert needle in str(e), e
+        else:
+            raise AssertionError(f"ожидался отказ: {bad_pairs}")
+
+    # эвристика режима у старых фрагментов: «собрано конструктором» — это когда
+    # КАЖДЫЙ элемент голое имя. Псевдоним `IDROW IDRW` писал человек, и пересборка
+    # такой линии из имён дала бы `SELECT IDRW, ...` — колонки, которой в
+    # таблице нет.
+    assert _looks_generated("SELECT ID, NAME\nFROM KOKNAEV.SPR\n")
+    assert not _looks_generated("SELECT IDROW IDRW, MO FROM KOKNAEV.SPSTRUCTURE\n")
+    assert not _looks_generated("SELECT DISTINCT a, b FROM t\n")
+    assert not _looks_generated("SELECT a FROM t WHERE x = 1\n")
 
     print("sp_builder selftest OK")
 
