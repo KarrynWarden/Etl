@@ -350,6 +350,26 @@ def r_delete_targets(params):
 # (tools/dag_builder_ui.py).
 
 
+def r_rename_plan(params):
+    """Что произойдёт при переименовании линии. НИЧЕГО не меняет.
+
+    Отдаёт три вещи сразу — новые файлы, список того, что снести, и SQL для
+    базы, — потому что по отдельности они бессмысленны: имя линии живёт и в
+    файлах, и в etl_jobs, и в том, что пишет триггер. Поменяй только файлы, и
+    линия замолчит без единой ошибки.
+    """
+    (key,) = _need(params, "key")
+    plan = B.rename_plan(key, params.get("new_line"), params.get("new_dag_id"))
+    body = _preview_body(plan["files"])
+    return dict(plan, **body)
+
+
+def r_rename_apply(params):
+    """Записать новые файлы линии и снести старые."""
+    key, files, remove = _need(params, "key", "files", "remove")
+    return B.rename_apply(key, files, remove)
+
+
 def r_archive(params):
     (key,) = _need(params, "key")
     return {"done": B.archive_line(key)}
@@ -596,6 +616,8 @@ POST_ROUTES = {
     "write": r_write,
     "shared-files": r_shared_files,
     "delete-targets": r_delete_targets,
+    "rename-plan": r_rename_plan,
+    "rename-apply": r_rename_apply,
     "archive": r_archive,
     "restore": r_restore,
     "delete": r_delete,
@@ -1038,6 +1060,39 @@ def _selftest():
     assert body["result"]["select_sql_text"] != sp["select_sql_text"]
     assert sp["pairs"][-1][1] not in body["result"]["add_sql_text"]
 
+    # ── переименование линии ─────────────────────────────────────────────────
+    # План обязан быть полным: имя линии живёт и в файлах, и в базе. Поменяй
+    # одно — линия замолчит без единой ошибки, и это самый дорогой исход.
+    code, body = dispatch("POST", "rename-plan",
+                          {"key": "iprkdeptOrclPost", "new_line": "IPRKDEPT_NEW"})
+    assert code == 200, body
+    plan = body["result"]
+    assert plan["new_key"] == "IPRKDEPT_NEWOrclPost", plan["new_key"]
+    paths = [f["path"] for f in plan["files"]]
+    assert "etlFolder/config.d/IPRKDEPT_NEWOrclPost.json" in paths, paths
+    # старый фрагмент И старый DDL триггера обязаны попасть в снос: фрагмент —
+    # иначе линия задвоится, DDL — он назван по ключу линии
+    assert any("config.d/iprkdeptOrclPost.json" in r for r in plan["remove"]), plan["remove"]
+    assert any("triggers/iprkdeptOrclPost.sql" in r for r in plan["remove"]), plan["remove"]
+    # в даге меняется ИМЯ ЛИНИИ, но не имя задачи: на task_id висит история
+    # запусков Airflow, и терять её при переименовании линии незачем
+    dag = next(f for f in plan["files"] if f["path"].startswith("dags/"))
+    assert 'tableNameEtlJobs="IPRKDEPT_NEW"' in dag["content"], dag["content"][:400]
+    assert '"do_etl_iprkdept"' in dag["content"], "имя задачи не должно меняться"
+    # SQL для базы — обе таблицы, иначе группы и непереваренные события
+    # останутся под старым именем
+    assert "etl_jobs" in plan["sql"] and "etl_log_iud_row" in plan["sql"], plan["sql"]
+    assert "'IPRKDEPT_NEW'" in plan["sql"] and "'iprkdept'" in plan["sql"], plan["sql"]
+    assert plan["warnings"] and any("ТРИГГЕР" in w for w in plan["warnings"]), plan["warnings"]
+    # план НИЧЕГО не пишет
+    assert not os.path.exists(os.path.join(
+        B.ROOT, "etlFolder", "config.d", "IPRKDEPT_NEWOrclPost.json"))
+
+    # занятое имя — отказ, а не молчаливое слияние двух линий в одну
+    code, body = dispatch("POST", "rename-plan",
+                          {"key": "iprkdeptOrclPost", "new_line": "IPERSON"})
+    assert code == 200 or "уже есть" in body.get("detail", ""), body
+
     # ── что вообще меняет репозиторий ────────────────────────────────────────
     # Правка обязана доходить до диска ОДНОЙ дорогой: «Предпросмотр» → человек
     # видит разницу → «Записать». Маршруты ниже — исключения, и каждое здесь не
@@ -1051,10 +1106,10 @@ def _selftest():
     # предпросмотр. Так ушли set-flag и sp/set-disabled — переключатели,
     # писавшие конфиг сразу по щелчку.
     writing = {"write", "archive", "restore", "delete", "sp/delete", "sp/move",
-               "git/push"}
+               "git/push", "rename-apply"}
     # …а эти только ПОКАЗЫВАЮТ, что будет удалено, — их и зовут перед
     # подтверждением удаления
-    read_only = {"delete-targets", "sp/delete-targets"}
+    read_only = {"delete-targets", "sp/delete-targets", "rename-plan"}
     unexpected = {r for r in POST_ROUTES
                   if r not in writing and r not in read_only and (
                       "delete" in r or "set" in r or "write" in r

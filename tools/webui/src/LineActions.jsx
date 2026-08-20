@@ -4,6 +4,7 @@ import { Alert, Button, Descriptions, Popconfirm, Space, Typography } from 'antd
 import { api } from './api'
 import { useAction } from './useAction'
 import ActionError from './ActionError'
+import RenameLine from './RenameLine'
 
 // Действия над линией: операции с ФАЙЛАМИ — архив, восстановление, удаление.
 //
@@ -62,6 +63,8 @@ export default function LineActions({ lineKey, spec, onChanged }) {
           </>
         }
       />
+
+      <RenameLine lineKey={lineKey} spec={spec} onChanged={onChanged} />
 
       <div>
         <Typography.Title level={5}>Убрать даг из видимости Airflow</Typography.Title>

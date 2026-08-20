@@ -1770,6 +1770,166 @@ def line_delete_targets(key):
     return targets
 
 
+# ─────────────────────────── переименование линии ───────────────────────────
+# Имя линии (tableNameEtlJobs) — это НЕ подпись на форме. Оно живёт в трёх
+# местах сразу, и два из них в базе:
+#
+#   файлы   ключ фрагмента config.d, значение tableNameEtlJobs в даге, имя DDL
+#           триггера;
+#   БД      триггер ведущей ПИШЕТ это имя в etl_log_iud_row.tablename, а перенос
+#           и аудит ищут по нему же в etl_jobs.tablename. Сравнение дословное.
+#
+# Отсюда правило: переименование — это МИГРАЦИЯ, а не правка поля. Поменяй
+# только файлы — и линия замолчит: триггер продолжит писать старое имя, перенос
+# станет искать новое и находить ноль строк. Ошибки при этом не будет ни одной,
+# что хуже всего.
+#
+# Поэтому rename_plan отдаёт сразу три вещи: новые файлы, список того, что надо
+# снести, и SQL для базы. Ни одну из них нельзя делать в отрыве от остальных.
+
+def rename_plan(key, new_line=None, new_dag_id=None):
+    """Что произойдёт при переименовании линии. Ничего не меняет.
+
+    -> {new_key, files, remove, sql, warnings, needs_trigger}
+    """
+    line, dbm, dbs = split_key(key)
+    spec = load_line(key)
+    new_line = (new_line or line).strip()
+    if not new_line:
+        raise ValueError("Пустое имя линии.")
+    if new_line == line and (new_dag_id or spec.get("dag_id")) == spec.get("dag_id"):
+        raise ValueError("Ни имя линии, ни dag_id не изменились — переименовывать нечего.")
+
+    new_key = f"{new_line}{dbm}{dbs}"
+    if new_key != key and new_key in set(existing_lines()):
+        raise ValueError(f"Линия {new_key} уже есть — выберите другое имя.")
+
+    spec = dict(spec, line_name=new_line)
+    if new_dag_id is not None and new_dag_id.strip():
+        if new_dag_id.strip() != spec.get("dag_id"):
+            # файл дага поедет под новым именем — прежнюю привязку снимаем
+            spec = dict(spec, dag_id=new_dag_id.strip(), dag_file_rel="")
+    # DDL триггера назван по ключу линии: под новым ключом это новый файл.
+    spec.pop("trigger_sql_text", None)
+
+    files = build_all(spec)
+
+    # ── что снести ───────────────────────────────────────────────────────────
+    body, path = _find_config_body(key)
+    obj = _read_json(path)
+    remove = [f"{_relroot(path)}" if len(obj) <= 1 else f"{_relroot(path)} (ключ {key})"]
+
+    gname, gpath = group_dag_of(key)
+    old_dag = None
+    if not gname:
+        old_dag, _id, _arch = _resolve_dag_path(line, spec["table_master"], dbm, dbs)
+        new_dag_rel = next((rel for rel, _c in files if rel.startswith("dags/")), None)
+        if old_dag and os.path.exists(old_dag) and \
+                _relroot(old_dag) != new_dag_rel:
+            remove.append(_relroot(old_dag))
+        else:
+            old_dag = None
+
+    old_trigger = os.path.join(ETLFOLDER, trigger_sql_rel(key))
+    if new_key != key and os.path.exists(old_trigger):
+        remove.append(_relroot(old_trigger))
+
+    # ── что сделать в БД ─────────────────────────────────────────────────────
+    # Импорт ЛЕНИВЫЙ: trigger_builder импортирует нас, и наверху это был бы
+    # цикл. Здесь модуль уже загружен целиком, поэтому всё честно.
+    from tools import trigger_builder as T
+
+    warnings, sql = [], ""
+    if new_key != key:
+        jobs = T.JOBS_DEFAULT[dbm]
+        journal = T.JOURNAL_DEFAULT[dbm]
+        sql = (
+            f"-- Переименование линии {line} -> {new_line} ({dbm} -> {dbs}).\n"
+            f"-- Выполнять В ВЕДУЩЕЙ БД ({dbm}), одной транзакцией, ПОСЛЕ записи файлов\n"
+            f"-- и ДО следующего запуска дага.\n"
+            f"--\n"
+            f"-- 1. Группы переноса. Без этого section-режимы и аудит не найдут\n"
+            f"--    ни одной группы: сравнение с tablename дословное.\n"
+            f"UPDATE {jobs}\n"
+            f"   SET tablename = '{new_line}'\n"
+            f" WHERE tablename = '{line}';\n"
+            f"\n"
+            f"-- 2. Непереваренные события журнала (isetl = 0). Оставить под старым\n"
+            f"--    именем — значит потерять правки, которые ещё не перенесены.\n"
+            f"UPDATE {journal}\n"
+            f"   SET tablename = '{new_line}'\n"
+            f" WHERE tablename = '{line}';\n"
+            f"\n"
+            f"COMMIT;\n"
+        )
+        warnings.append(
+            f"ТРИГГЕР ведущей пишет имя линии в журнал жёстко строкой. Пока он не "
+            f"пересоздан под '{new_line}', новые правки будут уходить под старым "
+            f"именем, а перенос — искать новое и находить ноль. Ошибки при этом "
+            f"не будет: линия просто замолчит. DDL берите на вкладке «Триггеры».")
+    if gname:
+        warnings.append(
+            f"Линия в составном даге {gname}: в его списке LINES она "
+            f"переписывается, файл дага общий и не трогается.")
+    if spec.get("dag_id") and old_dag:
+        warnings.append(
+            f"История запусков в Airflow останется за прежним дагом: dag_id — это "
+            f"идентификатор задачи, а не подпись. Прежний файл будет удалён, "
+            f"поэтому даг исчезнет из списка вместе со своими запусками.")
+
+    return {"new_key": new_key,
+            "files": files,
+            "remove": remove,
+            "sql": sql,
+            "warnings": warnings,
+            "needs_trigger": bool(sql) and T.needs_trigger(spec.get("mode", "iud"))}
+
+
+def rename_apply(key, files, remove):
+    """Записать новые файлы и снести перечисленное старое. Возвращает отчёт.
+
+    Порядок важен: сначала ПИШЕМ, потом удаляем. Упади запись на полпути —
+    старая линия ещё цела, и вернуться есть куда."""
+    written = write_files(_files_as_pairs(files), overwrite=True)
+    dropped = []
+    line, dbm, dbs = split_key(key)
+    with _group_writable():
+        for rel in remove:
+            rel = rel.split(" (")[0]
+            path = os.path.join(ROOT, rel)
+            if rel.endswith(".json") and "config.d" in rel:
+                obj = _read_json(path) if os.path.exists(path) else {}
+                if key in obj and len(obj) > 1:
+                    obj.pop(key)
+                    with open(path, "w", encoding="utf-8") as fp:
+                        json.dump(obj, fp, ensure_ascii=False, indent=2)
+                        fp.write("\n")
+                    dropped.append(f"{rel} (ключ {key})")
+                    continue
+            if os.path.exists(path):
+                os.remove(path)
+                dropped.append(rel)
+    gname, _gpath = group_dag_of(key)
+    if gname:
+        group_dag_drop_line(key, gname)
+        dropped.append(f"{gname}: старая строка убрана из списка линий")
+    return {"written": [_relroot(p) for p in written], "removed": dropped}
+
+
+def _files_as_pairs(files):
+    """[[rel, content]] из JSON -> [(rel, content)]."""
+    return [(f[0], f[1]) if isinstance(f, (list, tuple)) else (f["path"], f["content"])
+            for f in files]
+
+
+def _relroot(path):
+    """Путь относительно корня репозитория."""
+    try:
+        return os.path.relpath(path, ROOT).replace(os.sep, "/")
+    except ValueError:
+        return path
+
+
 def delete_line(key, remove_struct=True):
     """Удалить линию сложного ETL НАСОВСЕМ: фрагмент config.d, файл дага (из dags/
     или архива) и — если не используются другими линиями — selectSql и структуры.
