@@ -524,6 +524,21 @@ def r_sp_rename_select_column(params):
     return {"select_sql_text": SP.rename_select_column(text, index, name)}
 
 
+def r_sp_remove_select_column(params):
+    """Убрать выходную колонку №index из SELECT справочника.
+
+    Приходится делать даже при «запертом» запросе: рантайм кладёт строки из
+    SELECT в INSERT без проекции, поэтому лишняя колонка в запросе — это не
+    «немного лишних данных», а ошибка привязки на каждом прогоне. Вырезается
+    ровно один элемент списка, остальной текст остаётся байт в байт.
+    """
+    (text,) = _need(params, "select_sql_text")
+    index = params.get("index")
+    if not isinstance(index, int) or index < 0:
+        raise BadRequest(f"index должен быть неотрицательным целым, получено {index!r}")
+    return {"select_sql_text": SP.remove_select_column(text, index)}
+
+
 def r_sp_build_sql(params):
     """Колонки и сопоставление -> SQL справочника. Вторая половина связи.
 
@@ -645,6 +660,7 @@ POST_ROUTES = {
     "sp/parse-sql": r_sp_parse_sql,
     "sp/build-sql": r_sp_build_sql,
     "sp/rename-select-column": r_sp_rename_select_column,
+    "sp/remove-select-column": r_sp_remove_select_column,
     "sp/move": r_sp_move,
     "sp/delete-targets": r_sp_delete_targets,
     "sp/delete": r_sp_delete,
@@ -1127,7 +1143,12 @@ def _selftest():
                "git/push", "rename-apply"}
     # …а эти только ПОКАЗЫВАЮТ, что будет удалено, — их и зовут перед
     # подтверждением удаления
-    read_only = {"delete-targets", "sp/delete-targets", "rename-plan"}
+    # …а эти только СЧИТАЮТ и возвращают результат, ничего не трогая на диске.
+    # sp/remove-select-column попал сюда не по недосмотру: слово «remove» в имени
+    # содержит «move», и проверка ниже честно на него сработала — он правит текст
+    # запроса В ОТВЕТЕ, а запишется этот текст всё той же кнопкой «Записать».
+    read_only = {"delete-targets", "sp/delete-targets", "rename-plan",
+                 "sp/remove-select-column"}
     unexpected = {r for r in POST_ROUTES
                   if r not in writing and r not in read_only and (
                       "delete" in r or "set" in r or "write" in r
@@ -1162,6 +1183,23 @@ def _selftest():
             assert re.search(needle, text), (
                 f"в {path[-1]} пропал key на форме линии: состояние прежней линии "
                 f"переживёт переход на другую, и кнопки начнут относиться не к той")
+
+    # ── убранная колонка справочника уходит и из SELECT ──────────────────────
+    # Рантайм справочника (Functions/spEtlNew.py) кладёт строки выборки в INSERT
+    # без проекции: rows = cursor.fetchmany(...) -> executemany(Add.sql, rows).
+    # Значит колонка, убранная из сопоставления, но оставшаяся в рукописном
+    # SELECT, роняет КАЖДЫЙ прогон («not all variables bound» / «INSERT has more
+    # expressions than target columns»). Соблазн велик — отфильтровать пары
+    # прямо в таблице одной строкой, — а в режиме «своё SELECT» конструктор
+    # запрос не пересобирает, и расхождение уходит на диск незамеченным.
+    editor = os.path.join(ROOT, "tools", "webui", "src", "SpMappingEditor.jsx")
+    if os.path.exists(editor):
+        with open(editor, encoding="utf-8") as fp:
+            text = fp.read()
+        assert re.search(r"const removeRow = \(i\) => onRemoveMaster\(i\)", text), (
+            "в SpMappingEditor удаление колонки перестало идти через "
+            "onRemoveMaster: пары и рукописный SELECT разойдутся по длине, и "
+            "перенос справочника упадёт на привязке при каждом прогоне")
 
     # ── регистр имени таблицы: правило одно на обе стороны ───────────────────
     # to_db_case живёт и в питоне (им получается имя линии), и в интерфейсе

@@ -12,7 +12,14 @@ import {
   Tooltip,
   Typography,
 } from 'antd'
-import { DeleteOutlined, FontSizeOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
+import {
+  DeleteOutlined,
+  FontSizeOutlined,
+  LockOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+  UnlockOutlined,
+} from '@ant-design/icons'
 
 import ComboBox from './ComboBox'
 import { toDbCase, matchesDbCase } from './dbCase'
@@ -33,8 +40,11 @@ const nameOf = (c) => (typeof c === 'string' ? c : c?.column_name || c?.COLUMN_N
 
 export default function SpMappingEditor({
   spec,
+  locked,
+  onLockChange,
   onChange,
   onRenameMaster,
+  onRemoveMaster,
   onFixCase,
   onSnap,
   snapping,
@@ -96,7 +106,7 @@ export default function SpMappingEditor({
   // Приведение регистра сразу у всех имён — по колонке за раз это полсотни
   // нажатий. Ведущая правится только там, где запрос собирается конструктором.
   const offCase = [
-    ...masterNames.filter((n) => n && !matchesDbCase(n, spec.db_master)),
+    ...(locked ? [] : masterNames.filter((n) => n && !matchesDbCase(n, spec.db_master))),
     ...slaveNames.filter((n) => n && !matchesDbCase(n, spec.db_slave)),
   ]
   const fixCase = () => {
@@ -104,7 +114,12 @@ export default function SpMappingEditor({
     onFixCase()
   }
 
-  const removeRow = (i) => onChange({ pairs: pairs.filter((_p, j) => j !== i) })
+  // Удаление идёт ОДНОЙ дорогой — через страницу, которая уберёт колонку и из
+  // пар, и из SELECT. Отфильтровать пары здесь было бы короче и неверно:
+  // рантайм справочника кладёт строку выборки в INSERT без проекции, так что
+  // колонка, оставшаяся в запросе, роняет каждый прогон. Работает и при
+  // запертом запросе — вырезается ровно она одна.
+  const removeRow = (i) => onRemoveMaster(i)
 
   const addPair = () =>
     onChange({ pairs: [...pairs, [`колонка ${pairs.length + 1}`, null]] })
@@ -187,6 +202,23 @@ export default function SpMappingEditor({
             Регистр имён{offCase.length ? ` (${offCase.length})` : ''}
           </Button>
         </Tooltip>
+        {locked !== undefined && (
+          <Tooltip
+            title={
+              locked
+                ? 'Запрос заперт: правится только ведомая сторона — пары, имена колонок ведомой и Add.sql. Снимите замок, чтобы менять сам SELECT.'
+                : 'Запрос открыт: имена колонок ведущей и текст SELECT правятся свободно.'
+            }
+          >
+            <Button
+              icon={locked ? <LockOutlined /> : <UnlockOutlined />}
+              type={locked ? 'primary' : 'default'}
+              onClick={() => onLockChange(!locked)}
+            >
+              {locked ? 'SELECT заперт' : 'SELECT открыт'}
+            </Button>
+          </Tooltip>
+        )}
         <Segmented
           value={filter}
           onChange={setFilter}
@@ -223,15 +255,6 @@ export default function SpMappingEditor({
           description="Два пути, и они не исключают друг друга: заполнить обе таблицы на «Настройках» и нажать «Снять по таблице» — или вписать свой запрос на вкладке SQL и нажать «Снять по запросу»."
         />
       )}
-      {spec.src_mode === 'custom' && Boolean(pairs.length) && (
-        <Alert
-          type="warning"
-          showIcon
-          style={{ marginBottom: 12 }}
-          message="Для своего SELECT сопоставлены должны быть ВСЕ колонки"
-          description="Вставка идёт по порядку колонок запроса, пропуски недопустимы. Имена ведущей здесь — имена выходных колонок запроса: правьте их прямо тут, псевдоним в SELECT поменяется сам."
-        />
-      )}
       {doubled.length > 0 && (
         <Alert
           type="error"
@@ -265,16 +288,19 @@ export default function SpMappingEditor({
             // Правится всегда. Что при этом произойдёт с запросом, зависит от
             // самого запроса, а не от «режима»: у `code` поменяется имя
             // колонки, у `m.code kod` — только псевдоним.
-            render: (_v, r) => (
-              <Input
-                size="small"
-                key={r.m}
-                defaultValue={r.m}
-                style={{ fontFamily: 'monospace' }}
-                onBlur={(e) => renameMaster(r.i, e)}
-                onPressEnter={(e) => renameMaster(r.i, e)}
-              />
-            ),
+            render: (_v, r) =>
+              locked ? (
+                <Typography.Text code>{r.m}</Typography.Text>
+              ) : (
+                <Input
+                  size="small"
+                  key={r.m}
+                  defaultValue={r.m}
+                  style={{ fontFamily: 'monospace' }}
+                  onBlur={(e) => renameMaster(r.i, e)}
+                  onPressEnter={(e) => renameMaster(r.i, e)}
+                />
+              ),
           },
           {
             title: `Ведомая (${spec.db_slave})`,
@@ -308,6 +334,11 @@ export default function SpMappingEditor({
             render: (_v, r) => (
               <Popconfirm
                 title="Убрать колонку из линии?"
+                description={
+                  hasSql
+                    ? `Уйдёт и из SELECT — вырежется ровно ${r.m}, остальной запрос останется как есть.`
+                    : undefined
+                }
                 okText="Убрать"
                 cancelText="Нет"
                 onConfirm={() => removeRow(r.i)}
@@ -320,12 +351,20 @@ export default function SpMappingEditor({
       />
 
       <Space style={{ marginTop: 12 }} wrap>
-        <Button size="small" icon={<PlusOutlined />} onClick={addPair}>
-          строку сопоставления
-        </Button>
+        {!locked && (
+          <Button size="small" icon={<PlusOutlined />} onClick={addPair}>
+            строку сопоставления
+          </Button>
+        )}
         <Typography.Text type="secondary">
           сопоставлено {pairs.length - unmatched} из {pairs.length}
         </Typography.Text>
+        {locked && (
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            убранная колонка уходит и из SELECT — рантайм кладёт строку выборки
+            в INSERT как есть, лишняя колонка в запросе его роняет
+          </Typography.Text>
+        )}
       </Space>
 
     </>

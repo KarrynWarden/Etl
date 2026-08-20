@@ -20,7 +20,7 @@ import {
   Tooltip,
   Typography,
 } from 'antd'
-import { ReloadOutlined, UndoOutlined } from '@ant-design/icons'
+import { LockOutlined, ReloadOutlined, UndoOutlined } from '@ant-design/icons'
 
 import { api } from './api'
 import { useAction } from './useAction'
@@ -244,6 +244,13 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
   const [original, setOriginal] = useState(null)
   const [targets, setTargets] = useState(null)
   const [ddl, setDdl] = useState(null)
+  // Замок на рукописном SELECT. Не свойство линии, а положение переключателя на
+  // время работы: на диск не пишется, при переходе на другую линию сбрасывается
+  // вместе со всей формой (SpForm живёт под key). Смысл — не «режим правки», а
+  // защита от нечаянного: у рукописного запроса ценность в том, ЧТО в нём
+  // написано, а переименование колонки или приведение регистра переписывают его
+  // молча и по мелочи. Заперт — правится только ведомая сторона.
+  const [locked, setLocked] = useState(false)
 
   const load = useAction(api.spLine)
   const preview = useAction(api.spPreview)
@@ -259,6 +266,7 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
   const buildSql = useAction(api.spBuildSql)
   const parseSql = useAction(api.spParseSql)
   const renameCol = useAction(api.spRenameSelectColumn)
+  const removeCol = useAction(api.spRemoveSelectColumn)
 
   const isNew = Boolean(entry) && !entry.key
 
@@ -274,12 +282,16 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
       const fresh = blankSpec(entry.kind)
       setSpec(fresh)
       setOriginal(JSON.stringify(fresh))
+      setLocked(false)
       return
     }
     load.run({ kind: entry.kind, key: entry.key }).then((d) => {
       if (!d) return
       setSpec(d.spec)
       setOriginal(JSON.stringify(d.spec))
+      // Рукописный запрос открывается запертым: чужой текст, который никто
+      // сейчас не собирался править, — а открыть замок это одно нажатие.
+      setLocked(d.spec.src_mode === 'custom')
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entry?.key, entry?.kind])
@@ -313,6 +325,12 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
   if (!spec) return null
 
   const patch = (c) => setSpec((p) => ({ ...p, ...c }))
+  // Запирать имеет смысл только рукописный запрос: собранный конструктором и
+  // так пересобирается из колонок при каждой правке, замок на нём ничего не
+  // защищает и только сбивал бы с толку. Поэтому в остальных режимах
+  // переключателя нет вовсе (SpMappingEditor рисует его по `locked !== undefined`).
+  const lockable = spec.src_mode === 'custom'
+  const selectLocked = lockable && locked
   const colName = (c) =>
     typeof c === 'string' ? c : c?.column_name || c?.COLUMN_NAME || ''
   const slaveNames = (spec.slave_cols || []).map(colName)
@@ -396,14 +414,42 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
     patchMapping({ pairs, select_sql_text })
   }
 
+  // Убрать колонку из линии.
+  //
+  // Из ПАР и из SELECT одновременно, всегда. Не «на всякий случай»: рантайм
+  // справочника не проецирует выборку — spEtlNew берёт cursor.fetchmany(...) и
+  // отдаёт строки как есть в executemany(Add.sql). Значит число колонок в
+  // SELECT обязано совпадать с числом колонок в INSERT, и колонка, оставшаяся
+  // в запросе после того, как её убрали из сопоставления, — это не лишнее поле
+  // в выборке, а ошибка привязки на каждом прогоне («not all variables bound»
+  // в Oracle, «INSERT has more expressions than target columns» в Postgres).
+  //
+  // Поэтому даже запертый запрос здесь правится — но хирургически: сервер
+  // (sp_builder.remove_select_column) вырезает ровно один элемент списка
+  // вместе с прилегающей запятой, остальной текст остаётся байт в байт. Если
+  // разобрать не вышло («*», нет FROM, осталась одна колонка), текст вернётся
+  // как есть, и предупредит уже предпросмотр расхождением списков.
+  const removeMasterColumn = async (index) => {
+    const pairs = (spec.pairs || []).filter((_p, i) => i !== index)
+    let select_sql_text = spec.select_sql_text
+    if ((select_sql_text || '').trim()) {
+      const r = await removeCol.run({ select_sql_text, index })
+      if (!r) return
+      select_sql_text = r.select_sql_text
+    }
+    patchMapping({ pairs, select_sql_text })
+  }
+
   // Регистр имён — тем же путём: каждое имя ведущей проходит через
   // переименование, поэтому запрос остаётся согласован со списком колонок.
+  // При запертом запросе ведущую не трогаем вовсе: замок и заведён ради того,
+  // чтобы такие пакетные правки не переписывали чужой SELECT.
   const fixColumnCase = async () => {
     let next = { ...spec }
     const pairs = (spec.pairs || []).map((p) => [...p])
     for (let i = 0; i < pairs.length; i++) {
       const want = toDbCase(pairs[i][0], spec.db_master)
-      if (pairs[i][0] && want !== pairs[i][0]) {
+      if (!selectLocked && pairs[i][0] && want !== pairs[i][0]) {
         pairs[i][0] = want
         if ((next.select_sql_text || '').trim()) {
           const r = await renameCol.run({
@@ -631,14 +677,18 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
     <>
       <SpMappingEditor
         spec={spec}
+        locked={lockable ? locked : undefined}
+        onLockChange={setLocked}
         onChange={patchMapping}
         onRenameMaster={renameMasterColumn}
+        onRemoveMaster={removeMasterColumn}
         onFixCase={fixColumnCase}
         onSnap={snapColumns}
         snapping={snapping || buildSql.loading}
       />
       <ActionError error={snapError} />
       <ActionError error={buildSql.error} />
+      <ActionError error={removeCol.error} />
     </>
   )
 
@@ -697,9 +747,18 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
                 description="Ваш текст запроса будет заменён сгенерированным по текущему сопоставлению."
                 okText="Собирать"
                 cancelText="Нет"
+                disabled={selectLocked}
                 onConfirm={() => patchMapping({ src_mode: 'table' })}
               >
-                <Button size="small">Собирать из колонок</Button>
+                {/* Заперт — значит и этой кнопке нельзя: она затирает запрос
+                    целиком, а замок ровно от этого и поставлен. */}
+                <Tooltip
+                  title={selectLocked ? 'Снимите замок на вкладке «Колонки»' : ''}
+                >
+                  <Button size="small" disabled={selectLocked}>
+                    Собирать из колонок
+                  </Button>
+                </Tooltip>
               </Popconfirm>
             </Space>
           }
@@ -707,12 +766,25 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
       )}
 
       <Form.Item
-        label={`Select.sql${spec.select_sql ? ` — ${spec.select_sql}` : ''}`}
-        help="имена колонок ведущей читаются отсюда — правка видна на вкладке «Колонки»"
+        label={
+          <Space>
+            <span>{`Select.sql${spec.select_sql ? ` — ${spec.select_sql}` : ''}`}</span>
+            {selectLocked && <Tag icon={<LockOutlined />}>заперт</Tag>}
+          </Space>
+        }
+        help={
+          selectLocked
+            ? 'Замок снимается кнопкой на вкладке «Колонки». Убрать колонку можно и не снимая его — вырежется ровно она одна.'
+            : 'имена колонок ведущей читаются отсюда — правка видна на вкладке «Колонки»'
+        }
       >
         <Input.TextArea
           autoSize={{ minRows: 5, maxRows: 20 }}
-          style={{ fontFamily: 'monospace' }}
+          style={{
+            fontFamily: 'monospace',
+            ...(selectLocked ? { background: '#fafafa' } : null),
+          }}
+          readOnly={selectLocked}
           value={spec.select_sql_text || ''}
           onChange={(e) => patch({ select_sql_text: e.target.value })}
           onBlur={(e) => reparseSql({ select_sql_text: e.target.value })}

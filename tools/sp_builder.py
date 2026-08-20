@@ -150,11 +150,23 @@ def build_sp_all(spec):
             raise ValueError("Не сопоставлено ни одной колонки ведомой.")
         select_content = None
     elif select_mode == "custom":
-        # своё SELECT: порядок колонок задаёт запрос — сопоставить надо все
+        # своё SELECT: порядок колонок задаёт запрос — сопоставить надо все.
+        #
+        # Проверка стоит ЗДЕСЬ, на пути записи, а не отдельным предупреждением
+        # на вкладке колонок: висящее предупреждение читается как требование
+        # переписать запрос, а требование ровно одно и совсем другое — рантайм
+        # кладёт строку выборки в INSERT без проекции, так что колонок в SELECT
+        # должно быть столько же, сколько в INSERT. Отсюда и два выхода, оба
+        # законные: дать колонке пару — или убрать её (кнопкой в строке; из
+        # запроса она вырежется точечно, remove_select_column).
         if not pairs or any(s is None for _m, s in pairs):
+            orphans = [str(m) for m, s in pairs if s is None] if pairs else []
             raise ValueError(
                 "Для своего SELECT сопоставь КАЖДУЮ колонку запроса со столбцом "
-                "ведомой — вставка идёт по порядку, пропуски недопустимы."
+                "ведомой — вставка идёт по порядку, пропуски недопустимы"
+                + (f". Без пары: {', '.join(orphans)}" if orphans else "")
+                + ". Ненужную колонку можно убрать кнопкой в её строке — "
+                  "из запроса она уйдёт вместе с парой."
             )
         s_order = [s for _m, s in pairs]
         select_text = (spec.get("select_sql_text") or "").strip()
@@ -585,6 +597,46 @@ def parse_insert_columns(text):
     return table, cols
 
 
+def remove_select_column(text, index):
+    """Убрать выходную колонку №index (с нуля) из SELECT-списка.
+
+    Почему это приходится делать, даже когда запрос «заперт». Рантайм
+    справочника кладёт строки из SELECT в INSERT БЕЗ ПРОЕКЦИИ:
+
+        rows = cursor.fetchmany(...)          # весь кортеж как есть
+        cursor2.executemany(addAllSpSql, rows)
+
+    Значит число колонок в SELECT обязано совпадать с числом в INSERT.
+    Оставить в запросе лишнюю колонку «просто так» нельзя: Oracle ответит
+    «not all variables bound», Postgres — «INSERT has more expressions than
+    target columns», и так каждый прогон.
+
+    Поэтому убранная колонка уходит и из запроса — но ТОЧЕЧНО: вырезается один
+    элемент списка, остальной текст (выражения, переносы, WHERE) остаётся байт
+    в байт. Разобрать не вышло — текст возвращается как есть.
+    """
+    if not text:
+        return text
+    m = _SELECT_LIST_RE.search(text)
+    if not m:
+        return text
+    body = m.group(1)
+    spans = _split_top_level_spans(body)
+    if not (0 <= index < len(spans)) or len(spans) < 2:
+        return text          # последнюю колонку не убираем: SELECT без списка
+    if any(body[a:b] == "*" or body[a:b].endswith(".*") for a, b in spans):
+        return text
+
+    a, b = spans[index]
+    # Съедаем и разделитель — тот, что со стороны соседа, чтобы не осталось
+    # висящей запятой и чтобы отступ следующей строки не поехал.
+    if index + 1 < len(spans):
+        cut_a, cut_b = a, spans[index + 1][0]
+    else:
+        cut_a, cut_b = spans[index - 1][1], b
+    return text[:m.start(1) + cut_a] + text[m.start(1) + cut_b:]
+
+
 def output_name(item):
     """Имя ВЫХОДНОЙ колонки для элемента SELECT-списка.
 
@@ -806,6 +858,40 @@ def _selftest():
     _m, _s, pairs = restore_mapping(sel, add)
     assert [p[0] for p in pairs] == ["kod", "data_nach"], pairs
     assert "TRUNC(m.dt)" in sel and "WHERE m.dend IS NULL" in sel, sel
+
+    # ── убранная колонка уходит и из запроса ────────────────────────────────
+    # Не «на всякий случай»: рантайм справочника отдаёт строки выборки в INSERT
+    # без проекции, поэтому лишняя колонка в SELECT — ошибка привязки на каждом
+    # прогоне, а не безобидное лишнее поле. Вырезается ровно один элемент,
+    # остальной текст обязан остаться байт в байт — иначе «убрал одну колонку»
+    # показывалось бы в предпросмотре переписанным запросом.
+    for sql, idx, want, note in (
+        ("SELECT a, b, c FROM t\n", 1, "SELECT a, c FROM t\n", "середина списка"),
+        ("SELECT a, b, c FROM t\n", 0, "SELECT b, c FROM t\n", "первая"),
+        ("SELECT a, b, c FROM t\n", 2, "SELECT a, b FROM t\n", "последняя"),
+        ("SELECT f(a, b) x, c FROM t\n", 0, "SELECT c FROM t\n",
+         "запятая в скобках не сбивает разбор"),
+        ("SELECT m.code kod,\n       m.name AS naim,\n       TRUNC(m.dt) dat\n"
+         "FROM t m\nWHERE m.dend IS NULL\n", 1,
+         "SELECT m.code kod,\n       TRUNC(m.dt) dat\n"
+         "FROM t m\nWHERE m.dend IS NULL\n", "раскладка и WHERE целы"),
+        # разобрать нельзя — текст как есть
+        ("SELECT * FROM t\n", 0, "SELECT * FROM t\n", "звёздочка не трогается"),
+        ("SELECT a FROM t\n", 0, "SELECT a FROM t\n", "последнюю колонку не убираем"),
+        ("SELECT a, b FROM t\n", 9, "SELECT a, b FROM t\n", "индекс за пределами"),
+        ("не запрос вовсе", 0, "не запрос вовсе", "не разобралось"),
+    ):
+        got = remove_select_column(sql, idx)
+        assert got == want, (note, got)
+
+    # круг: убрал колонку -> разобрал -> её нет ни в парах, ни в запросе,
+    # а число колонок SELECT и INSERT сошлось (иначе рантайм упадёт)
+    sel = "SELECT m.code kod,\n       m.name naim,\n       TRUNC(m.dt) dat\nFROM t m\n"
+    sel = remove_select_column(sel, 1)
+    add = build_sp_add("t", ["kod", "dat"], "Post")
+    _m, _s, pairs = restore_mapping(sel, add)
+    assert [p[0] for p in pairs] == ["kod", "dat"], pairs
+    assert len(parse_select_columns(sel)) == len(parse_insert_columns(add)), sel
 
     print("sp_builder selftest OK")
 
