@@ -257,17 +257,21 @@ for b, e in ((begin, end),
     text, n = pattern.subn("", text)
     removed += n
 
-# Наш ProxyPass обязан стоять ВЫШЕ общего `ProxyPass /`: Apache берёт первое
-# подходящее правило, и `/` подходит под всё. Ставим прямо перед ним.
-m = re.search(r"^[ \t]*ProxyPass[ \t]+/[ \t]", text, re.M)
-if m:
-    at = m.start()
+# Наш ProxyPass обязан стоять ВЫШЕ правила для `/`: Apache берёт первое
+# подходящее, а `/` подходит под всё. Правило для корня пишут двумя способами,
+# и оба надо уметь найти — иначе мы встанем ПОСЛЕ него и путь уедет в airflow.
+ANCHORS = (
+    (r"^[ \t]*ProxyPass[ \t]+/[ \t]", "перед общим 'ProxyPass /'"),
+    (r"^[ \t]*<Location[ \t]+/[ \t]*>", "перед блоком '<Location />'"),
+    (r"^[ \t]*</VirtualHost>", "в конец <VirtualHost> (правила для / не нашлось)"),
+)
+for pat, human in ANCHORS:
+    m = re.search(pat, text, re.M)
+    if m:
+        at, where = m.start(), human
+        break
 else:
-    # общего ProxyPass нет — тогда просто в конец нужного VirtualHost
-    m = re.search(r"^[ \t]*</VirtualHost>", text, re.M)
-    if not m:
-        sys.exit("не нашёл, куда вставить: нет ни 'ProxyPass /', ни </VirtualHost>")
-    at = m.start()
+    sys.exit("не нашёл, куда вставить: нет ни правила для '/', ни </VirtualHost>")
 
 result = text[:at] + block + text[at:]
 
@@ -281,10 +285,10 @@ for tag in ("VirtualHost", "Location", "Directory", "Proxy", "IfModule"):
                  f"закрыто {cl} — записывать не стал")
 
 open(path, "w", encoding="utf-8").write(result)
-print(f"    (прежний блок удалён: {removed}); вставлено перед позицией {at}")
+print(f"    прежних блоков удалено: {removed}; вставлено {where}")
 PY
 [ $? -eq 0 ] || { restore; bad "вставка не удалась — конфиг возвращён из копии"; }
-ok "блок вставлен перед общим ProxyPass /"
+ok "блок вставлен"
 
 # ── 6. проверка и применение ─────────────────────────────────────────────────
 echo
