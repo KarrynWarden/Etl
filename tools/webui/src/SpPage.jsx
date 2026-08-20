@@ -191,7 +191,12 @@ export default function SpPage({ kind }) {
       </Col>
 
       <Col xs={24} md={16} lg={18}>
+        {/* key по выбранной линии — по той же причине, что и у сложного ETL:
+            иначе состояние внутри формы (списки удаления, разборы, наборы в
+            полях) переживает переход на другую линию и начинает относиться не к
+            той. Создание — тоже отдельная «линия», отсюда new-<тип>. */}
         <SpForm
+          key={creating ? `new-${kind}` : `${kind}:${selected?.key || 'none'}`}
           entry={creating ? { kind, key: null } : selected}
           existingKeys={(lines.result?.lines || []).map((l) => l.key)}
           onChanged={() => lines.run()}

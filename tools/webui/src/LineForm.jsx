@@ -487,7 +487,22 @@ export default function LineForm({ lineKey, onChanged }) {
             {
               key: 'act',
               label: 'Действия',
-              children: <LineActions lineKey={lineKey} spec={spec} onChanged={() => { reload(); onChanged?.() }} />,
+              children: (
+                <LineActions
+                  lineKey={lineKey}
+                  spec={spec}
+                  // Переименование отдаёт НОВЫЙ ключ: старого больше нет, и
+                  // reload() по нему уткнулся бы в «конфиг не найден». Пробрасываем
+                  // ключ наверх — там переключат выбор, а форма пересоберётся.
+                  onChanged={(newKey) => {
+                    if (newKey) onChanged?.(newKey)
+                    else {
+                      reload()
+                      onChanged?.()
+                    }
+                  }}
+                />
+              ),
             },
           ]}
         />
