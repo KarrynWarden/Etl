@@ -432,6 +432,10 @@ def r_health(params):
         "rev": _STARTED_REV,
         "branch": B.current_branch(),
         "stale": bool(_STARTED_DIST and current and current != _STARTED_DIST),
+        # Осиротевшие сборки — признак того, что дерево переносили копированием
+        # поверх, а не гитом. Показываем в интерфейсе: тем же способом «не
+        # удаляются» и снесённые линии, а это уже не косметика.
+        "dist_orphans": _dist_orphans(),
         "routes": {"get": sorted(GET_ROUTES), "post": sorted(POST_ROUTES)},
     }
 
@@ -912,6 +916,38 @@ def _dist_problems(dist=None):
     return out
 
 
+def _dist_orphans(dist=None):
+    """Сборки в dist/assets, на которые index.html НЕ ссылается.
+
+    Имя файла сборки содержит хэш и меняется с каждым `npm run build`, а сама
+    сборка кладёт ровно один js и один css. Значит лишние файлы взяться могут
+    только одним способом: дерево переносили КОПИРОВАНИЕМ поверх, а не гитом.
+    Копирование добавляет и обновляет, но никогда не удаляет — так на тесте и
+    скопились полтора десятка старых сборок и файлы под прежними именами
+    (SqlArea.jsx рядом с CodeArea.jsx, TableNameInput.jsx рядом с
+    TableNamePair.jsx).
+
+    Само по себе это не ломает ничего: страница берёт тот файл, на который
+    ссылается index.html. Но всё это уезжает на прод и остаётся там навсегда, а
+    главное — тот же способ переноса применительно к etlFolder/ и dags/ значит,
+    что УДАЛЁННАЯ линия не удалится: её фрагмент останется лежать и вернётся в
+    работу. Поэтому мусор в dist — не грязь, а показание прибора.
+    """
+    dist = dist or WEBUI_DIST
+    assets = os.path.join(dist, "assets")
+    index = os.path.join(dist, "index.html")
+    if not (os.path.isdir(assets) and os.path.isfile(index)):
+        return []
+    try:
+        with open(index, encoding="utf-8") as fp:
+            html = fp.read()
+        names = os.listdir(assets)
+    except OSError:
+        return []
+    used = set(re.findall(r'(?:src|href)\s*=\s*"[^"]*?([^/"]+\.(?:js|css))"', html))
+    return sorted(n for n in names if n not in used)
+
+
 def serve(host, port):
     import tornado.ioloop
     app = make_app()
@@ -920,6 +956,11 @@ def serve(host, port):
     logger.info("конструктор слушает %s:%s (доступ: %s)", host, port, where)
     for problem in _dist_problems():
         logger.warning("ФРОНТЕНД: %s", problem)
+    orphans = _dist_orphans()
+    if orphans:
+        logger.warning("ФРОНТЕНД: в dist/assets %d файлов, на которые index.html "
+                       "не ссылается — дерево переносили копированием, а не гитом: %s",
+                       len(orphans), ", ".join(orphans[:5]) + (" …" if len(orphans) > 5 else ""))
     tornado.ioloop.IOLoop.current().start()
 
 
@@ -1135,6 +1176,20 @@ def _selftest():
     code, body = dispatch("GET", "health", {})
     assert code == 200 and body["result"]["stale"] is False, body
     assert "prod/deploy" in body["result"]["routes"]["post"], body["result"]
+
+    # В собранном фронтенде ровно одна сборка. Лишние файлы взяться могут
+    # только копированием дерева поверх — и тем же способом «не удаляются»
+    # снесённые линии, а это уже не косметика.
+    assert body["result"]["dist_orphans"] == [], (
+        "в tools/webui/dist/assets лежат файлы, на которые index.html не "
+        "ссылается: " + ", ".join(body["result"]["dist_orphans"]))
+    with tempfile.TemporaryDirectory() as tmp:
+        os.mkdir(os.path.join(tmp, "assets"))
+        with open(os.path.join(tmp, "index.html"), "w", encoding="utf-8") as fp:
+            fp.write('<script src="./assets/index-NEW.js"></script>')
+        for name in ("index-NEW.js", "index-OLD.js", "index-OLDER.js"):
+            open(os.path.join(tmp, "assets", name), "w").close()
+        assert _dist_orphans(tmp) == ["index-OLD.js", "index-OLDER.js"], _dist_orphans(tmp)
 
     # 9) ФРОНТЕНД И API ГОВОРЯТ ОБ ОДНОМ И ТОМ ЖЕ.
     #

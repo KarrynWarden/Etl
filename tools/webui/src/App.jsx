@@ -31,8 +31,20 @@ export default function App() {
   // 404. Спрашиваем сам сервис — он один знает, с каким деревом стартовал, — и
   // говорим об этом ДО того, как человек наткнётся на непонятную ошибку.
   const [stale, setStale] = useState(false)
+  // Осиротевшие сборки в dist/assets — показание прибора, а не грязь: файл
+  // сборки называется по хэшу и кладётся ровно один, значит лишние взялись
+  // копированием дерева поверх вместо переноса гитом. Тем же способом НЕ
+  // удаляются снесённые линии — их фрагменты останутся лежать и вернутся в
+  // работу, а это уже не косметика.
+  const [orphans, setOrphans] = useState([])
   useEffect(() => {
-    api.health().then((h) => setStale(Boolean(h?.stale))).catch(() => {})
+    api
+      .health()
+      .then((h) => {
+        setStale(Boolean(h?.stale))
+        setOrphans(h?.dist_orphans || [])
+      })
+      .catch(() => {})
   }, [reloadToken])
 
   return (
@@ -60,6 +72,33 @@ export default function App() {
                   новая, а маршруты у python остались прежние. Часть кнопок
                   ответит «нет маршрута», пока его не перезапустят.
                   <pre style={{ margin: '8px 0 0' }}>sudo systemctl restart etl-dagbuilder-api</pre>
+                </>
+              }
+            />
+          )}
+          {orphans.length > 0 && (
+            <Alert
+              type="warning"
+              showIcon
+              style={{ marginBottom: 8 }}
+              message={`В сборке фронтенда ${orphans.length} лишних файлов — дерево переносили копированием`}
+              description={
+                <>
+                  <div>
+                    Сборка кладёт ровно один js и один css, имя содержит хэш.
+                    Лишние файлы означают, что дерево копировали поверх, а не
+                    переносили гитом: копирование добавляет и обновляет, но
+                    никогда не удаляет. Работать это не мешает — но уезжает на
+                    прод, а главное: тем же способом не удалятся и снесённые
+                    линии, их фрагменты вернутся в работу.
+                  </div>
+                  <pre style={{ margin: '8px 0 0', whiteSpace: 'pre-wrap' }}>
+                    {`git rm -r --cached tools/webui/dist/assets && npm --prefix tools/webui run build && git add -A`}
+                  </pre>
+                  <div style={{ marginTop: 8, opacity: 0.75 }}>
+                    Лишние: {orphans.slice(0, 6).join(', ')}
+                    {orphans.length > 6 ? ` … и ещё ${orphans.length - 6}` : ''}
+                  </div>
                 </>
               }
             />
