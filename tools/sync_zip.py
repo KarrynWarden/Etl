@@ -7,6 +7,12 @@
     python3 tools/sync_zip.py /media/flash/Etl-main.zip --base      первый раз
     python3 tools/sync_zip.py /media/flash/Etl-main.zip --yes       без вопроса
 
+Windows (PowerShell): команда `python`, а не `python3`, и запускать ИЗ ПАПКИ
+проекта — скрипт ищет рабочую копию от текущего каталога:
+
+    cd C:\путь\к\Etl
+    python tools\sync_zip.py D:\Etl-main.zip --base
+
 ЗАЧЕМ. Между двумя ПК только флешка, а с GitHub скачивается ровно одно —
 архив всего дерева. Поэтому правки переносились копированием папок с заменой, и
 у этого способа есть свойство, которое годами копит беду: копирование ДОБАВЛЯЕТ
@@ -58,8 +64,6 @@ import tempfile
 import zipfile
 from datetime import datetime
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
 SNAPSHOT_BRANCH = "github-snapshot"
 
 # По этим файлам архив опознаётся как «наш». Проверка дешёвая, а цена ошибки
@@ -70,6 +74,66 @@ MARKERS = ("tools/dag_builder.py", "etlFolder")
 # прошло без конфликта. Здесь живут ваши правки — структуры, запросы, конфиги
 # линий, — и «слилось молча» тут не означает «я этого хотел».
 YOURS = ("etlFolder/", "dags/")
+
+
+class Otkaz(Exception):
+    """Ошибка, которую пользователю показывают текстом, а не трассировкой."""
+
+
+def find_repo(hint=None):
+    """Где рабочая копия.
+
+    Ищем от ТЕКУЩЕГО каталога, а не от места скрипта: скрипт легко оказывается
+    скопированным в домашнюю папку (так и вышло при первом запуске), и путь «на
+    два уровня вверх от файла» указал бы в C:\\Users — не репозиторий вовсе.
+    А промахнуться тут дорого: дальше идут коммиты и слияния.
+    """
+    if hint:
+        top = hint
+    else:
+        try:
+            p = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                               capture_output=True, text=True)
+        except OSError:
+            raise Otkaz(
+                "Не нашёл команду git. Она нужна: весь перенос делается\n"
+                "слиянием, а не копированием файлов.\n"
+                "Windows: поставьте Git for Windows и запускайте из его\n"
+                "консоли — либо добавьте git в PATH.")
+        top = (p.stdout or "").strip() if p.returncode == 0 else ""
+        if not top:
+            # запасной путь: рядом со скриптом, если он лежит в tools/
+            here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            top = here if os.path.isdir(os.path.join(here, ".git")) else ""
+    if not top or not os.path.isdir(os.path.join(top, ".git")):
+        raise Otkaz(
+            "Не нашёл рабочую копию репозитория.\n"
+            "Запускать надо ИЗ ПАПКИ проекта, например:\n"
+            "    cd C:\\путь\\к\\Etl\n"
+            "    python tools\\sync_zip.py D:\\Etl-main.zip --base\n"
+            "Либо указать её явно: --root C:\\путь\\к\\Etl")
+    missing = [m for m in MARKERS if not os.path.exists(os.path.join(top, m))]
+    if missing:
+        raise Otkaz(
+            "Каталог {} — репозиторий, но не наш: не нашёл {}.".format(
+                top, ", ".join(missing)))
+    return top
+
+
+def check_archive(path):
+    """Понятный отказ вместо трассировки: имя диска и наличие файла — самая
+    частая осечка, а FileNotFoundError из недр zipfile об этом не говорит."""
+    if os.path.isfile(path):
+        return path
+    folder = os.path.dirname(os.path.abspath(path)) or "."
+    hint = ""
+    if os.path.isdir(folder):
+        zips = sorted(f for f in os.listdir(folder) if f.lower().endswith(".zip"))
+        hint = ("\nВ каталоге {} лежат: {}".format(folder, ", ".join(zips)) if zips
+                else "\nВ каталоге {} архивов (*.zip) нет вовсе.".format(folder))
+    else:
+        hint = "\nКаталога {} нет — проверьте букву диска.".format(folder)
+    raise Otkaz("Не нашёл архив: {}{}".format(path, hint))
 
 
 def _git(root, *args, check=True, timeout=300):
@@ -122,7 +186,7 @@ def extract(archive, into):
     return tree
 
 
-def import_snapshot(tree, root=ROOT, branch=SNAPSHOT_BRANCH, note=""):
+def import_snapshot(tree, root, branch=SNAPSHOT_BRANCH, note=""):
     """Сделать распакованное дерево КОММИТОМ на ветке-снимке.
 
     Собирается через отдельный индекс: рабочая копия при этом не трогается
@@ -250,7 +314,7 @@ def render(rep):
     return "\n".join(lines)
 
 
-def join(root=ROOT, branch=SNAPSHOT_BRANCH):
+def join(root, branch=SNAPSHOT_BRANCH):
     """Пришить ветку-снимок к истории, НЕ МЕНЯЯ рабочего дерева.
 
     Первый снимок — коммит без родителей, общей истории с вашей веткой у него
@@ -269,7 +333,7 @@ def join(root=ROOT, branch=SNAPSHOT_BRANCH):
     return rc == 0, (out + "\n" + err).strip()
 
 
-def merge(root=ROOT, branch=SNAPSHOT_BRANCH):
+def merge(root, branch=SNAPSHOT_BRANCH):
     """Слить ветку-снимок в текущую. Возвращает (ok, лог)."""
     rc, out, err = _git(root, "merge", "--no-ff", branch,
                         "-m", f"перенос с GitHub ({branch})", check=False)
@@ -291,7 +355,8 @@ def main(argv):
     ap = argparse.ArgumentParser(
         description="Перенос правок с GitHub через zip — слиянием, а не копированием")
     ap.add_argument("archive", nargs="?", help="zip, скачанный с GitHub")
-    ap.add_argument("--root", default=ROOT, help="рабочая копия (по умолчанию эта)")
+    ap.add_argument("--root", default=None,
+                    help="папка репозитория (по умолчанию — та, из которой запущено)")
     ap.add_argument("--branch", default=SNAPSHOT_BRANCH)
     ap.add_argument("--dry-run", action="store_true", help="только отчёт")
     ap.add_argument("--base", action="store_true",
@@ -305,22 +370,29 @@ def main(argv):
     if not args.archive:
         ap.error("не задан архив")
 
+    try:
+        root = find_repo(args.root)
+        archive = check_archive(args.archive)
+    except Otkaz as err:
+        print(err)
+        return 1
+
     tmp = tempfile.mkdtemp(prefix="etl-sync-")
     try:
-        tree = extract(args.archive, tmp)
-        commit, parent = import_snapshot(tree, args.root, args.branch,
-                                         note=os.path.basename(args.archive))
-        rep = report(args.root, commit, parent, args.branch)
+        tree = extract(archive, tmp)
+        commit, parent = import_snapshot(tree, root, args.branch,
+                                         note=os.path.basename(archive))
+        rep = report(root, commit, parent, args.branch)
         print(render(rep))
         if args.dry_run:
-            print(f"\nВетка-снимок {args.branch} обновлена. Слияние не делалось.")
+            print("\nВетка-снимок {} обновлена. Слияние не делалось.".format(args.branch))
             return 0
         if rep["first"] or args.base:
             if rep["dirty"]:
                 print("\n!! Сначала закоммитьте или отмените несохранённые правки:"
                       "\n   пришивание базы — это коммит, а с грязным деревом git его не сделает.")
                 return 1
-            ok, log = join(args.root, args.branch)
+            ok, log = join(root, args.branch)
             print()
             print(log)
             print("\nБаза заведена: дерево не изменилось ни на один файл, но у")
@@ -330,11 +402,17 @@ def main(argv):
             print()
             if input("Сливать? (y/N) ").strip().lower() not in ("y", "д"):
                 print("Отменено. Ветка-снимок обновлена, слить можно потом:")
-                print(f"    git merge --no-ff {args.branch}")
+                print("    git merge --no-ff {}".format(args.branch))
                 return 1
-        ok, log = merge(args.root, args.branch)
+        ok, log = merge(root, args.branch)
         print(log)
         return 0 if ok else 2
+    except (Otkaz, ValueError) as err:
+        print(err)
+        return 1
+    except RuntimeError as err:
+        print("git отказал:\n{}".format(err))
+        return 1
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

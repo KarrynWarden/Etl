@@ -153,11 +153,30 @@ cp .env.example .env
 
 ## Как переносить
 
-```bash
-python3 tools/sync_zip.py /media/flash/Etl-main.zip --base   # ПЕРВЫЙ раз
-python3 tools/sync_zip.py /media/flash/Etl-main.zip          # дальше всегда так
-python3 tools/sync_zip.py /media/flash/Etl-main.zip --dry-run  # только посмотреть
+**Запускать из папки проекта** — репозиторий скрипт ищет от текущего каталога,
+а не от того места, куда его положили.
+
+Windows (PowerShell), команда `python`, а не `python3`:
+
+```powershell
+cd C:\путь\к\Etl
+python tools\sync_zip.py D:\Etl-main.zip --base      # ПЕРВЫЙ раз
+python tools\sync_zip.py D:\Etl-main.zip             # дальше всегда так
+python tools\sync_zip.py D:\Etl-main.zip --dry-run   # только посмотреть
 ```
+
+Linux:
+
+```bash
+cd ~/Etl
+python3 tools/sync_zip.py /media/flash/Etl-main.zip --base
+python3 tools/sync_zip.py /media/flash/Etl-main.zip
+python3 tools/sync_zip.py /media/flash/Etl-main.zip --dry-run
+```
+
+Нужен `git` в PATH (на Windows — Git for Windows) и python 3.8+. Если запустить
+не из той папки или ошибиться в имени архива, скрипт скажет об этом текстом и
+покажет, какие `*.zip` рядом лежат, — трассировок не будет.
 
 Архив — это снимок дерева, а git умеет сливать снимки. Скрипт заводит ветку
 `github-snapshot`, каждый принесённый архив кладёт на неё коммитом, и дальше идёт
