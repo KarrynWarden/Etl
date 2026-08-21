@@ -22,6 +22,11 @@ export default function FilesPreview({
   files,
   unchanged,
   created,
+  // readOnly — показать, ЧТО изменится, не предлагая это записать. Нужно там,
+  // где запись делает не кнопка «Записать», а отдельное действие целиком:
+  // откат до версии обязан пройти вместе с удалениями файлов, поштучно
+  // отмечать в нём нечего.
+  readOnly,
   onWrite,
   busy,
   error,
@@ -63,7 +68,7 @@ export default function FilesPreview({
           {skipped.size > 0 && <Tag color="red">пропустить: {skipped.size}</Tag>}
         </Space>
       }
-      extra={
+      extra={ readOnly ? null : (
         <Space>
           {/* Запись перетирает файлы на диске — единственное место, откуда
               правка туда попадает. Спрашиваем и называем, сколько файлов и
@@ -118,7 +123,7 @@ export default function FilesPreview({
             </Popconfirm>
           )}
         </Space>
-      }
+      )}
     >
       {!changed.length && (
         <Alert
@@ -129,7 +134,7 @@ export default function FilesPreview({
         />
       )}
 
-      {changed.length > 1 && (
+      {changed.length > 1 && !readOnly && (
         <Space style={{ marginBottom: 8 }}>
           <Button size="small" onClick={() => setSkipped(new Set())}>
             Отметить все
@@ -154,7 +159,7 @@ export default function FilesPreview({
             key: f.path,
             label: (
               <Space onClick={(e) => e.stopPropagation()}>
-                {isChanged && (
+                {isChanged && !readOnly && (
                   <Checkbox
                     checked={!skipped.has(f.path)}
                     onChange={(e) => toggle(f.path, e.target.checked)}

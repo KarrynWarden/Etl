@@ -87,6 +87,13 @@ export const api = {
   sharedFiles: (params) => call('POST', 'shared-files', params),
   mergeTablePk: (params) => call('POST', 'merge-table-pk', params),
   gitPush: (params) => call('POST', 'git/push', params),
+  // версии, откат и выкладка на прод
+  gitVersions: (params) => call('GET', 'git/versions', params),
+  rollbackPlan: (params) => call('POST', 'git/rollback-plan', params),
+  rollbackApply: (params) => call('POST', 'git/rollback-apply', params),
+  prodStatus: (params) => call('POST', 'prod/status', params),
+  prodDiff: (params) => call('POST', 'prod/diff', params),
+  prodDeploy: (params) => call('POST', 'prod/deploy', params),
   triggerBuild: (params) => call('POST', 'triggers/build', params),
   triggerCheck: (keys) => call('POST', 'triggers/check', { keys }),
 

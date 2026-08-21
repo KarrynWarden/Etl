@@ -48,6 +48,7 @@ if ROOT not in sys.path:
 from tools import dag_builder as B      # noqa: E402
 from tools import trigger_builder as T  # noqa: E402
 from tools import sp_builder as SP      # noqa: E402
+from tools import git_ops as G          # noqa: E402
 
 logger = logging.getLogger("dagbuilder_api")
 
@@ -394,6 +395,77 @@ def r_git_push(params):
     return {"done": B.git_push_saved(message)}
 
 
+def r_versions(params):
+    """Версии: история ветки конструктора и выкладки прода (теги prod-*).
+
+    Одним ответом обе стороны — вопрос «до какой версии откатить» задают,
+    глядя сразу на тест и на прод: что уже уехало, а что ещё нет.
+    """
+    limit = params.get("limit") or 40
+    scope = params.get("scope") or "areas"
+    paths = None if scope == "all" else list(G.AREAS)
+    return {"branch": B.current_branch(),
+            "versions": G.versions(limit=int(limit), paths=paths),
+            "prod_tags": G.prod_tags(limit=int(limit))}
+
+
+def r_rollback_plan(params):
+    """Что вернёт откат до версии. Ничего не трогает."""
+    (ref,) = _need(params, "ref")
+    plan = G.rollback_plan(ref, areas=_rollback_areas(params))
+    return dict(_preview_body(plan["files"]),
+                ref=plan["ref"], resolved=plan["resolved"],
+                subject=plan.get("subject", ""), date=plan.get("date", ""),
+                remove=plan["remove"], dirty=plan["dirty"],
+                areas=plan["areas"], note=plan.get("note", ""))
+
+
+def _rollback_areas(params):
+    """Что откат имеет право трогать.
+
+    По умолчанию — только хозяйство конструктора (etlFolder/, dags/). Код
+    (Functions/, Src/, tools/) сюда не входит, и не по осторожности: из tools/
+    прямо сейчас исполняется сам конструктор, и подменять его себе под ногами
+    по кнопке в браузере — не то, чего ждёт нажимающий. Такой откат делается
+    обычным деплоем.
+    """
+    if params.get("include_code"):
+        raise BadRequest(
+            "Откат кода (Functions/, Src/, tools/) из интерфейса не делается: "
+            "конструктор запущен из этого же дерева и подменил бы сам себя. "
+            "Такой откат — обычным деплоем с dev-ПК.")
+    return G.AREAS
+
+
+def r_rollback_apply(params):
+    """Откатить НОВЫМ КОММИТОМ поверх и запушить."""
+    (ref,) = _need(params, "ref")
+    ok, log = G.rollback_apply(ref, areas=_rollback_areas(params))
+    return {"ok": ok, "log": log}
+
+
+def r_prod_status(params):
+    """Может ли конструктор выложить на прод — и если нет, то почему."""
+    return G.prod_status(probe=params.get("probe", True))
+
+
+def r_prod_diff(params):
+    """Чем прод отличается от теста. Читает, ничего не меняет."""
+    return G.prod_diff()
+
+
+def r_prod_deploy(params):
+    """Выложить на прод. from_ref = тег prod-* — это откат прода.
+
+    Всю работу делает deploy/deploy-prod.sh: он же гоняет гейт check-dags.sh по
+    тому дереву, что уедет, он же ставит тег, он же повторяет push при сетевых
+    сбоях. Второй реализации выкладки здесь нет намеренно — две прошлые
+    разошлись и уронили прод (см. README, «Почему гейт именно в pre-receive»).
+    """
+    return G.prod_deploy(from_ref=params.get("from_ref"),
+                         lines=params.get("lines"))
+
+
 def r_trigger_targets(params):
     """Линии, которым нужен триггер, с предположенными колонками ведущей."""
     targets = T.trigger_targets(include_disabled=bool(params.get("include_disabled")))
@@ -627,6 +699,7 @@ GET_ROUTES = {
     "tags": r_tags,
     "group-dags": r_group_dags,
     "git/status": r_git_status,
+    "git/versions": r_versions,
     "defaults": r_defaults,
     "triggers/targets": r_trigger_targets,
     "sp/lines": r_sp_lines,
@@ -648,6 +721,11 @@ POST_ROUTES = {
     "restore": r_restore,
     "delete": r_delete,
     "git/push": r_git_push,
+    "git/rollback-plan": r_rollback_plan,
+    "git/rollback-apply": r_rollback_apply,
+    "prod/status": r_prod_status,
+    "prod/diff": r_prod_diff,
+    "prod/deploy": r_prod_deploy,
     "triggers/build": r_trigger_build,
     "triggers/check": r_trigger_check,
     "sp/preview": r_sp_preview,
@@ -963,6 +1041,34 @@ def _selftest():
     code, body = dispatch("GET", "sp/line", {"kind": "хз", "key": sample["key"]})
     assert code == 400 and "regular" in body["detail"], body
 
+    # 8.5) ВЕРСИИ, ОТКАТ, ПРОД — всё, что читает, проверяется на живом репозитории.
+    code, body = dispatch("GET", "git/versions", {"limit": 5})
+    assert code == 200 and body["result"]["versions"], body
+    first = body["result"]["versions"][0]
+    assert first["sha"] and first["date"] and first["subject"], first
+
+    # План отката до HEAD пуст — и это не мелочь: «откатить туда, где мы уже
+    # стоим» не должно предлагать ни одного файла, иначе первый же откат
+    # покажет весь репозиторий как изменённый.
+    code, body = dispatch("POST", "git/rollback-plan", {"ref": "HEAD"})
+    assert code == 200, body
+    assert body["result"]["files"] == [] and body["result"]["remove"] == [], body["result"]
+
+    # Откат кода из интерфейса запрещён явно: конструктор запущен из этого же
+    # дерева и подменил бы сам себя.
+    code, body = dispatch("POST", "git/rollback-plan",
+                          {"ref": "HEAD", "include_code": True})
+    assert code == 400 and "сам себя" in body["detail"], body
+
+    # Несуществующая версия — 400 с человеческим текстом, а не трассировка
+    code, body = dispatch("POST", "git/rollback-plan", {"ref": "нет-такой"})
+    assert code == 400 and "Не нашёл версию" in body["detail"], body
+
+    # Состояние прода читается без сети (probe=false) и не падает там, где
+    # remote 'prod' не настроен — на dev-ПК его нет ни у кого.
+    code, body = dispatch("POST", "prod/status", {"probe": False})
+    assert code == 200 and body["result"]["script"] is True, body
+
     # 9) ФРОНТЕНД И API ГОВОРЯТ ОБ ОДНОМ И ТОМ ЖЕ.
     #
     # Интерфейс собирается отдельно и на другой машине, поэтому опечатка в
@@ -1140,18 +1246,44 @@ def _selftest():
     # предпросмотр. Так ушли set-flag и sp/set-disabled — переключатели,
     # писавшие конфиг сразу по щелчку.
     writing = {"write", "archive", "restore", "delete", "sp/delete", "sp/move",
-               "git/push", "rename-apply"}
-    # …а эти только ПОКАЗЫВАЮТ, что будет удалено, — их и зовут перед
-    # подтверждением удаления
-    read_only = {"delete-targets", "sp/delete-targets", "rename-plan"}
-    unexpected = {r for r in POST_ROUTES
-                  if r not in writing and r not in read_only and (
-                      "delete" in r or "set" in r or "write" in r
-                      or "move" in r or "push" in r or "archive" in r)}
-    assert not unexpected, (
-        f"маршруты {sorted(unexpected)} похожи на пишущие, но не перечислены. "
-        f"Если они правда меняют репозиторий — им нужно подтверждение в "
-        f"интерфейсе; если нет — переименуйте, чтобы не путать")
+               "git/push", "rename-apply",
+               # откат и выкладка — тоже запись, только не в файл, а в историю:
+               # rollback-apply коммитит и пушит в test, prod/deploy собирает
+               # выкладку и пушит в прод. Оба спрашивают подтверждение.
+               "git/rollback-apply", "prod/deploy"}
+    # …а все ОСТАЛЬНЫЕ маршруты не трогают ни диск, ни историю: считают,
+    # разбирают, показывают. Перечислены поимённо, и это принципиально.
+    read_only = {
+        # показывают, что будет удалено/переименовано/выложено
+        "delete-targets", "sp/delete-targets", "rename-plan",
+        "git/rollback-plan", "prod/status", "prod/diff",
+        # читают БД
+        "snap-structure", "snap-query-structure", "merge-table-pk",
+        # считают в памяти
+        "match", "preview", "sp/preview", "shared-files",
+        "sp/parse-sql", "sp/build-sql", "sp/rename-select-column",
+        "triggers/build", "triggers/check", "sp/audit-trigger",
+    }
+    # Список ЗАКРЫТЫЙ в обе стороны: каждый POST-маршрут обязан быть ровно в
+    # одном из двух наборов. Раньше проверка искала в имени слова вроде
+    # «delete» или «push» — и git/rollback-apply с prod/deploy прошли её
+    # насквозь: ни одного такого слова в них не было. То есть самый опасный
+    # маршрут (push в прод) остался незамеченным ровно тем, что заведено
+    # замечать опасные. Догадка по имени такой ошибки не ловит никогда —
+    # объявление ловит всегда: новый маршрут просто не даст пройти проверке,
+    # пока автор не скажет, пишет он или нет.
+    unclassified = set(POST_ROUTES) - writing - read_only
+    assert not unclassified, (
+        f"маршруты {sorted(unclassified)} не отнесены ни к пишущим, ни к "
+        f"читающим. Впишите каждый в writing или read_only в этом файле — это "
+        f"тот момент, когда стоит спросить себя, почему маршрут не проходит "
+        f"через предпросмотр")
+    both = writing & read_only
+    assert not both, f"маршруты {sorted(both)} перечислены в обоих наборах"
+    stale = (writing | read_only) - set(POST_ROUTES)
+    assert not stale, (
+        f"маршрутов {sorted(stale)} больше нет — уберите их из списков, иначе "
+        f"проверка начнёт покрывать несуществующее")
     for name in ("set-flag", "sp/set-disabled"):
         assert name not in POST_ROUTES, (
             f"маршрут {name} писал конфиг сразу по щелчку переключателя — "

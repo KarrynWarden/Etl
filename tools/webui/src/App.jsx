@@ -6,6 +6,7 @@ import LinesPanel from './LinesPanel'
 import LineForm from './LineForm'
 import GitBar from './GitBar'
 import TriggersPage from './TriggersPage'
+import VersionsPage from './VersionsPage'
 import NewLinePage from './NewLinePage'
 import SpPage from './SpPage'
 
@@ -125,6 +126,9 @@ export default function App() {
                 children: <SpPage kind="once" />,
               },
               { key: 'triggers', label: 'Триггеры', children: <TriggersPage /> },
+              // Последней: сюда приходят, когда работа с линиями уже сделана —
+              // выложить сделанное или вернуть то, что было.
+              { key: 'versions', label: 'Версии и прод', children: <VersionsPage /> },
             ]}
           />
         </Layout.Content>

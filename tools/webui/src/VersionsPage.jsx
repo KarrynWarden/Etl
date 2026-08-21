@@ -1,0 +1,382 @@
+import { useEffect, useState } from 'react'
+import {
+  Alert,
+  Button,
+  Card,
+  Popconfirm,
+  Space,
+  Table,
+  Tag,
+  Tooltip,
+  Typography,
+} from 'antd'
+import { CloudUploadOutlined, ReloadOutlined, UndoOutlined } from '@ant-design/icons'
+
+import { api } from './api'
+import { useAction } from './useAction'
+import ActionError from './ActionError'
+import FilesPreview from './FilesPreview'
+
+// Версии и выкладка.
+//
+// Две среды, и путать их дорого (deploy/README-prod.md):
+//
+//   gitea ── ветка test ──► /opt/airflow-test/etl.git ──► airflow-test (:8082)
+//         └─ ветка prod ──► /opt/airflow-prod/etl.git ──► прод (:8080)
+//
+// Конструктор живёт в клоне на ТЕСТЕ и пушит в свою ветку. Прод — не «хвост»
+// теста, а собранное состояние: каждая выкладка это коммит поверх предыдущего
+// прода с деревом теста, помеченный тегом prod-ГГГГММДД-ЧЧММ. Поэтому
+// недоделанная работа на тесте на прод не уезжает сама.
+//
+// Откат — и теста, и прода — всегда НОВЫЙ КОММИТ ПОВЕРХ, никогда не reset с
+// force-push: у обеих веток есть клоны (dev-ПК, test-src, prod-src, сам
+// конструктор), и переписанную историю пришлось бы чинить руками на каждом.
+const дата = (iso) => {
+  if (!iso) return ''
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime())
+    ? iso
+    : d.toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' })
+}
+
+export default function VersionsPage() {
+  const [picked, setPicked] = useState(null)     // версия, выбранная в таблице
+  const [plan, setPlan] = useState(null)         // разобранный план отката
+
+  const versions = useAction(api.gitVersions)
+  const prodStatus = useAction(api.prodStatus)
+  const prodDiff = useAction(api.prodDiff)
+  const prodDeploy = useAction(api.prodDeploy)
+  const rollbackPlan = useAction(api.rollbackPlan)
+  const rollbackApply = useAction(api.rollbackApply)
+
+  useEffect(() => {
+    versions.run({ limit: 40 })
+    prodStatus.run({ probe: false })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const reload = () => {
+    setPlan(null)
+    setPicked(null)
+    versions.run({ limit: 40 })
+  }
+
+  const st = prodStatus.result
+  const canDeploy = Boolean(st?.remote && st?.reachable)
+  const rows = versions.result?.versions || []
+  const prodList = versions.result?.prod_tags || []
+
+  const showPlan = (ref) => {
+    setPicked(ref)
+    setPlan(null)
+    rollbackPlan.run({ ref }).then((r) => r && setPlan(r))
+  }
+
+  return (
+    <Space direction="vertical" size="middle" style={{ display: 'flex' }}>
+      {/* ── ПРОД ───────────────────────────────────────────────────────── */}
+      <Card
+        size="small"
+        title={
+          <Space>
+            <b>Прод</b>
+            {st?.prod_head && <Tag>{st.prod_head}</Tag>}
+            {st?.reachable === true && <Tag color="green">доступен</Tag>}
+            {st?.reachable === false && <Tag color="red">недоступен</Tag>}
+          </Space>
+        }
+        extra={
+          <Space>
+            <Tooltip title="Проверить, может ли конструктор достучаться до прод-репозитория (ходит по той же дороге, что и push)">
+              <Button
+                size="small"
+                icon={<ReloadOutlined />}
+                loading={prodStatus.loading}
+                onClick={() => prodStatus.run({ probe: true })}
+              >
+                Проверить доступ
+              </Button>
+            </Tooltip>
+            <Button
+              size="small"
+              loading={prodDiff.loading}
+              onClick={() => prodDiff.run({})}
+            >
+              Чем прод отличается от теста
+            </Button>
+            {/* Кнопка выкладки появляется, только если доступ РЕАЛЬНО есть.
+                Иначе на её месте — команда для того, у кого права: прод-репо
+                лежит в группе etlprod, а конструктор работает под jupyter из
+                etldev, и «нажал — ничего не произошло» здесь худший исход. */}
+            <Popconfirm
+              title="Выложить тест на ПРОД?"
+              description={
+                <div style={{ maxWidth: 420 }}>
+                  Уедет всё состояние теста. Перед push пройдёт гейт
+                  (check-dags.sh) по тому самому дереву; выкладка получит тег
+                  prod-ГГГГММДД-ЧЧММ, откатить её можно будет выкладкой
+                  предыдущего тега.
+                </div>
+              }
+              okText="Выложить"
+              okButtonProps={{ danger: true }}
+              cancelText="Нет"
+              disabled={!canDeploy}
+              onConfirm={() => prodDeploy.run({}).then(() => prodStatus.run({ probe: true }))}
+            >
+              <Tooltip
+                title={canDeploy ? '' : 'Сначала «Проверить доступ» — без него неизвестно, дойдёт ли push'}
+              >
+                <Button
+                  type="primary"
+                  danger
+                  icon={<CloudUploadOutlined />}
+                  disabled={!canDeploy}
+                  loading={prodDeploy.loading}
+                >
+                  Выложить на прод
+                </Button>
+              </Tooltip>
+            </Popconfirm>
+          </Space>
+        }
+      >
+        <Space direction="vertical" size="small" style={{ display: 'flex' }}>
+          <Typography.Text type="secondary">
+            Ветка конструктора: <Typography.Text code>{versions.result?.branch || '—'}</Typography.Text>
+            {st?.remote && (
+              <> · прод-репозиторий: <Typography.Text code>{st.remote}</Typography.Text></>
+            )}
+          </Typography.Text>
+
+          {st?.detail && (
+            <Alert
+              type={st.reachable === false || !st.remote ? 'warning' : 'info'}
+              showIcon
+              message={st.reachable === false ? 'Выложить отсюда не выйдет' : 'Состояние прода'}
+              description={<pre style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{st.detail}</pre>}
+            />
+          )}
+          {!canDeploy && (
+            <Alert
+              type="info"
+              showIcon
+              message="Выкладка руками — тем, у кого есть права"
+              description={
+                <pre style={{ margin: 0, whiteSpace: 'pre-wrap' }}>
+{`ssh devel@airflow
+cd /путь/к/клону
+bash deploy/deploy-prod.sh            # весь тест
+bash deploy/deploy-prod.sh --diff     # сначала посмотреть, что уедет`}
+                </pre>
+              }
+            />
+          )}
+
+          <ActionError error={prodStatus.error || prodDiff.error || prodDeploy.error} />
+          {prodDiff.result && (
+            <pre style={{ maxHeight: '30vh', overflow: 'auto', margin: 0 }}>
+              {prodDiff.result.log}
+            </pre>
+          )}
+          {prodDeploy.result && (
+            <Alert
+              type={prodDeploy.result.ok ? 'success' : 'error'}
+              showIcon
+              message={prodDeploy.result.ok ? 'Выложено' : 'Выкладка не прошла'}
+              description={
+                <pre style={{ maxHeight: '40vh', overflow: 'auto', margin: 0 }}>
+                  {prodDeploy.result.log}
+                </pre>
+              }
+            />
+          )}
+        </Space>
+      </Card>
+
+      {/* ── ВЫКЛАДКИ ПРОДА ─────────────────────────────────────────────── */}
+      {prodList.length > 0 && (
+        <Card size="small" title="Выкладки прода">
+          <Table
+            size="small"
+            bordered
+            pagination={false}
+            scroll={{ y: 220 }}
+            rowKey="tag"
+            dataSource={prodList}
+            columns={[
+              { title: 'Когда', dataIndex: 'date', width: 150, render: дата },
+              { title: 'Версия', dataIndex: 'tag', width: 200,
+                render: (v) => <Typography.Text code>{v}</Typography.Text> },
+              { title: 'Что выкладывали', dataIndex: 'subject' },
+              {
+                title: '',
+                width: 200,
+                render: (_v, r) => (
+                  <Popconfirm
+                    title={`Вернуть прод к ${r.tag}?`}
+                    description="Дерево этой выкладки уедет на прод новым коммитом поверх текущего — без переписывания истории."
+                    okText="Вернуть"
+                    okButtonProps={{ danger: true }}
+                    cancelText="Нет"
+                    disabled={!canDeploy}
+                    onConfirm={() => prodDeploy.run({ from_ref: r.tag })}
+                  >
+                    <Button size="small" danger disabled={!canDeploy} icon={<UndoOutlined />}>
+                      откатить прод сюда
+                    </Button>
+                  </Popconfirm>
+                ),
+              },
+            ]}
+          />
+        </Card>
+      )}
+
+      {/* ── ВЕРСИИ ТЕСТА ───────────────────────────────────────────────── */}
+      <Card
+        size="small"
+        title={<b>Версии {versions.result?.branch ? `(${versions.result.branch})` : ''}</b>}
+        extra={
+          <Tooltip title="Перечитать историю">
+            <Button size="small" icon={<ReloadOutlined />} loading={versions.loading} onClick={reload} />
+          </Tooltip>
+        }
+      >
+        <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
+          Показаны версии, в которых менялось хозяйство конструктора —
+          <Typography.Text code>etlFolder/</Typography.Text> и
+          <Typography.Text code>dags/</Typography.Text>. Откат возвращает
+          состояние выбранной версии <b>новым коммитом поверх</b>: история не
+          переписывается, ничей клон не ломается. Код (<Typography.Text code>Functions/</Typography.Text>,
+          <Typography.Text code>tools/</Typography.Text>) отсюда не откатывается —
+          конструктор запущен из этого же дерева.
+        </Typography.Paragraph>
+
+        <ActionError error={versions.error || rollbackPlan.error} />
+
+        <Table
+          size="small"
+          bordered
+          pagination={false}
+          scroll={{ y: 360 }}
+          rowKey="sha"
+          dataSource={rows}
+          rowClassName={(r) => (r.sha === picked ? 'ant-table-row-selected' : '')}
+          columns={[
+            { title: 'Когда', dataIndex: 'date', width: 150, render: дата },
+            { title: 'Версия', dataIndex: 'short', width: 110,
+              render: (v) => <Typography.Text code>{v}</Typography.Text> },
+            { title: 'Кто', dataIndex: 'author', width: 140 },
+            {
+              title: 'Что менялось',
+              render: (_v, r) => (
+                <Space size={4} wrap>
+                  <span>{r.subject}</span>
+                  {r.tags.map((t) => (
+                    <Tag key={t} color={t.startsWith('prod-') ? 'green' : undefined}>{t}</Tag>
+                  ))}
+                </Space>
+              ),
+            },
+            {
+              title: '',
+              width: 150,
+              render: (_v, r, i) => (
+                <Button
+                  size="small"
+                  disabled={i === 0}
+                  loading={rollbackPlan.loading && picked === r.sha}
+                  onClick={() => showPlan(r.sha)}
+                >
+                  {i === 0 ? 'текущая' : 'откатить сюда'}
+                </Button>
+              ),
+            },
+          ]}
+        />
+      </Card>
+
+      {/* ── ПЛАН ОТКАТА ────────────────────────────────────────────────── */}
+      {plan && (
+        <Card
+          size="small"
+          title={
+            <Space wrap>
+              <b>Откат до {plan.resolved?.slice(0, 9)}</b>
+              <Typography.Text type="secondary">{plan.subject}</Typography.Text>
+              <Tag>{дата(plan.date)}</Tag>
+            </Space>
+          }
+          extra={<Button size="small" onClick={() => setPlan(null)}>Закрыть</Button>}
+        >
+          <Space direction="vertical" size="small" style={{ display: 'flex' }}>
+            {plan.dirty ? (
+              <Alert
+                type="error"
+                showIcon
+                message="Есть несохранённые правки — откат поверх них запрещён"
+                description={
+                  <>
+                    Потом не разберёшь, что вернулось из версии, а что осталось
+                    от недоделанного. Сначала запушьте их или отмените.
+                    <pre style={{ margin: '8px 0 0', whiteSpace: 'pre-wrap' }}>{plan.dirty}</pre>
+                  </>
+                }
+              />
+            ) : !plan.files.length && !plan.remove.length ? (
+              <Alert type="info" showIcon message="Откатывать нечего — рабочая копия уже в этом состоянии" />
+            ) : (
+              <>
+                {plan.remove.length > 0 && (
+                  <Alert
+                    type="warning"
+                    showIcon
+                    message={`Будет удалено файлов: ${plan.remove.length} (в той версии их ещё не было)`}
+                    description={
+                      <ul style={{ margin: 0, paddingLeft: 18 }}>
+                        {plan.remove.map((p) => <li key={p}><Typography.Text code>{p}</Typography.Text></li>)}
+                      </ul>
+                    }
+                  />
+                )}
+                {/* Тот же предпросмотр с диффом, что у обычной правки: откат —
+                    это такая же запись файлов, и выглядеть она должна так же.
+                    Кнопка записи здесь своя: откат обязан пройти целиком
+                    (вместе с удалениями), выборочно откатывать нечего. */}
+                <FilesPreview files={plan.files} unchanged={plan.unchanged} created={plan.created} readOnly />
+                <Popconfirm
+                  title="Откатить и запушить?"
+                  description="Состояние вернётся новым коммитом поверх текущей ветки и уедет в origin."
+                  okText="Откатить"
+                  okButtonProps={{ danger: true }}
+                  cancelText="Нет"
+                  onConfirm={() =>
+                    rollbackApply.run({ ref: plan.resolved }).then((r) => {
+                      if (r) reload()
+                    })
+                  }
+                >
+                  <Button danger type="primary" icon={<UndoOutlined />} loading={rollbackApply.loading}>
+                    Откатить до этой версии и запушить
+                  </Button>
+                </Popconfirm>
+              </>
+            )}
+            <ActionError error={rollbackApply.error} />
+            {rollbackApply.result && (
+              <Alert
+                type={rollbackApply.result.ok ? 'success' : 'error'}
+                showIcon
+                message={rollbackApply.result.ok ? 'Откат выполнен' : 'Откат не прошёл'}
+                description={<pre style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{rollbackApply.result.log}</pre>}
+              />
+            )}
+          </Space>
+        </Card>
+      )}
+    </Space>
+  )
+}
