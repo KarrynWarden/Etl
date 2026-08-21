@@ -7,11 +7,20 @@
     python3 tools/sync_zip.py /media/flash/Etl-main.zip --base      первый раз
     python3 tools/sync_zip.py /media/flash/Etl-main.zip --yes       без вопроса
 
-Windows (PowerShell): команда `python`, а не `python3`, и запускать ИЗ ПАПКИ
-проекта — скрипт ищет рабочую копию от текущего каталога:
+Windows (PowerShell) — там команда `python`:
 
     cd C:\путь\к\Etl
     python tools\sync_zip.py D:\Etl-main.zip --base
+
+ЗАПУСКАТЬ ИЗ ПАПКИ ПРОЕКТА (рабочая копия ищется от текущего каталога) и
+ТРЕТЬИМ ПИТОНОМ. На рабочей машине `python` — второй, и раньше он падал с
+«SyntaxError: invalid syntax» на первой же строке; теперь файл разбирается и
+вторым питоном тоже, а обнаружив себя под ним, перезапускается третьим сам.
+
+Путь к архиву — точка МОНТИРОВАНИЯ, а не устройство: `/dev/sdc1` это
+устройство, файлов по такому пути не бывает. Где смонтировано, показывает
+`lsblk -o NAME,LABEL,MOUNTPOINT` (обычно /media/<юзер>/<метка>). Ошиблись —
+скрипт поищет *.zip на подключённых носителях и назовёт найденное.
 
 ЗАЧЕМ. Между двумя ПК только флешка, а с GitHub скачивается ровно одно —
 архив всего дерева. Поэтому правки переносились копированием папок с заменой, и
@@ -63,6 +72,25 @@ import sys
 import tempfile
 import zipfile
 from datetime import datetime
+
+# ─── ЗАПУЩЕНО ВТОРЫМ ПИТОНОМ? ───────────────────────────────────────────────
+# На рабочей машине `python` — это python2, и он падал на первой же
+# конструкции третьего питона: «SyntaxError: invalid syntax» под стрелкой,
+# указывающей на `check=True`. Понять по такому сообщению, что дело в версии,
+# невозможно. Поэтому файл целиком РАЗБИРАЕТСЯ вторым питоном (никаких
+# f-строк, никаких именованных после *args, никакой распаковки в литералах —
+# это проверяется глазами и AST'ом), а здесь мы просто перезапускаемся под
+# третьим. Человеку ничего делать не надо.
+if sys.version_info[0] < 3:
+    try:
+        os.execvp("python3", ["python3", os.path.abspath(__file__)] + sys.argv[1:])
+    except Exception:
+        sys.stderr.write(
+            "Этот скрипт работает на Python 3, а запущен вторым "
+            "(python --version = %s).\n"
+            "Запустите так:\n    python3 %s <архив.zip>\n"
+            % (sys.version.split()[0], os.path.basename(__file__)))
+        sys.exit(1)
 
 SNAPSHOT_BRANCH = "github-snapshot"
 
@@ -197,28 +225,92 @@ def guess_repos(limit=8):
     return found
 
 
+def find_archives(name=None, limit=10):
+    """Поискать *.zip там, куда обычно монтируют флешку.
+
+    Нужно из-за самой частой осечки: `/dev/sdc1` — это УСТРОЙСТВО, а не
+    каталог. Файла по такому пути нет и быть не может, а сказать «нет такого
+    каталога» мало: человеку нужна точка монтирования, а она у каждой системы
+    своя (/media/<юзер>/<метка>, /run/media/…, /mnt/…).
+    """
+    bases = ["/media", "/run/media", "/mnt", "/media/" + (os.environ.get("USER") or "")]
+    if os.name == "nt":
+        bases = ["{}:\\".format(chr(c)) for c in range(ord("A"), ord("Z") + 1)]
+    found, seen = [], set()
+    # ДВА уровня вглубь, а не один: на Linux флешка монтируется в
+    # /media/<юзер>/<метка> — один уровень доводит только до /media/<юзер>, и
+    # поиск молча ничего не находит там, где архив лежит.
+    for _ in range(2):
+        for base in list(bases):
+            try:
+                for entry in sorted(os.listdir(base)):
+                    path = os.path.join(base, entry)
+                    if os.path.isdir(path) and path not in bases:
+                        bases.append(path)
+            except OSError:
+                continue
+    for base in bases:
+        if base in seen or not os.path.isdir(base):
+            continue
+        seen.add(base)
+        try:
+            for entry in sorted(os.listdir(base)):
+                if not entry.lower().endswith(".zip"):
+                    continue
+                if name and entry.lower() != name.lower():
+                    continue
+                found.append(os.path.join(base, entry))
+                if len(found) >= limit:
+                    return found
+        except OSError:
+            continue
+    return found
+
+
 def check_archive(path):
-    """Понятный отказ вместо трассировки: имя диска и наличие файла — самая
-    частая осечка, а FileNotFoundError из недр zipfile об этом не говорит."""
+    """Понятный отказ вместо трассировки: путь к архиву — самая частая осечка,
+    а FileNotFoundError из недр zipfile об этом не говорит ничего."""
     if os.path.isfile(path):
         return path
     folder = os.path.dirname(os.path.abspath(path)) or "."
-    hint = ""
-    if os.path.isdir(folder):
+    lines = ["Не нашёл архив: {}".format(path)]
+
+    if path.startswith("/dev/"):
+        lines += [
+            "",
+            "/dev/sdc1 — это УСТРОЙСТВО, а не каталог: файлов по такому пути",
+            "не бывает. Нужна точка монтирования — куда система подключила",
+            "флешку. Посмотреть:",
+            "    lsblk -o NAME,LABEL,MOUNTPOINT",
+            "или просто открыть флешку в файловом менеджере и глянуть адрес.",
+        ]
+    elif os.path.isdir(folder):
         zips = sorted(f for f in os.listdir(folder) if f.lower().endswith(".zip"))
-        hint = ("\nВ каталоге {} лежат: {}".format(folder, ", ".join(zips)) if zips
-                else "\nВ каталоге {} архивов (*.zip) нет вовсе.".format(folder))
+        lines.append("В каталоге {} {}".format(
+            folder, "лежат: " + ", ".join(zips) if zips else "архивов (*.zip) нет."))
     else:
-        hint = "\nКаталога {} нет — проверьте букву диска.".format(folder)
-    raise Otkaz("Не нашёл архив: {}{}".format(path, hint))
+        lines.append("Каталога {} нет.".format(folder))
+
+    near = find_archives(os.path.basename(path)) or find_archives()
+    if near:
+        lines += ["", "Нашёл архивы на подключённых носителях:"]
+        for item in near:
+            lines.append("    {}".format(item))
+    raise Otkaz("\n".join(lines))
 
 
-def _git(root, *args, check=True, timeout=300):
+def _git(root, *args, **kw):
+    # Именованные после *args и распаковка в литерале — синтаксис Python 3, а
+    # файл обязан РАЗБИРАТЬСЯ вторым питоном: иначе проверка версии ниже не
+    # успевает выполниться и человек получает SyntaxError вместо объяснения.
+    check = kw.get("check", True)
+    timeout = kw.get("timeout", 300)
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0", LC_ALL="C.UTF-8")
-    p = subprocess.run(["git", "-C", root, *args], capture_output=True,
+    p = subprocess.run(["git", "-C", root] + list(args), capture_output=True,
                        text=True, env=env, timeout=timeout)
     if check and p.returncode != 0:
-        raise RuntimeError(f"git {' '.join(args)}:\n{(p.stderr or p.stdout).strip()}")
+        raise RuntimeError("git {}:\n{}".format(
+            " ".join(args), (p.stderr or p.stdout).strip()))
     return p.returncode, (p.stdout or "").strip(), (p.stderr or "").strip()
 
 
@@ -236,7 +328,7 @@ def extract(archive, into):
         # Путь с '..' или абсолютный — вылезет за каталог назначения.
         for n in names:
             if n.startswith("/") or ".." in n.replace("\\", "/").split("/"):
-                raise ValueError(f"Подозрительный путь в архиве: {n!r}")
+                raise ValueError("Подозрительный путь в архиве: {!r}".format(n))
         z.extractall(into)
         # zipfile НЕ восстанавливает права: всё распаковывается как 644, и бит
         # исполняемости теряется. В архиве он есть (git archive кладёт его в
@@ -279,20 +371,21 @@ def import_snapshot(tree, root, branch=SNAPSHOT_BRANCH, note=""):
         cmd = ["git", "-C", root, "--work-tree", tree]
         p = subprocess.run(cmd + ["add", "-A"], capture_output=True, text=True, env=env)
         if p.returncode != 0:
-            raise RuntimeError(f"git add: {(p.stderr or p.stdout).strip()}")
+            raise RuntimeError("git add: {}".format((p.stderr or p.stdout).strip()))
         p = subprocess.run(cmd + ["write-tree"], capture_output=True, text=True, env=env)
         if p.returncode != 0:
-            raise RuntimeError(f"git write-tree: {(p.stderr or p.stdout).strip()}")
+            raise RuntimeError("git write-tree: {}".format((p.stderr or p.stdout).strip()))
         tree_sha = p.stdout.strip()
 
-        message = f"снимок GitHub {datetime.now():%Y-%m-%d %H:%M}"
+        message = "снимок GitHub {}".format(
+            datetime.now().strftime("%Y-%m-%d %H:%M"))
         if note:
-            message += f"\n\n{note}"
+            message += "\n\n{}".format(note)
         args = ["commit-tree", tree_sha, "-m", message]
         if parent:
             args += ["-p", parent]
         commit = _git(root, *args)[1]
-        _git(root, "update-ref", f"refs/heads/{branch}", commit)
+        _git(root, "update-ref", "refs/heads/{}".format(branch), commit)
         return commit, parent
     finally:
         if os.path.exists(index):
@@ -350,30 +443,31 @@ def render(rep):
         add("ПЕРВЫЙ ЗАПУСК: базы для сравнения ещё нет, поэтому ничего не сливаю.")
         add("Ниже — чем принесённый архив отличается от вашего дерева.")
     else:
-        add(f"Прошлый архив: {rep['parent'][:9]}   нынешний: {rep['commit'][:9]}")
+        add("Прошлый архив: {}   нынешний: {}".format(
+            rep["parent"][:9], rep["commit"][:9]))
     add("")
-    add(f"  новых файлов:      {len(rep['added'])}")
-    add(f"  изменённых:        {len(rep['changed'])}")
+    add("  новых файлов:      {}".format(len(rep["added"])))
+    add("  изменённых:        {}".format(len(rep["changed"])))
     if rep["first"]:
-        add(f"  есть у вас, нет в архиве: {len(rep['only_here'])}"
-            "   <- мусор от копирований И ваши файлы вперемешку")
+        add("  есть у вас, нет в архиве: {}".format(len(rep["only_here"]))
+            + "   <- мусор от копирований И ваши файлы вперемешку")
     else:
-        add(f"  УДАЛЁННЫХ:         {len(rep['removed'])}"
-            "   <- то, чего копирование никогда не делало")
+        add("  УДАЛЁННЫХ:         {}".format(len(rep["removed"]))
+            + "   <- то, чего копирование никогда не делало")
 
     if rep["removed"]:
         add("")
         add("Будут удалены:")
         for p in rep["removed"][:40]:
-            add(f"    {p}")
+            add("    {}".format(p))
         if len(rep["removed"]) > 40:
-            add(f"    … и ещё {len(rep['removed']) - 40}")
+            add("    … и ещё {}".format(len(rep["removed"]) - 40))
 
     if rep["yours"]:
         add("")
         add("ВАШИ ОБЛАСТИ — посмотрите глазами, здесь бывают ваши собственные правки:")
         for p in rep["yours"]:
-            add(f"    {p}")
+            add("    {}".format(p))
         add("  (структуры, запросы и конфиги линий у вас могут отличаться от моих;")
         add("   слияние без конфликта тут не означает, что этого хотели)")
 
@@ -406,21 +500,22 @@ def join(root, branch=SNAPSHOT_BRANCH):
     """
     rc, out, err = _git(root, "merge", "-s", "ours", "--allow-unrelated-histories",
                         "--no-ff", branch,
-                        "-m", f"база для переносов с GitHub ({branch})", check=False)
+                        "-m", "база для переносов с GitHub ({})".format(branch),
+                        check=False)
     return rc == 0, (out + "\n" + err).strip()
 
 
 def merge(root, branch=SNAPSHOT_BRANCH):
     """Слить ветку-снимок в текущую. Возвращает (ok, лог)."""
     rc, out, err = _git(root, "merge", "--no-ff", branch,
-                        "-m", f"перенос с GitHub ({branch})", check=False)
+                        "-m", "перенос с GitHub ({})".format(branch), check=False)
     log = (out + "\n" + err).strip()
     if rc == 0:
         return True, log
     conflicts = _names(root, "diff", "--name-only", "--diff-filter=U")
     if conflicts:
         log += ("\n\nКонфликты (поменялось и у меня, и у вас):\n"
-                + "\n".join(f"    {c}" for c in conflicts)
+                + "\n".join("    " + c for c in conflicts)
                 + "\n\nРазберите их в редакторе, затем:\n"
                   "    git add <файл> ...\n"
                   "    git commit\n"
@@ -499,7 +594,7 @@ def main(argv):
 def _mkzip(path, files, top="Etl-main"):
     with zipfile.ZipFile(path, "w") as z:
         for name, content in files.items():
-            z.writestr(f"{top}/{name}", content)
+            z.writestr("{}/{}".format(top, name), content)
 
 
 def _selftest():
@@ -577,7 +672,7 @@ def _selftest():
         zip3 = os.path.join(tmp, "a3.zip")
         _mkzip(zip3, dict(second, **{"etlFolder/config.d/LINE.json": '{"a": 3}\n'}))
         rc = main([zip3, "--root", repo, "--yes"])
-        assert rc == 2, f"ожидался конфликт, получено {rc}"
+        assert rc == 2, "ожидался конфликт, получено {}".format(rc)
         conflicts = _names(repo, "diff", "--name-only", "--diff-filter=U")
         assert conflicts == ["etlFolder/config.d/LINE.json"], conflicts
         _git(repo, "merge", "--abort")
@@ -600,7 +695,7 @@ def _selftest():
             for name, mode in (("tools/dag_builder.py", 0o644),
                                ("etlFolder/x", 0o644),
                                ("deploy/run.sh", 0o755)):
-                info = zipfile.ZipInfo(f"Etl-main/{name}")
+                info = zipfile.ZipInfo("Etl-main/" + name)
                 info.external_attr = mode << 16
                 z.writestr(info, "x\n")
         with tempfile.TemporaryDirectory() as t5:
