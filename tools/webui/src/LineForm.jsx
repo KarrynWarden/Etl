@@ -23,6 +23,7 @@ import { UndoOutlined } from '@ant-design/icons'
 import { api } from './api'
 import { useAction } from './useAction'
 import ActionError from './ActionError'
+import SqlArea from './SqlArea'
 import ComboBox from './ComboBox'
 import FilesPreview from './FilesPreview'
 import MappingEditor from './MappingEditor'
@@ -395,11 +396,11 @@ export default function LineForm({ lineKey, onChanged }) {
         label={`SELECT ведущей${spec.select_sql ? ` — ${spec.select_sql}` : ' (нет, читается таблица целиком)'}`}
         help="если задан, имена в конфиге — это ПСЕВДОНИМЫ запроса, а не колонки ведущей"
       >
-        <Input.TextArea
-          autoSize={{ minRows: 6, maxRows: 24 }}
+        <SqlArea
+          minRows={6}
+          maxRows={24}
           value={spec.select_sql_text || ''}
           onChange={(e) => patch({ select_sql_text: e.target.value })}
-          style={{ fontFamily: 'monospace' }}
         />
       </Form.Item>
       {/* SQL периодов читает РОВНО ОДИН режим — query_section (do_etl.
@@ -412,11 +413,11 @@ export default function LineForm({ lineKey, onChanged }) {
           label={`SQL периодов${spec.periods_sql ? ` — ${spec.periods_sql}` : ''}`}
           help="обязателен для query_section: отсюда берётся список групп для перезаливки"
         >
-          <Input.TextArea
-            autoSize={{ minRows: 4, maxRows: 16 }}
+          <SqlArea
+            minRows={4}
+            maxRows={16}
             value={spec.periods_sql_text || ''}
             onChange={(e) => patch({ periods_sql_text: e.target.value })}
-            style={{ fontFamily: 'monospace' }}
           />
         </Form.Item>
       ) : (

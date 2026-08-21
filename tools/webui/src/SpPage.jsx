@@ -30,6 +30,7 @@ import FilesPreview from './FilesPreview'
 import TableNamePair from './TableNamePair'
 import { isPlainName, toDbCase } from './dbCase'
 import SpMappingEditor from './SpMappingEditor'
+import SqlArea from './SqlArea'
 import SqlLock from './SqlLock'
 
 // Справочники и разовый перенос.
@@ -742,12 +743,9 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
             : 'какие колонки он отдаёт, видно на вкладке «Колонки»; что из них переносится, решают там же'
         }
       >
-        <Input.TextArea
-          autoSize={{ minRows: 5, maxRows: 20 }}
-          style={{
-            fontFamily: 'monospace',
-            ...(selectLocked ? { background: '#fafafa' } : null),
-          }}
+        <SqlArea
+          minRows={5}
+          maxRows={20}
           readOnly={selectLocked}
           value={spec.select_sql_text || ''}
           onChange={(e) => patch({ select_sql_text: e.target.value })}
@@ -758,9 +756,9 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
         label={`Add.sql${spec.add_sql ? ` — ${spec.add_sql}` : ''}`}
         help="колонки ведомой читаются отсюда — правка видна на вкладке «Колонки»"
       >
-        <Input.TextArea
-          autoSize={{ minRows: 3, maxRows: 12 }}
-          style={{ fontFamily: 'monospace' }}
+        <SqlArea
+          minRows={3}
+          maxRows={12}
           value={spec.add_sql_text || ''}
           onChange={(e) => patch({ add_sql_text: e.target.value })}
           onBlur={(e) => reparseSql({ add_sql_text: e.target.value })}

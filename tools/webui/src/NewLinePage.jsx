@@ -19,6 +19,7 @@ import {
 import { api } from './api'
 import { useAction } from './useAction'
 import ActionError from './ActionError'
+import SqlArea from './SqlArea'
 import ComboBox from './ComboBox'
 import FilesPreview from './FilesPreview'
 import TableNamePair from './TableNamePair'
@@ -180,9 +181,9 @@ export default function NewLinePage({ onCreated, onCancel }) {
               label="SELECT ведущей"
               help="имена колонок берутся из ПСЕВДОНИМОВ запроса — так же, как их видит рантайм"
             >
-              <Input.TextArea
-                autoSize={{ minRows: 6, maxRows: 20 }}
-                style={{ fontFamily: 'monospace' }}
+              <SqlArea
+                minRows={6}
+                maxRows={20}
                 value={form.select_sql_text}
                 onChange={(e) => patch({ select_sql_text: e.target.value })}
               />
