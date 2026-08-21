@@ -9,6 +9,8 @@ import LineForm from './LineForm'
 import GitBar from './GitBar'
 import TriggersPage from './TriggersPage'
 import VersionsPage from './VersionsPage'
+import HelpPage from './HelpPage'
+import paw from './assets/image4.png'
 import NewLinePage from './NewLinePage'
 import SpPage from './SpPage'
 
@@ -30,6 +32,10 @@ export default function App() {
   // диска свежую, а python остался прежним, и первый же новый маршрут отвечает
   // 404. Спрашиваем сам сервис — он один знает, с каким деревом стартовал, — и
   // говорим об этом ДО того, как человек наткнётся на непонятную ошибку.
+  // Лапа на вкладке «Помощь» — только по наведению. Вкладок пять, и постоянная
+  // картинка среди текстовых заголовков тянула бы взгляд на себя каждый раз;
+  // по наведению она видна ровно тогда, когда на вкладку и так смотрят.
+  const [pawShown, setPawShown] = useState(false)
   const [stale, setStale] = useState(false)
   // Осиротевшие сборки в dist/assets — показание прибора, а не грязь: файл
   // сборки называется по хэшу и кладётся ровно один, значит лишние взялись
@@ -196,6 +202,30 @@ export default function App() {
               // Последней: сюда приходят, когда работа с линиями уже сделана —
               // выложить сделанное или вернуть то, что было.
               { key: 'versions', label: 'Версии и прод', children: <VersionsPage /> },
+              {
+                key: 'help',
+                label: (
+                  <span
+                    onMouseEnter={() => setPawShown(true)}
+                    onMouseLeave={() => setPawShown(false)}
+                    style={{
+                      display: 'inline-block',
+                      // Место под картинку занято ВСЕГДА, даже когда её не
+                      // видно: иначе заголовок дёргался бы под курсором и
+                      // соседние вкладки прыгали вслед за ним.
+                      paddingRight: 28,
+                      backgroundImage: pawShown ? `url(${paw})` : 'none',
+                      backgroundRepeat: 'no-repeat',
+                      backgroundPosition: 'right center',
+                      backgroundSize: '20px 20px',
+                      transition: 'opacity .15s',
+                    }}
+                  >
+                    Помощь
+                  </span>
+                ),
+                children: <HelpPage />,
+              },
             ]}
           />
         </Layout.Content>
