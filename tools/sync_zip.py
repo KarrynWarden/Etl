@@ -55,11 +55,29 @@ CodeArea.jsx и примеры конфигов под тремя именами
 Сливаются не коммиты, а снимки: сколько бы коммитов ни было между архивами и в
 каком бы порядке они ни шли, база — это всегда «прошлый архив».
 
-ПЕРВЫЙ ЗАПУСК (--base). Базы ещё нет, и у ветки-снимка нет общей истории с
-вашей — git такое сливать отказывается, и правильно делает. Поэтому первый
-архив ПРИШИВАЕТСЯ слиянием `-s ours`: оно записывает снимок в предки вашей
-ветки, НЕ МЕНЯЯ при этом ни одного файла. Ноль конфликтов, ноль правок — просто
-теперь есть от чего считать. Со второго архива слияния идут обычным порядком.
+ВЕТКА-СНИМОК В ИСТОРИЮ НЕ ПОПАДАЕТ. Слияния ВЕТОК здесь нет: база известна и
+без общей истории (это прошлый архив), поэтому трёхстороннее слияние делается
+явно — `read-tree -m база наше их` плюс `merge-index`, — а результат ложится
+ОБЫЧНЫМ коммитом с одним родителем.
+
+Первая версия поступала иначе: пришивала снимок к ветке слиянием `-s ours`,
+чтобы у следующего слияния появилась общая история. Дерево при этом не
+менялось, и выглядело безобидно — ровно до `local/dev-push.sh`, который
+синхронизируется с сервером ПЕРЕМЕЩЕНИЕМ (git rebase origin/test). Перемещение
+берёт все коммиты, каких нет на сервере, и там оказывается коммит-снимок:
+сирота с ПОЛНЫМ деревом GitHub. Наложить его поверх серверной ветки — это
+add/add по каждому файлу репозитория; на рабочей машине вышло шесть десятков
+конфликтов на ровном месте.
+
+ПЕРВЫЙ ЗАПУСК (--base) поэтому вообще ничего не делает с деревом и историей:
+просто заводит ветку-снимок, чтобы следующему архиву было с чем сравниваться.
+
+БАЗА ДВИГАЕТСЯ ТОЛЬКО ПОСЛЕ УСПЕХА. Отказ на грязном дереве, «нет» на вопрос,
+Ctrl-C, конфликт — не считаются переносом: иначе повтор той же команды не
+принёс бы уже ничего, и правки пропали бы молча между двумя архивами.
+Конфликт отмечается файлом .git/etl-sync-pending, и при следующем запуске по
+нему видно, чем кончился разбор: HEAD сдвинулся — конфликты закоммичены,
+архив засчитан; HEAD на месте — откатились, архив придёт снова.
 
 Мусор, накопленный прошлыми копированиями, первое слияние не тронет: этих
 файлов нет ни в одном снимке, значит для git они ваши. Отчёт назовёт их
@@ -421,7 +439,10 @@ def import_snapshot(tree, root, branch=SNAPSHOT_BRANCH, note=""):
         if parent:
             args += ["-p", parent]
         commit = _git(root, *args)[1]
-        _git(root, "update-ref", "refs/heads/{}".format(branch), commit)
+        # Ветку двигает НЕ импорт, а только успешное применение (см. remember).
+        # Иначе неудачный запуск — отказ на грязном дереве, конфликт, Ctrl-C —
+        # всё равно сдвигал бы базу, и повтор той же команды уже ничего бы не
+        # принёс: изменения молча пропадали бы между двумя архивами.
         return commit, parent
     finally:
         if os.path.exists(index):
@@ -521,42 +542,125 @@ def render(rep):
     return "\n".join(lines)
 
 
-def join(root, branch=SNAPSHOT_BRANCH):
-    """Пришить ветку-снимок к истории, НЕ МЕНЯЯ рабочего дерева.
+def remember(root, commit, branch=SNAPSHOT_BRANCH):
+    """Запомнить архив как применённый: подвинуть ветку-снимок."""
+    _git(root, "update-ref", "refs/heads/{}".format(branch), commit)
 
-    Первый снимок — коммит без родителей, общей истории с вашей веткой у него
-    нет, и обычное слияние git отклоняет («refusing to merge unrelated
-    histories»). Стратегия `ours` записывает снимок в предки, а дерево берёт
-    ваше целиком: ни один файл не меняется. Смысл ровно один — чтобы у
-    СЛЕДУЮЩЕГО слияния появилась база, от которой считать.
 
-    Пришивать надо именно так, а не делать первый снимок потомком вашего HEAD:
-    тогда базой стало бы ВАШЕ дерево, и первое же слияние снесло бы всё, чего
-    нет в моём архиве, — то есть ваши структуры и запросы.
+def _pending_path(root):
+    git_dir = _git(root, "rev-parse", "--git-dir")[1]
+    if not os.path.isabs(git_dir):
+        git_dir = os.path.join(root, git_dir)
+    return os.path.join(git_dir, "etl-sync-pending")
+
+
+def pending_write(root, commit):
+    """Отметить перенос незавершённым: остались конфликты.
+
+    Храним И снимок, И то, на каком коммите стояла ветка. По второму потом
+    видно, чем кончился разбор: HEAD сдвинулся — конфликты разрешены и
+    закоммичены, значит архив применён; HEAD на месте — человек откатился
+    (git reset), значит не применён. Без этого пришлось бы либо двигать базу
+    вслепую (и терять правки, если откатились), либо не двигать никогда (и
+    получать те же конфликты на каждом следующем архиве).
     """
-    rc, out, err = _git(root, "merge", "-s", "ours", "--allow-unrelated-histories",
-                        "--no-ff", branch,
-                        "-m", "база для переносов с GitHub ({})".format(branch),
+    with open(_pending_path(root), "w", encoding="utf-8") as fp:
+        fp.write("{} {}\n".format(commit, _git(root, "rev-parse", "HEAD")[1]))
+
+
+def pending_resolve(root, branch=SNAPSHOT_BRANCH):
+    """Разобраться с прошлым незавершённым переносом. -> текст для человека."""
+    path = _pending_path(root)
+    if not os.path.exists(path):
+        return ""
+    try:
+        with open(path, encoding="utf-8") as fp:
+            commit, head = fp.read().split()
+    except (OSError, ValueError):
+        os.remove(path)
+        return ""
+    if _git(root, "diff", "--name-only", "--diff-filter=U")[1]:
+        return ("Прошлый перенос ещё не разобран — в дереве остались конфликты.\n"
+                "Закончите с ними (git add / git commit) или откатитесь\n"
+                "(git reset --hard HEAD), потом повторите.")
+    now = _git(root, "rev-parse", "HEAD")[1]
+    os.remove(path)
+    if now != head:
+        remember(root, commit, branch)
+        return ("Прошлый перенос был с конфликтами и вы их закоммитили — "
+                "засчитываю\nтот архив применённым.")
+    return ("Прошлый перенос был с конфликтами и откачен — считаю, что он не "
+            "применялся.\nЕсли те правки нужны, они придут этим архивом снова.")
+
+
+def stale_join(root, branch=SNAPSHOT_BRANCH):
+    """Остался ли в истории рабочей ветки коммит-снимок от прежней схемы.
+
+    Первая версия «пришивала» снимок к ветке слиянием `-s ours`, чтобы у
+    следующего слияния появилась база. Дерево при этом не менялось, и выглядело
+    безобидно — ровно до `dev-push.sh`, который синхронизируется с сервером
+    ПЕРЕМЕЩЕНИЕМ (git rebase origin/test). Перемещение берёт все коммиты, каких
+    нет на сервере, — а там оказался коммит-снимок: сирота с ПОЛНЫМ деревом
+    GitHub. Наложить его поверх серверной ветки значит получить add/add по
+    каждому файлу репозитория, что и случилось: шесть десятков конфликтов на
+    ровном месте.
+
+    Теперь снимок в историю не попадает вовсе. Но у того, кто успел завести
+    базу по-старому, он там уже есть — об этом надо сказать и показать, как
+    убрать.
+    """
+    tip = _git(root, "rev-parse", "-q", "--verify", branch, check=False)[1]
+    if not tip:
+        return None
+    if _git(root, "merge-base", "--is-ancestor", tip, "HEAD", check=False)[0] != 0:
+        return None
+    # ищем сам merge-коммит: он и мешает перемещению
+    bad = _git(root, "rev-list", "--min-parents=2", "--max-count=1",
+               "--ancestry-path", tip + "..HEAD", check=False)[1]
+    return bad.splitlines()[0] if bad else tip
+
+
+def merge(root, base, theirs):
+    """Применить снимок к рабочей ветке — ОБЫЧНЫМ коммитом, без слияния веток.
+
+    Трёхстороннее слияние делается руками, потому что база известна и без общей
+    истории: это предыдущий принесённый архив. `read-tree -m base ours theirs`
+    раскладывает результат по индексу, `merge-index` дописывает то, что не
+    свелось само, — дальше обычный коммит с одним родителем.
+
+    Почему не `git merge` ветки-снимка: тогда снимок становится предком рабочей
+    ветки, а `dev-push.sh` синхронизируется с сервером ПЕРЕМЕЩЕНИЕМ. Перемещение
+    честно попыталось бы наложить коммит-снимок (сироту с полным деревом) на
+    серверную ветку — и выдало add/add по каждому файлу репозитория. Ветка
+    `github-snapshot` остаётся ЧИСТО ЛОКАЛЬНОЙ памятью о прошлом архиве и в
+    истории `test` не появляется никогда.
+    """
+    dirty = _git(root, "status", "--porcelain")[1]
+    if dirty:
+        raise Otkaz(
+            "В рабочей копии есть несохранённые правки — сначала закоммитьте\n"
+            "или отмените их: перенос раскладывает файлы прямо в дерево, и\n"
+            "мешать это с недоделанным нельзя.\n" + dirty)
+
+    rc, out, err = _git(root, "read-tree", "-m", "-u", base, "HEAD", theirs,
                         check=False)
-    return rc == 0, (out + "\n" + err).strip()
+    if rc != 0:
+        raise Otkaz("Не смог разложить слияние:\n" + (err or out).strip())
+    _git(root, "merge-index", "-o", "git-merge-one-file", "-a", check=False)
 
-
-def merge(root, branch=SNAPSHOT_BRANCH):
-    """Слить ветку-снимок в текущую. Возвращает (ok, лог)."""
-    rc, out, err = _git(root, "merge", "--no-ff", branch,
-                        "-m", "перенос с GitHub ({})".format(branch), check=False)
-    log = (out + "\n" + err).strip()
-    if rc == 0:
-        return True, log
     conflicts = _names(root, "diff", "--name-only", "--diff-filter=U")
     if conflicts:
-        log += ("\n\nКонфликты (поменялось и у меня, и у вас):\n"
-                + "\n".join("    " + c for c in conflicts)
-                + "\n\nРазберите их в редакторе, затем:\n"
-                  "    git add <файл> ...\n"
-                  "    git commit\n"
-                  "Передумали — откат: git merge --abort")
-    return False, log
+        return False, ("Конфликты (поменялось и у меня, и у вас):\n"
+                       + "\n".join("    " + c for c in conflicts)
+                       + "\n\nРазберите их в редакторе, затем:\n"
+                         "    git add <файл> ...\n"
+                         "    git commit -m 'перенос с GitHub'\n"
+                         "Передумали — откат: git reset --hard HEAD")
+
+    rc, out, err = _git(root, "commit", "-m", "перенос с GitHub", check=False)
+    if rc != 0 and "nothing to commit" not in (out + err).lower():
+        return False, (out + "\n" + err).strip()
+    return True, (out or "перенос применён").strip()
 
 
 def main(argv):
@@ -587,33 +691,56 @@ def main(argv):
 
     tmp = tempfile.mkdtemp(prefix="etl-sync-")
     try:
+        note = pending_resolve(root, args.branch)
+        if note:
+            print(note)
+            print()
+            if "ещё не разобран" in note:
+                return 1
+
         tree = extract(archive, tmp)
         commit, parent = import_snapshot(tree, root, args.branch,
                                          note=os.path.basename(archive))
         rep = report(root, commit, parent, args.branch)
         print(render(rep))
+
+        # Наследие первой схемы: снимок, «пришитый» к ветке слиянием. Пока он в
+        # истории, dev-push.sh (он синхронизируется ПЕРЕМЕЩЕНИЕМ) будет ронять
+        # add/add по всему репозиторию. Молчать об этом нельзя.
+        bad = stale_join(root, args.branch)
+        if bad:
+            print()
+            print("!! В истории ветки остался коммит от прежней схемы: {}".format(bad[:9]))
+            print("   Из-за него `dev-push.sh` даёт конфликты по всему репозиторию:")
+            print("   он перемещает ветку на серверную, а этот коммит содержит")
+            print("   дерево GitHub целиком. Убрать (свои коммиты сохранятся):")
+            print("       git rebase --onto origin/test {} HEAD".format(bad[:9]))
+            print("   Проверить, что снимка в истории больше нет:")
+            print("       git log --oneline --graph -5")
+            return 1
+
         if args.dry_run:
-            print("\nВетка-снимок {} обновлена. Слияние не делалось.".format(args.branch))
+            print("\nНичего не применялось и не запомнено — только отчёт.")
             return 0
         if rep["first"] or args.base:
-            if rep["dirty"]:
-                print("\n!! Сначала закоммитьте или отмените несохранённые правки:"
-                      "\n   пришивание базы — это коммит, а с грязным деревом git его не сделает.")
-                return 1
-            ok, log = join(root, args.branch)
-            print()
-            print(log)
-            print("\nБаза заведена: дерево не изменилось ни на один файл, но у")
-            print("следующего архива появилось, с чем сравниваться.")
-            return 0 if ok else 2
+            remember(root, commit, args.branch)
+            print("\nБаза заведена: ветка-снимок {} создана, дерево не тронуто.".format(
+                args.branch))
+            print("В историю она НЕ попадает — это локальная память о прошлом архиве.")
+            return 0
         if not args.yes:
             print()
-            if input("Сливать? (y/N) ").strip().lower() not in ("y", "д"):
-                print("Отменено. Ветка-снимок обновлена, слить можно потом:")
-                print("    git merge --no-ff {}".format(args.branch))
+            if input("Применять? (y/N) ").strip().lower() not in ("y", "д"):
+                # База НЕ двигается: повтор той же команды принесёт ровно то же.
+                print("Отменено, ничего не тронуто. Повторите ту же команду,")
+                print("когда будете готовы, — принесёт то же самое.")
                 return 1
-        ok, log = merge(root, args.branch)
+        ok, log = merge(root, parent, commit)
         print(log)
+        if ok:
+            remember(root, commit, args.branch)
+        else:
+            pending_write(root, commit)
         return 0 if ok else 2
     except (Otkaz, ValueError) as err:
         print(err)
@@ -662,18 +789,20 @@ def _selftest():
         _mkzip(zip1, {k: v for k, v in start.items()
                       if k != "etlFolder/queries/customQueries/MOJ.sql"})
         before = _git(repo, "rev-parse", "HEAD^{tree}")[1]
+        head_before = _git(repo, "rev-parse", "HEAD")[1]
         assert main([zip1, "--root", repo, "--base"]) == 0
         base = _git(repo, "rev-parse", SNAPSHOT_BRANCH)[1]
         assert base
-        # Пришивание базы обязано не менять НИ ОДНОГО файла: иначе первый же
-        # перенос переписал бы рабочую копию тем, что я о ней думаю.
-        assert _git(repo, "rev-parse", "HEAD^{tree}")[1] == before, \
-            "пришивание базы изменило дерево"
+        # Заведение базы не меняет НИ ОДНОГО файла и НЕ ДОБАВЛЯЕТ КОММИТОВ.
+        assert _git(repo, "rev-parse", "HEAD^{tree}")[1] == before, "дерево изменилось"
+        assert _git(repo, "rev-parse", "HEAD")[1] == head_before, "появился коммит"
         assert _git(repo, "status", "--porcelain")[1] == "", "остались правки"
-        # …и при этом снимок стал предком: иначе следующее слияние снова
-        # упрётся в «unrelated histories»
+        # Снимок НЕ должен быть предком рабочей ветки. Иначе `git rebase` на
+        # серверную ветку (так работает dev-push.sh) потащит коммит-сироту с
+        # полным деревом GitHub и выдаст add/add по каждому файлу репозитория —
+        # ровно это и случилось на рабочей машине, шесть десятков конфликтов.
         assert _git(repo, "merge-base", "--is-ancestor", base, "HEAD",
-                    check=False)[0] == 0, "снимок не попал в предки"
+                    check=False)[0] != 0, "снимок попал в историю рабочей ветки"
 
         # ── архив №2: файл удалён, код изменён, добавлен новый ───────────────
         second = {
@@ -700,6 +829,20 @@ def _selftest():
         assert exists("etlFolder/queries/customQueries/MOJ.sql"), \
             "слияние снесло пользовательский файл — ровно то, чего нельзя"
 
+        # ── НЕУДАЧНЫЙ ЗАПУСК НЕ ДВИГАЕТ БАЗУ ────────────────────────────────
+        # Отказ (грязное дерево, «нет» на вопрос, конфликт) не должен считаться
+        # переносом: иначе повтор той же команды не принесёт уже ничего, и
+        # правки пропадут молча между двумя архивами.
+        zip_lost = os.path.join(tmp, "lost.zip")
+        _mkzip(zip_lost, dict(second, **{"tools/dag_builder.py": "# v3\n"}))
+        with open(os.path.join(repo, "мусор.tmp"), "w", encoding="utf-8") as fp:
+            fp.write("грязь\n")
+        assert main([zip_lost, "--root", repo, "--yes"]) == 1, "грязное дерево пропущено"
+        os.unlink(os.path.join(repo, "мусор.tmp"))
+        assert main([zip_lost, "--root", repo, "--yes"]) == 0, "повтор не сработал"
+        with open(os.path.join(repo, "tools/dag_builder.py"), encoding="utf-8") as fp:
+            assert fp.read() == "# v3\n", "правка потерялась после отказа"
+
         # ── архив №3 против ВСТРЕЧНОЙ правки: обязан быть конфликт ───────────
         with open(os.path.join(repo, "etlFolder/config.d/LINE.json"), "w",
                   encoding="utf-8") as fp:
@@ -711,7 +854,17 @@ def _selftest():
         assert rc == 2, "ожидался конфликт, получено {}".format(rc)
         conflicts = _names(repo, "diff", "--name-only", "--diff-filter=U")
         assert conflicts == ["etlFolder/config.d/LINE.json"], conflicts
-        _git(repo, "merge", "--abort")
+        # конфликт помечает перенос незавершённым и базу не двигает
+        assert os.path.exists(_pending_path(repo)), "конфликт не отмечен"
+        before_snap = _git(repo, "rev-parse", SNAPSHOT_BRANCH)[1]
+        # Откат теперь именно reset: слияния ВЕТОК нет, значит нет и MERGE_HEAD,
+        # который умел бы отменить `git merge --abort`.
+        _git(repo, "reset", "--hard", "HEAD")
+
+        # откатились от конфликта — база осталась прежней, архив придёт снова
+        assert main([zip3, "--root", repo, "--dry-run"]) == 0
+        assert _git(repo, "rev-parse", SNAPSHOT_BRANCH)[1] == before_snap, \
+            "откат от конфликта сдвинул базу"
 
         # ── отчёт называет ваши области отдельно ─────────────────────────────
         with tempfile.TemporaryDirectory() as t2:
