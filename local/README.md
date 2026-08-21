@@ -189,9 +189,20 @@ python3 tools/sync_zip.py /media/flash/Etl-main.zip --dry-run
 `python3` честнее.
 
 **Про путь к архиву.** `/dev/sdc1` — это устройство, а не каталог; файла по
-такому пути не бывает. Нужна точка монтирования (`lsblk -o NAME,LABEL,MOUNTPOINT`,
-обычно `/media/<юзер>/<метка>`). Ошиблись — скрипт сам поищет `*.zip` на
-подключённых носителях и назовёт найденное.
+такому пути не бывает. Нужна точка монтирования — её показывает
+`lsblk -o NAME,LABEL,MOUNTPOINT`. На Astra это обычно не `/media`, а
+
+    /run/user/<uid>/media/by-id-usb-<модель>_<серийник>
+
+Чтобы не набирать это руками:
+
+```bash
+FLASH=$(lsblk -no MOUNTPOINT | grep -m1 media)
+python3 tools/sync_zip.py "$FLASH/Etl-main.zip" --base
+```
+
+Ошиблись путём — скрипт сам поищет `*.zip` на подключённых носителях
+(`/media`, `/run/media`, `/mnt` и `/run/user/*/media`) и назовёт найденное.
 
 Нужен `git` в PATH (на Windows — Git for Windows) и python 3.7+. Если запустить
 не из той папки или ошибиться в имени архива, скрипт скажет об этом текстом и

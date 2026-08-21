@@ -233,9 +233,20 @@ def find_archives(name=None, limit=10):
     каталога» мало: человеку нужна точка монтирования, а она у каждой системы
     своя (/media/<юзер>/<метка>, /run/media/…, /mnt/…).
     """
-    bases = ["/media", "/run/media", "/mnt", "/media/" + (os.environ.get("USER") or "")]
     if os.name == "nt":
         bases = ["{}:\\".format(chr(c)) for c in range(ord("A"), ord("Z") + 1)]
+    else:
+        bases = ["/media", "/run/media", "/mnt"]
+        user = os.environ.get("USER") or ""
+        if user:
+            bases += ["/media/" + user, "/run/media/" + user]
+        # На Astra флешку монтируют в /run/user/<uid>/media/<by-id-usb-…>:
+        # ни /media, ни /run/media туда не ведут, и поиск проходил мимо.
+        try:
+            for entry in os.listdir("/run/user"):
+                bases.append(os.path.join("/run/user", entry, "media"))
+        except OSError:
+            pass
     found, seen = [], set()
     # ДВА уровня вглубь, а не один: на Linux флешка монтируется в
     # /media/<юзер>/<метка> — один уровень доводит только до /media/<юзер>, и
