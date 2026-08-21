@@ -30,7 +30,7 @@ import FilesPreview from './FilesPreview'
 import TableNamePair from './TableNamePair'
 import { isPlainName, toDbCase } from './dbCase'
 import SpMappingEditor from './SpMappingEditor'
-import SqlArea from './SqlArea'
+import CodeArea from './CodeArea'
 import SqlLock from './SqlLock'
 
 // Справочники и разовый перенос.
@@ -743,7 +743,7 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
             : 'какие колонки он отдаёт, видно на вкладке «Колонки»; что из них переносится, решают там же'
         }
       >
-        <SqlArea
+        <CodeArea
           minRows={5}
           maxRows={20}
           readOnly={selectLocked}
@@ -756,7 +756,7 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
         label={`Add.sql${spec.add_sql ? ` — ${spec.add_sql}` : ''}`}
         help="колонки ведомой читаются отсюда — правка видна на вкладке «Колонки»"
       >
-        <SqlArea
+        <CodeArea
           minRows={3}
           maxRows={12}
           value={spec.add_sql_text || ''}

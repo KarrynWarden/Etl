@@ -23,7 +23,7 @@ import { UndoOutlined } from '@ant-design/icons'
 import { api } from './api'
 import { useAction } from './useAction'
 import ActionError from './ActionError'
-import SqlArea from './SqlArea'
+import CodeArea from './CodeArea'
 import ComboBox from './ComboBox'
 import FilesPreview from './FilesPreview'
 import MappingEditor from './MappingEditor'
@@ -396,7 +396,7 @@ export default function LineForm({ lineKey, onChanged }) {
         label={`SELECT ведущей${spec.select_sql ? ` — ${spec.select_sql}` : ' (нет, читается таблица целиком)'}`}
         help="если задан, имена в конфиге — это ПСЕВДОНИМЫ запроса, а не колонки ведущей"
       >
-        <SqlArea
+        <CodeArea
           minRows={6}
           maxRows={24}
           value={spec.select_sql_text || ''}
@@ -413,7 +413,7 @@ export default function LineForm({ lineKey, onChanged }) {
           label={`SQL периодов${spec.periods_sql ? ` — ${spec.periods_sql}` : ''}`}
           help="обязателен для query_section: отсюда берётся список групп для перезаливки"
         >
-          <SqlArea
+          <CodeArea
             minRows={4}
             maxRows={16}
             value={spec.periods_sql_text || ''}

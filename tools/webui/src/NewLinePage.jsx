@@ -19,7 +19,7 @@ import {
 import { api } from './api'
 import { useAction } from './useAction'
 import ActionError from './ActionError'
-import SqlArea from './SqlArea'
+import CodeArea from './CodeArea'
 import ComboBox from './ComboBox'
 import FilesPreview from './FilesPreview'
 import TableNamePair from './TableNamePair'
@@ -181,7 +181,7 @@ export default function NewLinePage({ onCreated, onCancel }) {
               label="SELECT ведущей"
               help="имена колонок берутся из ПСЕВДОНИМОВ запроса — так же, как их видит рантайм"
             >
-              <SqlArea
+              <CodeArea
                 minRows={6}
                 maxRows={20}
                 value={form.select_sql_text}
