@@ -25,7 +25,15 @@ set -euo pipefail
 ### ─────────── КОНФИГ (сверить перед первым запуском) ───────────
 ROOT=/opt/airflow-prod
 GROUP=etlprod                          # отдельная от etldev: прод пушит не каждый
-MEMBERS=(devel airflow)                # кто пушит в прод + сам airflow (читает код)
+# Кто пушит в прод + сам airflow (читает код). jupyter — это сервис
+# конструктора (deploy/dagbuilder): без членства в группе его кнопка «Выложить
+# на прод» работать не может, push идёт правами файловой системы по локальному
+# пути. ВНИМАНИЕ, чем за это платим: группа даёт и чтение $SRC/.env (0640,
+# группа $GROUP), то есть реквизиты БОЕВЫХ БД становятся видны пользователю
+# jupyter. Не устраивает — уберите jupyter отсюда и дайте доступ точечно, ACL
+# только на bare-репозиторий:
+#     setfacl -R -m u:jupyter:rwX -m d:u:jupyter:rwX /opt/airflow-prod/etl.git
+MEMBERS=(devel airflow jupyter)
 VENV=/opt/airflow/venv                 # тот же venv, что у теста
 RUNAS=airflow                          # под кем крутится прод
 DEPLOY_BRANCH=prod                     # какая ветка разворачивается в prod-src

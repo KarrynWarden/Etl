@@ -230,8 +230,22 @@ def prod_status(root=ROOT, probe=True):
     out["branch"] = B.current_branch(root)
     rc, url, _err = _git(root, "remote", "get-url", "prod")
     if rc != 0:
-        out["detail"] = ("В клоне нет remote 'prod'. Добавить:\n"
-                         "  git remote add prod ssh://devel@airflow/opt/airflow-prod/etl.git")
+        # ЛОКАЛЬНЫЙ ПУТЬ, а не ssh://devel@airflow. Прод-репозиторий лежит на
+        # этой же машине, и ssh-адрес из deploy/README-prod.md написан для
+        # выкладки с dev-ПК — оттуда иначе никак. Здесь он означал бы, что
+        # пользователю сервиса нужен ключ, ходящий под devel, то есть полные
+        # права devel ради одной операции. По локальному пути push работает
+        # правами файловой системы: bare-репо групповой (core.sharedRepository
+        # group, группа etlprod, 2775 setgid), и хватает членства в группе.
+        out["detail"] = (
+            "В клоне нет remote 'prod'. Прод-репозиторий на этой же машине, "
+            "поэтому адрес — локальный путь, без ssh:\n"
+            "  sudo -u jupyter git -C " + root + " remote add prod /opt/airflow-prod/etl.git\n"
+            "\n"
+            "И пользователь сервиса должен быть в группе etlprod (после этого "
+            "ОБЯЗАТЕЛЕН рестарт: список групп процесс читает при старте):\n"
+            "  sudo usermod -aG etlprod jupyter\n"
+            "  sudo systemctl restart etl-dagbuilder-api")
         return out
     out["remote"] = url.strip()
     if not probe:
@@ -357,7 +371,13 @@ def _selftest():
         st = prod_status(probe=False)
         assert st["script"] is True, st
         if st["remote"] is None:
-            assert "git remote add prod" in st["detail"], st
+            # Подсказка обязана называть ЛОКАЛЬНЫЙ путь, а не ssh://devel@…:
+            # ssh-адрес из deploy/README-prod.md написан для выкладки с dev-ПК,
+            # а здесь он означал бы ключ, ходящий под devel, — полные права
+            # ради одной операции.
+            assert "remote add prod /opt/airflow-prod/etl.git" in st["detail"], st
+            assert "ssh://" not in st["detail"], st
+            assert "usermod -aG etlprod" in st["detail"], st
 
     print("git_ops selftest OK")
 
