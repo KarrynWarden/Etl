@@ -80,7 +80,7 @@ class Otkaz(Exception):
     """Ошибка, которую пользователю показывают текстом, а не трассировкой."""
 
 
-def find_repo(hint=None):
+def find_repo(hint=None, archive=None):
     """Где рабочая копия.
 
     Ищем от ТЕКУЩЕГО каталога, а не от места скрипта: скрипт легко оказывается
@@ -105,19 +105,96 @@ def find_repo(hint=None):
             # запасной путь: рядом со скриптом, если он лежит в tools/
             here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             top = here if os.path.isdir(os.path.join(here, ".git")) else ""
-    if not top or not os.path.isdir(os.path.join(top, ".git")):
-        raise Otkaz(
-            "Не нашёл рабочую копию репозитория.\n"
-            "Запускать надо ИЗ ПАПКИ проекта, например:\n"
-            "    cd C:\\путь\\к\\Etl\n"
-            "    python tools\\sync_zip.py D:\\Etl-main.zip --base\n"
-            "Либо указать её явно: --root C:\\путь\\к\\Etl")
+    if not top or not os.path.exists(os.path.join(top, ".git")):
+        near = guess_repos()
+        text = ["Не нашёл рабочую копию репозитория.", ""]
+        if near:
+            text.append("Похоже, она вот здесь — запустите оттуда:")
+            # В подсказке — ТОТ путь к архиву, который человек и набрал:
+            # подставлять свой пример значит заставлять его читать команду
+            # заново и мысленно её переписывать.
+            for path in near:
+                text.append("    cd {}".format(path))
+                text.append("    python tools{}sync_zip.py {} --base".format(
+                    os.sep, archive or "<архив.zip>"))
+            text.append("")
+            text.append("Либо указать явно: --root <путь>")
+        else:
+            text += [
+                "И рядом её тоже нет. Два частых случая:",
+                "",
+                "1. Распакованный архив — это НЕ рабочая копия. Папка вида",
+                "   Etl-main рядом с zip'ом содержит файлы, но не содержит",
+                "   истории (.git), сливать в ней нечего. Распаковывать архив",
+                "   вообще не нужно: скрипт делает это сам.",
+                "",
+                "2. Скрипт запускают не на том ПК. Работать он должен ТАМ, где",
+                "   лежит клон, который вы пушите в gitea (dev-push.sh), —",
+                "   архив достаточно принести туда на флешке.",
+                "",
+                "Если копия есть, но лежит в неожиданном месте, укажите её:",
+                "    --root <путь к папке с .git>",
+            ]
+        raise Otkaz("\n".join(text))
     missing = [m for m in MARKERS if not os.path.exists(os.path.join(top, m))]
     if missing:
         raise Otkaz(
             "Каталог {} — репозиторий, но не наш: не нашёл {}.".format(
                 top, ", ".join(missing)))
     return top
+
+
+def is_repo(path):
+    """Рабочая копия НАШЕГО проекта: git-каталог плюс опознавательные файлы.
+
+    `.git` бывает и файлом (это worktree), поэтому exists, а не isdir.
+    """
+    if not path or not os.path.exists(os.path.join(path, ".git")):
+        return False
+    return all(os.path.exists(os.path.join(path, m)) for m in MARKERS)
+
+
+def guess_repos(limit=8):
+    """Поискать рабочую копию рядом — чтобы вместо «не нашёл» назвать, где она.
+
+    Смотрим текущий каталог с родителями, домашнюю папку и корни дисков, на
+    один уровень вглубь. Дальше не лезем: это подсказка, а не индексатор диска.
+    """
+    bases, found, seen = [], [], set()
+    cwd = os.path.abspath(os.getcwd())
+    node = cwd
+    while True:                                   # сам каталог и все родители
+        bases.append(node)
+        parent = os.path.dirname(node)
+        if parent == node:
+            break
+        node = parent
+    bases.append(os.path.expanduser("~"))
+    if os.name == "nt":
+        bases += ["{}:\\".format(chr(c)) for c in range(ord("A"), ord("Z") + 1)
+                  if os.path.isdir("{}:\\".format(chr(c)))]
+
+    for base in list(bases):                      # и на один уровень вглубь
+        try:
+            for name in sorted(os.listdir(base)):
+                if not name.startswith("."):
+                    bases.append(os.path.join(base, name))
+        except OSError:
+            continue
+
+    for path in bases:
+        real = os.path.abspath(path)
+        if real in seen:
+            continue
+        seen.add(real)
+        try:
+            if is_repo(real):
+                found.append(real)
+        except OSError:
+            continue
+        if len(found) >= limit:
+            break
+    return found
 
 
 def check_archive(path):
@@ -371,7 +448,7 @@ def main(argv):
         ap.error("не задан архив")
 
     try:
-        root = find_repo(args.root)
+        root = find_repo(args.root, args.archive)
         archive = check_archive(args.archive)
     except Otkaz as err:
         print(err)
