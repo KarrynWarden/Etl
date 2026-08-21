@@ -1,5 +1,7 @@
-import { useState } from 'react'
-import { Col, ConfigProvider, Layout, Row, Space, Tabs, Tag, Typography } from 'antd'
+import { useEffect, useState } from 'react'
+import { Alert, Col, ConfigProvider, Layout, Row, Space, Tabs, Tag, Typography } from 'antd'
+
+import { api } from './api'
 import ruRU from 'antd/locale/ru_RU'
 
 import LinesPanel from './LinesPanel'
@@ -23,6 +25,16 @@ export default function App() {
   const [tab, setTab] = useState('lines')
   const bump = () => setReloadToken((n) => n + 1)
 
+  // Расхождение «страница новее сервиса» — единственная поломка, которая
+  // выглядит как чужая вина: клон обновился хуком, страницу браузер взял с
+  // диска свежую, а python остался прежним, и первый же новый маршрут отвечает
+  // 404. Спрашиваем сам сервис — он один знает, с каким деревом стартовал, — и
+  // говорим об этом ДО того, как человек наткнётся на непонятную ошибку.
+  const [stale, setStale] = useState(false)
+  useEffect(() => {
+    api.health().then((h) => setStale(Boolean(h?.stale))).catch(() => {})
+  }, [reloadToken])
+
   return (
     <ConfigProvider locale={ruRU}>
       <Layout style={{ minHeight: '100vh' }}>
@@ -36,6 +48,22 @@ export default function App() {
         </Layout.Header>
 
         <Layout.Content style={{ padding: 16 }}>
+          {stale && (
+            <Alert
+              type="warning"
+              showIcon
+              style={{ marginBottom: 8 }}
+              message="Сервис конструктора старше этой страницы"
+              description={
+                <>
+                  Рабочая копия обновилась под работающим сервисом: страница уже
+                  новая, а маршруты у python остались прежние. Часть кнопок
+                  ответит «нет маршрута», пока его не перезапустят.
+                  <pre style={{ margin: '8px 0 0' }}>sudo systemctl restart etl-dagbuilder-api</pre>
+                </>
+              }
+            />
+          )}
           <GitBar reloadToken={reloadToken} />
 
           <Tabs

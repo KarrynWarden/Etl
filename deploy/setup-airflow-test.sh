@@ -222,6 +222,23 @@ while read oldrev newrev ref; do
         else
             echo "Jupyter-клон: $JUPYTER_CLONE/.git не найден или недоступен под \$(id -un) — пропуск"
         fi
+
+        # ТОТ ЖЕ РЕСТАРТ НУЖЕН КОНСТРУКТОРУ, и по той же причине.
+        # Его страницу браузер берёт с диска Jupyter-клона (обновлён строкой
+        # выше), то есть сразу новую, а python остаётся тем, что запустился:
+        # маршрутов, появившихся в новом коде, в нём нет. Снаружи это выглядит
+        # как «интерфейс зовёт несуществующий маршрут» — и виноватым назначается
+        # интерфейс, хотя он-то как раз свежий. Ровно расщеплённое состояние из
+        # абзаца про планировщик, только на один сервис позже.
+        # ПОСЛЕ обновления клона, а не до: иначе перезапустили бы старый код.
+        # Юнита может не быть (конструктор ставится отдельно, deploy/dagbuilder)
+        # — тогда молча пропускаем.
+        if systemctl list-unit-files etl-dagbuilder-api.service >/dev/null 2>&1 \
+           && systemctl is-enabled --quiet etl-dagbuilder-api 2>/dev/null; then
+            sudo systemctl restart etl-dagbuilder-api \
+                && echo "конструктор перезапущен" \
+                || echo "конструктор перезапустить не вышло (нет прав в sudoers?) — перезапустите руками"
+        fi
         echo "deploy: ветка $DEPLOY_BRANCH -> $SRC, airflow-test перезапущен"
         # ==================================
     else
@@ -321,13 +338,14 @@ RestartSec=5
 WantedBy=multi-user.target
 UNIT
 
-echo "== 9. sudoers: hook может рестартить airflow-test без пароля =="
+echo "== 9. sudoers: hook может рестартить airflow-test и конструктор без пароля =="
 # Строки под check_dags.sh больше нет — см. пояснение в setup-airflow-prod.sh.
 SUDO=/etc/sudoers.d/airflow-test
 SCTL=$(command -v systemctl)
 
 cat > "$SUDO.tmp" <<SUDOERS
 %$GROUP ALL=(root) NOPASSWD: $SCTL restart airflow-test-scheduler airflow-test-webserver
+%$GROUP ALL=(root) NOPASSWD: $SCTL restart etl-dagbuilder-api
 SUDOERS
 
 if visudo -cf "$SUDO.tmp"; then

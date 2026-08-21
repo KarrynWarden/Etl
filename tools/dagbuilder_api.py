@@ -57,6 +57,28 @@ logger = logging.getLogger("dagbuilder_api")
 WEBUI_DIST = os.path.join(ROOT, "tools", "webui", "dist")
 
 
+def _dist_stamp():
+    """Отпечаток собранного фронтенда, лежащего на диске СЕЙЧАС."""
+    try:
+        return str(os.path.getmtime(os.path.join(WEBUI_DIST, "index.html")))
+    except OSError:
+        return ""
+
+
+# Отпечаток на момент ЗАПУСКА процесса. Разошёлся с текущим — значит рабочую
+# копию обновили под работающим сервисом: страницу браузер получит новую (она
+# читается с диска на каждый запрос), а маршруты останутся те, с которыми
+# python стартовал. Снаружи это выглядит как «интерфейс зовёт несуществующий
+# маршрут», и виноватым назначается интерфейс — хотя он-то как раз свежий.
+#
+# Ровно та же ловушка, что у airflow-планировщика (см. комментарий про
+# безусловный рестарт в deploy/setup-airflow-test.sh): на диске новый код, в
+# памяти старый. Там её закрыли рестартом в хуке, здесь — сначала хотя бы
+# честной диагностикой.
+_STARTED_DIST = _dist_stamp()
+_STARTED_REV = (G._git(ROOT, "rev-parse", "--short", "HEAD")[1] or "").strip()
+
+
 # ──────────────────────────── разбор параметров ────────────────────────────
 
 class BadRequest(ValueError):
@@ -395,6 +417,25 @@ def r_git_push(params):
     return {"done": B.git_push_saved(message)}
 
 
+def r_health(params):
+    """Жив ли сервис и ТОТ ЛИ он, что раздал страницу.
+
+    Главное здесь — `stale`. Конструктор живёт в клоне, который обновляется
+    хуком после каждого push (deploy/setup-airflow-test.sh). Страницу браузер
+    получает с диска, то есть сразу новую, а python остаётся тем, что
+    запустился: маршруты, которых в нём нет, отвечают 404 «нет маршрута», и
+    выглядит это как сломанный интерфейс. Спрашивать об этом надо у сервиса —
+    он единственный знает, с каким деревом стартовал.
+    """
+    current = _dist_stamp()
+    return {
+        "rev": _STARTED_REV,
+        "branch": B.current_branch(),
+        "stale": bool(_STARTED_DIST and current and current != _STARTED_DIST),
+        "routes": {"get": sorted(GET_ROUTES), "post": sorted(POST_ROUTES)},
+    }
+
+
 def r_versions(params):
     """Версии: история ветки конструктора и выкладки прода (теги prod-*).
 
@@ -461,7 +502,17 @@ def r_prod_deploy(params):
     тому дереву, что уедет, он же ставит тег, он же повторяет push при сетевых
     сбоях. Второй реализации выкладки здесь нет намеренно — две прошлые
     разошлись и уронили прод (см. README, «Почему гейт именно в pre-receive»).
+
+    Просит слово-подтверждение (см. git_ops.PROD_PASSWORD). Проверка стоит
+    здесь, на сервере, а не в браузере: пароль, который проверяет форма,
+    обходится любым, кто умеет открыть вкладку «сеть», — а смысл его в том,
+    чтобы остановиться и перечитать, что уезжает, и работать он должен и
+    тогда, когда маршрут зовут мимо формы.
     """
+    try:
+        G.check_prod_password(params.get("password"))
+    except PermissionError as err:
+        raise BadRequest(str(err))
     return G.prod_deploy(from_ref=params.get("from_ref"),
                          lines=params.get("lines"))
 
@@ -698,6 +749,7 @@ GET_ROUTES = {
     "line": r_line,
     "tags": r_tags,
     "group-dags": r_group_dags,
+    "health": r_health,
     "git/status": r_git_status,
     "git/versions": r_versions,
     "defaults": r_defaults,
@@ -1068,6 +1120,21 @@ def _selftest():
     # remote 'prod' не настроен — на dev-ПК его нет ни у кого.
     code, body = dispatch("POST", "prod/status", {"probe": False})
     assert code == 200 and body["result"]["script"] is True, body
+
+    # Выкладка спрашивает слово, и проверяет его СЕРВЕР. Пароль, который
+    # проверяет только форма, обходится любым, кто откроет вкладку «сеть», —
+    # а смысл его в том, чтобы человек остановился и перечитал, что уезжает.
+    # Ни один из отказов ниже не должен доходить до deploy-prod.sh.
+    for params in ({}, {"password": ""}, {"password": "неверное"},
+                   {"from_ref": "prod-20200101-0000", "password": "неверное"}):
+        code, body = dispatch("POST", "prod/deploy", params)
+        assert code == 400 and "слово" in body["detail"].lower(), (params, body)
+
+    # Расхождение «страница новее сервиса» — сервис обязан уметь про него
+    # рассказать сам: снаружи оно выглядит как сломанный интерфейс.
+    code, body = dispatch("GET", "health", {})
+    assert code == 200 and body["result"]["stale"] is False, body
+    assert "prod/deploy" in body["result"]["routes"]["post"], body["result"]
 
     # 9) ФРОНТЕНД И API ГОВОРЯТ ОБ ОДНОМ И ТОМ ЖЕ.
     #

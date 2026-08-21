@@ -69,6 +69,7 @@ export const api = {
   line: (key) => call('GET', 'line', { key }),
   tags: () => call('GET', 'tags'),
   groupDags: () => call('GET', 'group-dags'),
+  health: () => call('GET', 'health'),
   gitStatus: () => call('GET', 'git/status'),
   defaults: (params) => call('GET', 'defaults', params),
   triggerTargets: () => call('GET', 'triggers/targets'),

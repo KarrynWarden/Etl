@@ -3,6 +3,8 @@ import {
   Alert,
   Button,
   Card,
+  Input,
+  Modal,
   Popconfirm,
   Space,
   Table,
@@ -43,6 +45,15 @@ const дата = (iso) => {
 export default function VersionsPage() {
   const [picked, setPicked] = useState(null)     // версия, выбранная в таблице
   const [plan, setPlan] = useState(null)         // разобранный план отката
+  // Выкладка спрашивает слово. Не защита — задержка: API слушает localhost,
+  // наружу его отдаёт Apache со своей авторизацией, так что от чужого слово не
+  // спасает и не для того заведено. Оно для своего: «выложить на прод» —
+  // единственная кнопка, чьё последствие нельзя посмотреть в предпросмотре и
+  // отменить соседней кнопкой, и набрать слово руками значит на секунду
+  // остановиться и перечитать, что уезжает. Проверяет сервер (git_ops), здесь
+  // только спрашиваем.
+  const [ask, setAsk] = useState(null)           // {from_ref, title} или null
+  const [word, setWord] = useState('')
 
   const versions = useAction(api.gitVersions)
   const prodStatus = useAction(api.prodStatus)
@@ -110,36 +121,23 @@ export default function VersionsPage() {
                 Иначе на её месте — команда для того, у кого права: прод-репо
                 лежит в группе etlprod, а конструктор работает под jupyter из
                 etldev, и «нажал — ничего не произошло» здесь худший исход. */}
-            <Popconfirm
-              title="Выложить тест на ПРОД?"
-              description={
-                <div style={{ maxWidth: 420 }}>
-                  Уедет всё состояние теста. Перед push пройдёт гейт
-                  (check-dags.sh) по тому самому дереву; выкладка получит тег
-                  prod-ГГГГММДД-ЧЧММ, откатить её можно будет выкладкой
-                  предыдущего тега.
-                </div>
-              }
-              okText="Выложить"
-              okButtonProps={{ danger: true }}
-              cancelText="Нет"
-              disabled={!canDeploy}
-              onConfirm={() => prodDeploy.run({}).then(() => prodStatus.run({ probe: true }))}
+            <Tooltip
+              title={canDeploy ? '' : 'Сначала «Проверить доступ» — без него неизвестно, дойдёт ли push'}
             >
-              <Tooltip
-                title={canDeploy ? '' : 'Сначала «Проверить доступ» — без него неизвестно, дойдёт ли push'}
+              <Button
+                type="primary"
+                danger
+                icon={<CloudUploadOutlined />}
+                disabled={!canDeploy}
+                loading={prodDeploy.loading}
+                onClick={() => {
+                  setWord('')
+                  setAsk({ from_ref: null, title: 'Выложить тест на ПРОД' })
+                }}
               >
-                <Button
-                  type="primary"
-                  danger
-                  icon={<CloudUploadOutlined />}
-                  disabled={!canDeploy}
-                  loading={prodDeploy.loading}
-                >
-                  Выложить на прод
-                </Button>
-              </Tooltip>
-            </Popconfirm>
+                Выложить на прод
+              </Button>
+            </Tooltip>
           </Space>
         }
       >
@@ -215,19 +213,18 @@ bash deploy/deploy-prod.sh --diff     # сначала посмотреть, ч�
                 title: '',
                 width: 200,
                 render: (_v, r) => (
-                  <Popconfirm
-                    title={`Вернуть прод к ${r.tag}?`}
-                    description="Дерево этой выкладки уедет на прод новым коммитом поверх текущего — без переписывания истории."
-                    okText="Вернуть"
-                    okButtonProps={{ danger: true }}
-                    cancelText="Нет"
+                  <Button
+                    size="small"
+                    danger
                     disabled={!canDeploy}
-                    onConfirm={() => prodDeploy.run({ from_ref: r.tag })}
+                    icon={<UndoOutlined />}
+                    onClick={() => {
+                      setWord('')
+                      setAsk({ from_ref: r.tag, title: `Вернуть прод к ${r.tag}` })
+                    }}
                   >
-                    <Button size="small" danger disabled={!canDeploy} icon={<UndoOutlined />}>
-                      откатить прод сюда
-                    </Button>
-                  </Popconfirm>
+                    откатить прод сюда
+                  </Button>
                 ),
               },
             ]}
@@ -298,6 +295,57 @@ bash deploy/deploy-prod.sh --diff     # сначала посмотреть, ч�
           ]}
         />
       </Card>
+
+      {/* ── СЛОВО-ПОДТВЕРЖДЕНИЕ ────────────────────────────────────────── */}
+      <Modal
+        open={Boolean(ask)}
+        title={ask?.title}
+        okText="Выложить"
+        okButtonProps={{ danger: true, disabled: !word.trim() }}
+        cancelText="Отмена"
+        confirmLoading={prodDeploy.loading}
+        onCancel={() => setAsk(null)}
+        onOk={() => prodDeploy
+            .run({ from_ref: ask.from_ref || undefined, password: word })
+            .then((r) => {
+              if (!r) return
+              setAsk(null)
+              prodStatus.run({ probe: true })
+            })}
+      >
+        <Typography.Paragraph>
+          {ask?.from_ref ? (
+            <>
+              Дерево выкладки <Typography.Text code>{ask.from_ref}</Typography.Text> уедет
+              на прод новым коммитом поверх текущего — без переписывания истории.
+            </>
+          ) : (
+            <>
+              Уедет всё состояние теста. Перед push пройдёт гейт (check-dags.sh)
+              по тому самому дереву; выкладка получит тег prod-ГГГГММДД-ЧЧММ,
+              откатить её можно будет выкладкой предыдущего тега.
+            </>
+          )}
+        </Typography.Paragraph>
+        <Typography.Paragraph type="secondary">
+          Это единственное действие в конструкторе, которое нельзя посмотреть в
+          предпросмотре и отменить соседней кнопкой. Наберите слово-подтверждение.
+        </Typography.Paragraph>
+        <Input.Password
+          autoFocus
+          value={word}
+          placeholder="слово-подтверждение"
+          onChange={(e) => setWord(e.target.value)}
+          onPressEnter={() => word.trim() && prodDeploy
+            .run({ from_ref: ask.from_ref || undefined, password: word })
+            .then((r) => {
+              if (!r) return
+              setAsk(null)
+              prodStatus.run({ probe: true })
+            })}
+        />
+        <ActionError error={prodDeploy.error} />
+      </Modal>
 
       {/* ── ПЛАН ОТКАТА ────────────────────────────────────────────────── */}
       {plan && (
