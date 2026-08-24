@@ -44,6 +44,36 @@ const SCHEDULE_HINTS = [
   { value: 'None', label: 'только вручную' },
 ]
 
+// Расписание в файле — выражение python, и в списке оно читается как код:
+// `dt.timedelta(minutes=10)`. Человеку нужно «каждые 10 минут», поэтому
+// переводим то, что переводится, а незнакомое показываем как есть — врать про
+// расписание хуже, чем показать код.
+function humanSchedule(expr) {
+  const raw = (expr || '').trim()
+  if (!raw || raw === 'None') return 'только вручную'
+  const td = raw.match(/^dt\.timedelta\(\s*(\w+)\s*=\s*(\d+)\s*\)$/)
+  if (td) {
+    const [, unit, n] = td
+    const num = Number(n)
+    const word = (one, few, many) => {
+      const mod10 = num % 10
+      const mod100 = num % 100
+      if (mod10 === 1 && mod100 !== 11) return one
+      if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return few
+      return many
+    }
+    if (unit === 'minutes')
+      return num === 1 ? 'каждую минуту' : `каждые ${num} ${word('минуту', 'минуты', 'минут')}`
+    if (unit === 'hours')
+      return num === 1 ? 'раз в час' : `каждые ${num} ${word('час', 'часа', 'часов')}`
+    if (unit === 'days')
+      return num === 1 ? 'раз в сутки' : `каждые ${num} ${word('сутки', 'суток', 'суток')}`
+  }
+  const cron = raw.match(/^['"](.+)['"]$/)
+  if (cron) return `cron ${cron[1]}`
+  return raw
+}
+
 export default function ProcPage() {
   const [selected, setSelected] = useState(null)
   const [creating, setCreating] = useState(false)
@@ -144,7 +174,7 @@ export default function ProcPage() {
                   }
                   description={
                     <Text type="secondary" style={{ fontSize: 12 }}>
-                      {item.schedule || '—'}
+                      {humanSchedule(item.schedule)}
                     </Text>
                   }
                 />
@@ -210,7 +240,15 @@ export default function ProcPage() {
 
                 <Form.Item
                   label="Расписание"
-                  help="выражение python: dt.timedelta(...), строка-cron или None"
+                  help={
+                    <>
+                      выражение python: dt.timedelta(...), строка-cron или None.{' '}
+                      <b>{humanSchedule(spec.schedule)}</b>
+                      {/^['"]/.test((spec.schedule || '').trim()) && (
+                        <> — cron идёт по часовому поясу airflow, а не по местному</>
+                      )}
+                    </>
+                  }
                 >
                   <Select
                     value={spec.schedule}
@@ -411,7 +449,7 @@ function AlienProc({ proc }) {
       />
       <Card size="small" title="Обвязка (только чтение)">
         <Space size={[8, 8]} wrap>
-          <Tag>расписание: {proc.schedule || '—'}</Tag>
+          <Tag>расписание: {humanSchedule(proc.schedule)}</Tag>
           <Tag>задача: {proc.task_id || '—'}</Tag>
           <Tag>ретраи: {proc.retries}</Tag>
           <Tag>пауза: {proc.retry_delay_min} мин</Tag>

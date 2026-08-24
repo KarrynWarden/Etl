@@ -117,6 +117,85 @@ def checkConfig(root):
     return errors
 
 
+# ─────────────────── 2.5. часовой пояс расписаний ───────────────────
+
+def checkTimezone(root):
+    """`'timezone'` в default_args — украшение: airflow такого ключа не знает.
+
+    `default_args` раздаются оператору, и airflow оставляет из них только те
+    ключи, что есть в сигнатуре оператора. `timezone` в ней отсутствует, и ключ
+    молча отбрасывается — ошибки нет, эффекта тоже. Выглядит же он как рабочая
+    настройка, и в этом вся беда: строка стоит в шести файлах и убеждает
+    читателя, что часовой пояс задан.
+
+    Пояс DAG'а на самом деле берётся из tzinfo у `start_date`. Наивный
+    `dt.datetime(2023, 10, 23)` означает `core.default_timezone`, а он по
+    умолчанию UTC. Тогда `'50 5,7,13 * * *'` срабатывает в 10:50, 12:50 и 18:50
+    по Екатеринбургу — на пять часов позже, чем написано. На timedelta это не
+    влияет никак (интервал есть интервал), поэтому расхождение и не бросается в
+    глаза: замечают его только на кронах.
+
+    Возвращаем ПРЕДУПРЕЖДЕНИЕ, а не ошибку: чинится это сменой пояса у
+    start_date, а такая правка сдвигает все кроны на пять часов разом — решение
+    человека, а не гейта выкладки.
+    """
+    import ast
+
+    decorative, naive = [], []
+    dagsDir = os.path.join(root, "dags")
+    targets = []
+    if os.path.isdir(dagsDir):
+        targets += [os.path.join(dagsDir, f) for f in sorted(os.listdir(dagsDir))
+                    if f.endswith(".py")]
+    helpers = os.path.join(root, "Functions", "_dagHelpers.py")
+    if os.path.exists(helpers):
+        targets.append(helpers)
+
+    for path in targets:
+        rel = os.path.relpath(path, root)
+        try:
+            with open(path, encoding="utf-8") as fp:
+                tree = ast.parse(fp.read())
+        except Exception:
+            continue                       # синтаксис ловит ярус 1
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Dict):
+                for key, value in zip(node.keys, node.values):
+                    name = getattr(key, "value", None)
+                    if name == "timezone":
+                        decorative.append(rel)
+                    if name == "start_date" and _isNaiveDatetime(value):
+                        naive.append(rel)
+
+    if not decorative and not naive:
+        _line(OK, "часовой пояс расписаний")
+        return []
+
+    if decorative:
+        _line(SKIP, "'timezone' в default_args ничего не делает",
+              ", ".join(sorted(set(decorative))))
+    if naive:
+        _line(SKIP, "start_date без часового пояса — кроны идут по "
+                    "core.default_timezone (обычно UTC)",
+              ", ".join(sorted(set(naive))))
+    print("        Проверить, какой пояс на сервере:")
+    print("        airflow config get-value core default_timezone")
+    return []                              # предупреждение, выкладку не рушим
+
+
+def _isNaiveDatetime(node):
+    """`dt.datetime(2023, 10, 23)` -> True; с tzinfo/pendulum -> False."""
+    import ast
+
+    if not isinstance(node, ast.Call):
+        return False
+    if getattr(node.func, "attr", "") != "datetime":
+        return False
+    if any(kw.arg in ("tzinfo", "tz") for kw in node.keywords):
+        return False
+    return True
+
+
 # ───────────────────────── 3. парсинг DAG'ов ─────────────────────────
 
 def checkDagbag(root, tmpHome):
@@ -204,6 +283,7 @@ def main(argv=None):
     errors = []
     errors += checkSyntax(root)
     errors += checkConfig(root)
+    errors += checkTimezone(root)
 
     with tempfile.TemporaryDirectory(prefix="etl-check-") as tmpHome:
         dagErrors, skipped = checkDagbag(root, tmpHome)
