@@ -109,4 +109,10 @@ export const api = {
   spDeleteTargets: (params) => call('POST', 'sp/delete-targets', params),
   spDelete: (params) => call('POST', 'sp/delete', params),
   spAuditTrigger: (params) => call('POST', 'sp/audit-trigger', params),
+
+  // даги-процедуры: обвязку правит форма, тело функции — редактор, см. ProcPage
+  procList: () => call('GET', 'proc/list'),
+  procDefaults: () => call('GET', 'proc/defaults'),
+  procLine: (dagId) => call('POST', 'proc/line', { dag_id: dagId }),
+  procPreview: (spec) => call('POST', 'proc/preview', { spec }),
 }

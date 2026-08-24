@@ -49,6 +49,7 @@ from tools import dag_builder as B      # noqa: E402
 from tools import trigger_builder as T  # noqa: E402
 from tools import sp_builder as SP      # noqa: E402
 from tools import git_ops as G          # noqa: E402
+from tools import proc_builder as P     # noqa: E402
 
 logger = logging.getLogger("dagbuilder_api")
 
@@ -748,6 +749,40 @@ def r_sp_audit_trigger(params):
             "statements": built["statements"]}
 
 
+# ───────────────────────────── даги-процедуры ─────────────────────────────
+
+def r_proc_list(params):
+    """Все даги-процедуры: и собранные конструктором, и написанные руками."""
+    return {"procs": P.list_procs(), "connections": list(P.CONNECTIONS)}
+
+
+def r_proc_defaults(params):
+    """Заготовка новой процедуры — то, с чего открывается пустая форма."""
+    return P.defaults()
+
+
+def r_proc_line(params):
+    """Открыть процедуру для правки.
+
+    Собранная конструктором отдаётся полями формы и телом функции; чужая —
+    целиком текстом и с обвязкой только для чтения. Различие принципиальное:
+    перезаписать чужой файл формой значит потерять всё, чего форма не знает.
+    """
+    (dag_id,) = _need(params, "dag_id")
+    return P.load_proc(dag_id)
+
+
+def r_proc_preview(params):
+    """Собрать файл дага-процедуры, НИЧЕГО не записывая.
+
+    Сборка компилирует результат: даг с SyntaxError не «работает
+    неправильно», он пропадает из списка airflow, и по интерфейсу airflow
+    причину не найти.
+    """
+    (spec,) = _need(params, "spec")
+    return _preview_body(P.build_all(spec))
+
+
 GET_ROUTES = {
     "lines": r_lines,
     "line": r_line,
@@ -760,6 +795,8 @@ GET_ROUTES = {
     "triggers/targets": r_trigger_targets,
     "sp/lines": r_sp_lines,
     "sp/line": r_sp_line,
+    "proc/list": r_proc_list,
+    "proc/defaults": r_proc_defaults,
 }
 
 POST_ROUTES = {
@@ -792,6 +829,8 @@ POST_ROUTES = {
     "sp/delete-targets": r_sp_delete_targets,
     "sp/delete": r_sp_delete,
     "sp/audit-trigger": r_sp_audit_trigger,
+    "proc/line": r_proc_line,
+    "proc/preview": r_proc_preview,
 }
 
 
@@ -1135,6 +1174,42 @@ def _selftest():
     assert code == 400 and "regular" in body["detail"], body
 
     # 8.5) ВЕРСИИ, ОТКАТ, ПРОД — всё, что читает, проверяется на живом репозитории.
+    # ── даги-процедуры ───────────────────────────────────────────────────
+    code, body = dispatch("GET", "proc/list", {})
+    assert code == 200 and body["result"]["procs"], body
+    procs = {p["dag_id"]: p for p in body["result"]["procs"]}
+    # в репозитории все три процедуры написаны руками — и обязаны такими
+    # числиться: пометь их «собранными», и форма перезапишет двести строк
+    # логики своей заготовкой
+    assert not any(p["generated"] for p in procs.values()), procs
+    assert "A61ProceduresScanLogProlong" in procs, procs
+
+    code, body = dispatch("POST", "proc/line",
+                          {"dag_id": "A61ProceduresScanLogProlong"})
+    assert code == 200, body
+    alien = body["result"]
+    assert alien["generated"] is False, alien
+    assert alien["body"] == "", "тело чужого дага попало в форму"
+    assert alien["schedule"] == "dt.timedelta(minutes=60)", alien["schedule"]
+    assert alien["source"].startswith('"""DAG: продление'), alien["source"][:40]
+
+    code, body = dispatch("POST", "proc/line", {"dag_id": "НетТакого"})
+    assert code == 400 and "нет такого дага" in body["detail"], body
+
+    code, body = dispatch("GET", "proc/defaults", {})
+    assert code == 200, body
+    blank = dict(body["result"], dag_id="A99ProceduresProba")
+    code, body = dispatch("POST", "proc/preview", {"spec": blank})
+    assert code == 200, body
+    assert body["result"]["files"][0]["path"] == "dags/A99ProceduresProba.py", body
+    assert body["result"]["files"][0]["old"] is None, "новый файл показан как правка"
+
+    # Ошибка в теле обязана останавливаться на предпросмотре и называть строку:
+    # даг с SyntaxError не «работает неправильно», он исчезает из airflow.
+    code, body = dispatch("POST", "proc/preview",
+                          {"spec": dict(blank, body="if True:\npass")})
+    assert code == 400 and "тело функции" in body["detail"], body
+
     code, body = dispatch("GET", "git/versions", {"limit": 5})
     assert code == 200 and body["result"]["versions"], body
     first = body["result"]["versions"][0]
@@ -1385,6 +1460,8 @@ def _selftest():
         "match", "preview", "sp/preview", "shared-files",
         "sp/parse-sql", "sp/build-sql", "sp/rename-select-column",
         "triggers/build", "triggers/check", "sp/audit-trigger",
+        # процедуры: разбор файла и сборка текста — запись идёт через "write"
+        "proc/line", "proc/preview",
     }
     # Список ЗАКРЫТЫЙ в обе стороны: каждый POST-маршрут обязан быть ровно в
     # одном из двух наборов. Раньше проверка искала в имени слова вроде

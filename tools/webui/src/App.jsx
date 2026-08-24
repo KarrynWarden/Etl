@@ -13,6 +13,7 @@ import HelpPage from './HelpPage'
 import paw from './assets/image4.png'
 import NewLinePage from './NewLinePage'
 import SpPage from './SpPage'
+import ProcPage from './ProcPage'
 
 // Оболочка. Разделы соответствуют вкладкам прежнего конструктора: сложный ETL,
 // триггеры, создание с нуля.
@@ -199,6 +200,9 @@ export default function App() {
                 children: <SpPage kind="once" />,
               },
               { key: 'triggers', label: 'Триггеры', children: <TriggersPage /> },
+              // Процедуры стоят рядом с триггерами: и то и другое — код в базе
+              // и вокруг неё, который живёт своей жизнью, а не переносом строк.
+              { key: 'procs', label: 'Процедуры', children: <ProcPage /> },
               // Последней: сюда приходят, когда работа с линиями уже сделана —
               // выложить сделанное или вернуть то, что было.
               { key: 'versions', label: 'Версии и прод', children: <VersionsPage /> },
