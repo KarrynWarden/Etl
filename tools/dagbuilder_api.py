@@ -1178,11 +1178,22 @@ def _selftest():
     code, body = dispatch("GET", "proc/list", {})
     assert code == 200 and body["result"]["procs"], body
     procs = {p["dag_id"]: p for p in body["result"]["procs"]}
-    # в репозитории все три процедуры написаны руками — и обязаны такими
-    # числиться: пометь их «собранными», и форма перезапишет двести строк
-    # логики своей заготовкой
-    assert not any(p["generated"] for p in procs.values()), procs
-    assert "A61ProceduresScanLogProlong" in procs, procs
+    # Даг без маркера обязан числиться написанным руками: пометь его
+    # «собранным», и форма перезапишет двести строк логики своей заготовкой.
+    # Список процедур меняется, поэтому проверяем не поимённо, а по существу —
+    # у каждой стороны своё обязательное свойство.
+    assert procs.get("A61ProceduresScanLogProlong", {}).get("generated") is False, procs
+    assert procs.get("A56ProceduresFIX_DEND", {}).get("generated") is False, procs
+    for name, item in procs.items():
+        if not item["generated"]:
+            continue
+        # Собранный обязан замыкать круг: разобрали -> собрали -> тот же текст.
+        # Иначе открытие формы меняло бы файл само по себе, и «Записать» стало
+        # бы обязательным даже там, где человек ничего не правил.
+        got = dispatch("POST", "proc/line", {"dag_id": name})[1]["result"]
+        again = dispatch("POST", "proc/preview", {"spec": got})[1]["result"]
+        assert again["files"][0]["content"] == got["source"], name
+        assert again["unchanged"] == [again["files"][0]["path"]], name
 
     code, body = dispatch("POST", "proc/line",
                           {"dag_id": "A61ProceduresScanLogProlong"})
