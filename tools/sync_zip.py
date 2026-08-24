@@ -385,7 +385,10 @@ def _git(root, *args, **kw):
     check = kw.get("check", True)
     timeout = kw.get("timeout", 300)
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0", LC_ALL="C.UTF-8")
-    p = subprocess.run(["git", "-C", root] + list(args), capture_output=True,
+    # core.quotePath=false — иначе git отдаёт русские имена экранированными
+    # («"\320\220\321\200..."»), и отчёт про них прочитать нельзя.
+    p = subprocess.run(["git", "-C", root, "-c", "core.quotePath=false"]
+                       + list(args), capture_output=True,
                        text=True, env=env, timeout=timeout,
                        input=kw.get("stdin"))
     if check and p.returncode != 0:
@@ -529,8 +532,49 @@ def report(root, commit, parent, branch=SNAPSHOT_BRANCH):
     strays = [p for p in here if p not in snap
               and not p.startswith(YOURS)
               and not p.startswith(GENERATED)]
-    out["strays"] = sorted(set(strays) - _ignored(root, strays))
+    strays = sorted(set(strays) - _ignored(root, strays) - _declared_mine(root))
+    out["strays"] = strays
+    # Мусор от переименований и ваш собственный файл выглядят одинаково, а делать
+    # с ними надо разное. Отличить их можно: ветка-снимок помнит ВСЕ принесённые
+    # архивы, и если файл встречался хоть в одном — он мой и просто устарел.
+    out["never_mine"] = [p for p in strays
+                         if not _git(root, "log", "-1", "--format=%H", branch,
+                                     "--", p, check=False)[1]]
     return out
+
+
+def _declared_mine(root):
+    """Пути, про которые вы сказали «это моё, не спрашивай» (--mine)."""
+    path = _mine_path(root)
+    if not os.path.exists(path):
+        return set()
+    with open(path, encoding="utf-8") as fp:
+        return set(l.strip() for l in fp if l.strip())
+
+
+def _mine_path(root):
+    git_dir = _git(root, "rev-parse", "--git-dir")[1]
+    if not os.path.isabs(git_dir):
+        git_dir = os.path.join(root, git_dir)
+    return os.path.join(git_dir, "etl-sync-mine")
+
+
+def declare_mine(root, path):
+    """Запомнить файл как ваш — чтобы отчёт про него больше не напоминал.
+
+    Список локальный, рядом с `.git`: он про эту машину, а не про репозиторий.
+    Ничего не удаляет и не меняет — только убирает строку из отчёта. Смысл в
+    том, чтобы список «нет ни в одном архиве» оставался коротким и его читали;
+    четыре вечных строки про ваши же файлы отучают в него смотреть.
+    """
+    known = _declared_mine(root)
+    if path in known:
+        return "Уже отмечен как ваш: {}".format(path)
+    known.add(path)
+    with open(_mine_path(root), "w", encoding="utf-8") as fp:
+        for item in sorted(known):
+            fp.write(item + "\n")
+    return "Запомнил как ваш: {}\nСписок: {}".format(path, _mine_path(root))
 
 
 def _ignored(root, paths):
@@ -594,9 +638,11 @@ def render(rep):
 
     if rep["strays"] and not rep["first"]:
         add("")
+        never = set(rep.get("never_mine", ()))
         add("НЕТ НИ В ПРОШЛОМ АРХИВЕ, НИ В ЭТОМ ({}):".format(len(rep["strays"])))
         for p in rep["strays"][:20]:
-            add("    {}".format(p))
+            add("    {}{}".format(p, "   <- в моих архивах не встречался никогда"
+                                  if p in never else "   <- был в старом архиве"))
         if len(rep["strays"]) > 20:
             add("    … и ещё {}".format(len(rep["strays"]) - 20))
             by_dir = {}
@@ -606,10 +652,13 @@ def render(rep):
             add("  по каталогам:")
             for name, count in sorted(by_dir.items(), key=lambda kv: -kv[1])[:8]:
                 add("    {:<40} {}".format(name, count))
-        add("  Часть — мусор от переименований (рядом с CodeArea.jsx осел")
-        add("  SqlArea.jsx), часть — ваши собственные файлы. Разбирать это мне")
-        add("  нечем, поэтому уборка только по указанному пути:")
-        add("      --clean tools/webui/src")
+        if never != set(rep["strays"]):
+            add("  «Был в старом архиве» — мой файл, который я переименовал:")
+            add("  убирать по указанному пути, например --clean tools/webui/src")
+        if never:
+            add("  «Не встречался никогда» — значит ваш, и решать по нему вам.")
+            add("  Чтобы отчёт про него больше не напоминал:")
+            add("      --mine {}".format(sorted(never)[0]))
 
     add("")
     if rep["dirty"]:
@@ -1042,11 +1091,24 @@ def main(argv):
                     help="напечатать найденный путь к архиву и выйти")
     ap.add_argument("--no-self-update", action="store_true",
                     help="не перезапускаться кодом из архива")
+    ap.add_argument("--mine", metavar="ПУТЬ",
+                    help="отметить файл как ваш — отчёт про него замолчит")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv)
 
     if args.selftest:
         return _selftest()
+
+    if args.mine:
+        # архив для этого не нужен: отметка живёт рядом с .git и про архивы
+        # ничего не знает
+        try:
+            print(declare_mine(find_repo(args.root), args.mine))
+        except Otkaz as err:
+            print(err)
+            return 1
+        return 0
+
     if not args.archive:
         ap.error("не задан архив")
 
@@ -1216,6 +1278,9 @@ def _selftest():
             # мусор от прежних копирований: имя со старым хэшем, которого нет ни
             # в одном архиве. Общее правило сочло бы его вашим и оставило
             "tools/webui/dist/assets/index-JUNK.js": "junk\n",
+            # файл, который я потом переименую: он есть в СТАРОМ снимке, и по
+            # этому его можно отличить от вашего собственного
+            "tools/webui/src/Renamed.jsx": "старое имя\n",
             "etlFolder/config.d/LINE.json": '{"a": 1}\n',
             "etlFolder/queries/customQueries/MOJ.sql": "SELECT 1 FROM моё\n",
         }
@@ -1302,7 +1367,9 @@ def _selftest():
             "tools/dag_builder.py": "# v3\n",
             "tools/webui/src/NEW.jsx": "новьё\n"}))
         with tempfile.TemporaryDirectory() as t5:
-            ahead, _ = import_snapshot(extract(zip4, t5), repo, "проба2")
+            # именно на настоящей ветке: иначе снимок выйдет БЕЗ родителя, и
+            # цепочка архивов оборвётся — а по ней отличают мусор от ваших файлов
+            ahead, _ = import_snapshot(extract(zip4, t5), repo, SNAPSHOT_BRANCH)
         _git(repo, "update-ref", "refs/heads/" + SNAPSHOT_BRANCH, ahead)
         assert base_lies(repo, ahead, ahead) == ["tools/webui/src/NEW.jsx"], \
             base_lies(repo, ahead, ahead)
@@ -1330,7 +1397,7 @@ def _selftest():
                                         "tools/webui/src/NEW.jsx": "новьё\n",
                                         "tools/dag_builder.py": keep}))
         with tempfile.TemporaryDirectory() as t7:
-            with_gone, _ = import_snapshot(extract(zip_old, t7), repo, "проба4")
+            with_gone, _ = import_snapshot(extract(zip_old, t7), repo, SNAPSHOT_BRANCH)
         assert base_lies(repo, with_gone, stale_base) == [], \
             "исчезнувший у обеих сторон файл принят за потерю"
         _git(repo, "update-ref", "refs/heads/" + SNAPSHOT_BRANCH, with_gone)
@@ -1354,7 +1421,7 @@ def _selftest():
         zip8 = os.path.join(tmp, "a8.zip")
         _mkzip(zip8, eighth)
         with tempfile.TemporaryDirectory() as t8:
-            with_live, _ = import_snapshot(extract(zip8, t8), repo, "проба5")
+            with_live, _ = import_snapshot(extract(zip8, t8), repo, SNAPSHOT_BRANCH)
         _git(repo, "update-ref", "refs/heads/" + SNAPSHOT_BRANCH, with_live)
         assert base_lies(repo, with_live, with_live) == [live]
         # база равна архиву — это подпись потерянного переноса, отказ
@@ -1402,7 +1469,10 @@ def _selftest():
                 "перезапуск зациклился бы"
 
         # ── лишнее в моих областях: назвать, но молча не удалять ─────────────
-        stray = "tools/webui/src/SqlArea.jsx"   # переименованный, осевший от копирования
+        # Renamed.jsx был в первом архиве, потом я его переименовал и слияние
+        # его снесло — а копирование папок вернуло. Именно такой файл и надо
+        # отличать от вашего собственного, и снимки это помнят.
+        stray = "tools/webui/src/Renamed.jsx"
         mine_own = "Архив.zip"                  # а это уже ваш файл, не мусор
         ignored = "voila-offline/wheels/x.whl"  # у меня не версионируется вовсе
         for path in (stray, mine_own, ignored):
@@ -1431,6 +1501,24 @@ def _selftest():
             # построению, а в отчёте оно давало полсотни строк шума
             assert ignored not in rep["strays"], rep["strays"]
             assert "НЕТ НИ В ПРОШЛОМ АРХИВЕ" in render(rep)
+            # мусор от переименования и ваш файл в списке рядом, но делать с
+            # ними надо разное — отчёт обязан их различать
+            assert mine_own in rep["never_mine"], rep["never_mine"]
+            assert stray not in rep["never_mine"], rep["never_mine"]
+            text = render(rep)
+            assert "не встречался никогда" in text and "был в старом архиве" in text
+        # объявленное вашим из отчёта уходит и не возвращается
+        assert main(["--root", repo, "--mine", mine_own]) == 0
+        with tempfile.TemporaryDirectory() as tM:
+            probe, prev = import_snapshot(extract(zip5, tM), repo, SNAPSHOT_BRANCH)
+            rep = report(repo, probe, prev, SNAPSHOT_BRANCH)
+            assert mine_own not in rep["strays"], rep["strays"]
+            assert stray in rep["strays"], "заодно замолчал и мусор"
+        assert os.path.exists(os.path.join(repo, mine_own)), \
+            "--mine удалил файл, а должен был только замолчать"
+        with tempfile.TemporaryDirectory() as t6b:
+            probe, prev = import_snapshot(extract(zip5, t6b), repo, SNAPSHOT_BRANCH)
+            rep = report(repo, probe, prev, SNAPSHOT_BRANCH)
         assert main([zip5, "--root", repo, "--yes"]) == 0
         assert exists(stray), "лишнее удалили без спроса"
         zip6 = os.path.join(tmp, "a6.zip")

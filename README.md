@@ -743,7 +743,7 @@ Python (`_periodKey`):
 ключ через `TO_CHAR`, а `TO_CHAR` от `DATE` без маски берёт `NLS_DATE_FORMAT`
 СЕССИИ, и сессия триггера с сессией переноса могут его не разделять. Скрипты
 миграции: `oracleSetup/11_iprkdept_createdate.sql`,
-`postgresSetup/04_iprkdept_createdate.sql`.
+`postgresSetup/04_iprkdept_slave.sql`.
 
 Тип приводится к общему в обоих случаях (`date` → `datetime` в полночь), поэтому
 Oracle `DATE` и Postgres `timestamp` сравниваются корректно. Это важно, потому
