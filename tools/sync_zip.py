@@ -87,6 +87,7 @@ Ctrl-C, конфликт — не считаются переносом: ина�
     python3 tools/sync_zip.py --selftest
 """
 import argparse
+import ast
 import os
 import shutil
 import subprocess
@@ -124,6 +125,14 @@ MARKERS = ("tools/dag_builder.py", "etlFolder")
 # прошло без конфликта. Здесь живут ваши правки — структуры, запросы, конфиги
 # линий, — и «слилось молча» тут не означает «я этого хотел».
 YOURS = ("etlFolder/", "dags/")
+
+# Каталоги, где ваших файлов не бывает вовсе: содержимое целиком порождается
+# сборкой, и имя каждого файла содержит хэш — значит правка не заменяет файл, а
+# добавляет рядом ещё один. Копирование папок с заменой накапливало их годами:
+# на рабочей машине лежало 22 файла сборки при двух нужных. Общее правило
+# «файла нет ни в одном снимке — значит он ваш» тут вредит, поэтому здесь оно
+# перевёрнуто: чего нет в принесённом снимке — то мусор.
+GENERATED = ("tools/webui/dist/assets/",)
 
 
 class Otkaz(Exception):
@@ -620,6 +629,34 @@ def stale_join(root, branch=SNAPSHOT_BRANCH):
     return bad.splitlines()[0] if bad else tip
 
 
+def drop_stale_generated(root, theirs):
+    """Вычистить порождаемые каталоги до того, что есть в принесённом снимке.
+
+    Слияние само этого не сделает и не должно: для git файл, которого нет ни в
+    одном снимке, — ваш, и именно на этом держится сохранность запросов и
+    структур. Но в `dist/assets` ваших файлов не бывает, а лишние там не просто
+    занимают место: страница ссылается на файл по имени с хэшем, и разбираться,
+    какой из двадцати двух живой, приходится глазами.
+
+    Осторожность одна: если снимок про каталог ничего не знает (архив собран без
+    сборки), не трогаем ничего — иначе снесли бы рабочую страницу целиком.
+    """
+    dropped = []
+    for area in GENERATED:
+        theirs_files = set(_names(root, "ls-tree", "-r", "--name-only",
+                                  theirs, "--", area))
+        if not theirs_files:
+            continue
+        seen = set()
+        for path in _names(root, "ls-files", "--", area):
+            if path in theirs_files or path in seen:
+                continue
+            seen.add(path)
+            if _git(root, "rm", "-q", "-f", "--", path, check=False)[0] == 0:
+                dropped.append(path)
+    return dropped
+
+
 def merge(root, base, theirs):
     """Применить снимок к рабочей ветке — ОБЫЧНЫМ коммитом, без слияния веток.
 
@@ -647,6 +684,7 @@ def merge(root, base, theirs):
     if rc != 0:
         raise Otkaz("Не смог разложить слияние:\n" + (err or out).strip())
     _git(root, "merge-index", "-o", "git-merge-one-file", "-a", check=False)
+    dropped = drop_stale_generated(root, theirs)
 
     conflicts = _names(root, "diff", "--name-only", "--diff-filter=U")
     if conflicts:
@@ -660,7 +698,13 @@ def merge(root, base, theirs):
     rc, out, err = _git(root, "commit", "-m", "перенос с GitHub", check=False)
     if rc != 0 and "nothing to commit" not in (out + err).lower():
         return False, (out + "\n" + err).strip()
-    return True, (out or "перенос применён").strip()
+
+    said = [(out or "перенос применён").strip()]
+    if dropped:
+        said.append("")
+        said.append("Заодно убрал старые файлы сборки ({}):".format(len(dropped)))
+        said.extend("    " + p for p in dropped)
+    return True, "\n".join(said)
 
 
 def main(argv):
@@ -774,9 +818,14 @@ def _selftest():
         start = {
             "tools/dag_builder.py": "# v1\n",
             "tools/webui/dist/assets/index-OLD.js": "old\n",
+            # мусор от прежних копирований: имя со старым хэшем, которого нет ни
+            # в одном архиве. Общее правило сочло бы его вашим и оставило
+            "tools/webui/dist/assets/index-JUNK.js": "junk\n",
             "etlFolder/config.d/LINE.json": '{"a": 1}\n',
             "etlFolder/queries/customQueries/MOJ.sql": "SELECT 1 FROM моё\n",
         }
+        never_in_zip = ("etlFolder/queries/customQueries/MOJ.sql",
+                        "tools/webui/dist/assets/index-JUNK.js")
         for name, content in start.items():
             os.makedirs(os.path.join(repo, os.path.dirname(name)), exist_ok=True)
             with open(os.path.join(repo, name), "w", encoding="utf-8") as fp:
@@ -786,8 +835,7 @@ def _selftest():
 
         # ── архив №1: то же самое, заводим базу ──────────────────────────────
         zip1 = os.path.join(tmp, "a1.zip")
-        _mkzip(zip1, {k: v for k, v in start.items()
-                      if k != "etlFolder/queries/customQueries/MOJ.sql"})
+        _mkzip(zip1, {k: v for k, v in start.items() if k not in never_in_zip})
         before = _git(repo, "rev-parse", "HEAD^{tree}")[1]
         head_before = _git(repo, "rev-parse", "HEAD")[1]
         assert main([zip1, "--root", repo, "--base"]) == 0
@@ -828,6 +876,10 @@ def _selftest():
         # 4. ЧУЖОЙ файл цел: его не было ни в одном архиве, значит он не мой
         assert exists("etlFolder/queries/customQueries/MOJ.sql"), \
             "слияние снесло пользовательский файл — ровно то, чего нельзя"
+        # 5. а вот в порождаемом каталоге правило обратное: чего нет в снимке —
+        # то мусор от копирований. На рабочей машине его накопилось два десятка
+        assert not exists("tools/webui/dist/assets/index-JUNK.js"), \
+            "старый файл сборки остался — страница снова ссылается на один из многих"
 
         # ── НЕУДАЧНЫЙ ЗАПУСК НЕ ДВИГАЕТ БАЗУ ────────────────────────────────
         # Отказ (грязное дерево, «нет» на вопрос, конфликт) не должен считаться
@@ -917,8 +969,36 @@ def _selftest():
             else:
                 raise AssertionError("путь с '..' принят")
 
+    _assert_py2_parseable()
     print("sync_zip selftest OK")
     return 0
+
+
+def _assert_py2_parseable():
+    """Файл обязан РАЗБИРАТЬСЯ вторым питоном целиком.
+
+    Разбор идёт до исполнения, поэтому одна f-строка в самом конце файла
+    отменяет проверку версии в начале: человек на рабочей машине получает
+    SyntaxError вместо понятного «запустите python3». Так уже было. Правило
+    легко нарушить не думая, значит его надо проверять машиной.
+    """
+    bad = []
+    for node in ast.walk(ast.parse(open(__file__, encoding="utf-8").read())):
+        name = type(node).__name__
+        if name in ("JoinedStr", "FormattedValue"):
+            bad.append("f-строка")
+        elif name in ("AnnAssign", "NamedExpr", "Match"):
+            bad.append(name)
+        elif name == "arguments" and (getattr(node, "kwonlyargs", None)
+                                      or getattr(node, "posonlyargs", None)):
+            bad.append("аргументы только-по-имени")
+        elif name == "arg" and getattr(node, "annotation", None):
+            bad.append("аннотация аргумента")
+        elif name in ("List", "Tuple", "Set", "Dict") and any(
+                type(e).__name__ == "Starred" for e in getattr(node, "elts", [])):
+            bad.append("распаковка в литерале")
+    assert not bad, ("синтаксис, которого нет во втором питоне: "
+                     + ", ".join(sorted(set(bad))))
 
 
 if __name__ == "__main__":
