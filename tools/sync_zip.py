@@ -497,6 +497,20 @@ def report(root, commit, parent, branch=SNAPSHOT_BRANCH):
 
     touched = out["added"] + out["changed"] + out["removed"]
     out["yours"] = sorted(p for p in touched if p.startswith(YOURS))
+
+    # Мусор от прежних копирований: файл лежит в дереве, но его нет НИ В ОДНОМ
+    # снимке — ни в прошлом архиве, ни в нынешнем. Слияние его не тронет и не
+    # должно: ровно на этом правиле держится сохранность ваших запросов. Но в
+    # моих областях такого файла взяться неоткуда, кроме как от копирования
+    # папок поверх, — так в дереве осел переименованный `SqlArea.jsx` рядом с
+    # `CodeArea.jsx`. Назвать их поимённо стоит, удалять молча — нет.
+    snap = set(_names(root, "ls-tree", "-r", "--name-only", commit))
+    if parent:
+        snap |= set(_names(root, "ls-tree", "-r", "--name-only", parent))
+    here = _names(root, "ls-tree", "-r", "--name-only", head)
+    out["strays"] = sorted(p for p in here if p not in snap
+                           and not p.startswith(YOURS)
+                           and not p.startswith(GENERATED))
     return out
 
 
@@ -536,6 +550,18 @@ def render(rep):
             add("    {}".format(p))
         add("  (структуры, запросы и конфиги линий у вас могут отличаться от моих;")
         add("   слияние без конфликта тут не означает, что этого хотели)")
+
+    if rep["strays"] and not rep["first"]:
+        add("")
+        add("ЛИШНЕЕ В МОИХ ОБЛАСТЯХ ({}) — нет ни в прошлом архиве, ни в этом.".format(
+            len(rep["strays"])))
+        add("Взяться там такому неоткуда, кроме как от копирования папок поверх:")
+        for p in rep["strays"][:20]:
+            add("    {}".format(p))
+        if len(rep["strays"]) > 20:
+            add("    … и ещё {}".format(len(rep["strays"]) - 20))
+        add("  (сам не удаляю: правило «нет в снимках — значит ваш» бережёт запросы.")
+        add("   Убрать вместе с переносом — тот же запуск с --clean)")
 
     add("")
     if rep["dirty"]:
@@ -657,6 +683,58 @@ def drop_stale_generated(root, theirs):
     return dropped
 
 
+def clean_strays(root, strays):
+    """Убрать перечисленное отдельным коммитом — по явной просьбе (--clean).
+
+    Отдельным, а не заодно с переносом: удаление здесь решает человек, увидев
+    список, и в истории это должно быть видно отдельной строкой, а не спрятано
+    внутри «перенос с GitHub».
+    """
+    gone = []
+    for path in strays:
+        if _git(root, "rm", "-q", "-f", "--", path, check=False)[0] == 0:
+            gone.append(path)
+    if not gone:
+        return "Убирать оказалось нечего."
+    _git(root, "commit", "-q", "-m",
+         "убрал мусор от прежних копирований", check=False)
+    return "Убрал лишнее ({}):\n".format(len(gone)) + "\n".join(
+        "    " + p for p in gone)
+
+
+def base_lies(root, base):
+    """Файлы, которые база числит принесёнными, а в дереве их нет.
+
+    База — это «архив, который уже применён к этому дереву». Если она указывает
+    на архив, чьё содержимое до дерева не доехало, слияние выйдет наизнанку:
+    трёхсторонний разбор решит, что эти файлы УДАЛИЛИ вы, и честно оставит их
+    удалёнными. Отчёт при этом покажет `0/0/0` — сравниваются-то два архива, а
+    они и правда одинаковы, — и перенос молча не состоится.
+
+    Так уже трижды выходило после неудачных запусков старой версии, двигавшей
+    базу до слияния. Признак у этой поломки точный, поэтому и проверяется точно,
+    а не «на глаз по нулям в отчёте».
+
+    Свои области не смотрим: линию вы могли удалить и сами, это ваше право.
+    """
+    theirs = set(_names(root, "ls-tree", "-r", "--name-only", base))
+    here = set(_names(root, "ls-tree", "-r", "--name-only", "HEAD"))
+    return sorted(p for p in theirs - here if not p.startswith(YOURS))
+
+
+def base_candidate(root, branch):
+    """Куда откатить базу: свежайшее её прошлое значение, не врущее про дерево.
+
+    Ветка помнит все свои значения в reflog — там же лежит и то, которое было до
+    неудачного запуска. Искать его глазами по датам не надо: подходящее видно
+    той же проверкой, что и поймала подмену.
+    """
+    for sha in _names(root, "rev-list", "-g", branch):
+        if not base_lies(root, sha):
+            return sha
+    return None
+
+
 def merge(root, base, theirs):
     """Применить снимок к рабочей ветке — ОБЫЧНЫМ коммитом, без слияния веток.
 
@@ -718,6 +796,8 @@ def main(argv):
     ap.add_argument("--base", action="store_true",
                     help="первый запуск: завести ветку-снимок, не сливая")
     ap.add_argument("--yes", action="store_true", help="не спрашивать подтверждения")
+    ap.add_argument("--clean", action="store_true",
+                    help="заодно убрать лишнее в моих областях (список — в отчёте)")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv)
 
@@ -763,6 +843,34 @@ def main(argv):
             print("       git log --oneline --graph -5")
             return 1
 
+        # База обязана описывать дерево, а не соседний архив. Если она врёт,
+        # слияние вывернется наизнанку и промолчит — это уже трижды съедало
+        # перенос целиком, поэтому проверка стоит до всего остального.
+        if parent and not args.base:
+            lost = base_lies(root, parent)
+            if lost:
+                print()
+                print("!! База врёт: она числит принесёнными {} файлов, которых".format(
+                    len(lost)))
+                print("   в дереве нет. Значит прошлый архив до дерева не доехал,")
+                print("   а базу сдвинули. Слить сейчас — значит удалить их совсем.")
+                for path in lost[:10]:
+                    print("       " + path)
+                if len(lost) > 10:
+                    print("       … и ещё {}".format(len(lost) - 10))
+                back = base_candidate(root, args.branch)
+                print()
+                if back:
+                    print("   Вернуть базу на последнее честное значение:")
+                    print("       git update-ref refs/heads/{} {}".format(
+                        args.branch, back[:9]))
+                    print("   и повторить эту же команду.")
+                else:
+                    print("   Честного значения в истории ветки не нашлось.")
+                    print("   Если эти файлы вы удалили сами и намеренно — скажите")
+                    print("   об этом переносу: тот же запуск с --base.")
+                return 1
+
         if args.dry_run:
             print("\nНичего не применялось и не запомнено — только отчёт.")
             return 0
@@ -782,6 +890,8 @@ def main(argv):
         ok, log = merge(root, parent, commit)
         print(log)
         if ok:
+            if args.clean and rep["strays"]:
+                print(clean_strays(root, rep["strays"]))
             remember(root, commit, args.branch)
         else:
             pending_write(root, commit)
@@ -894,6 +1004,60 @@ def _selftest():
         assert main([zip_lost, "--root", repo, "--yes"]) == 0, "повтор не сработал"
         with open(os.path.join(repo, "tools/dag_builder.py"), encoding="utf-8") as fp:
             assert fp.read() == "# v3\n", "правка потерялась после отказа"
+
+        # ── БАЗА, УШЕДШАЯ ВПЕРЁД ДЕРЕВА ─────────────────────────────────────
+        # Ровно то, что случилось на рабочей машине трижды подряд: старая версия
+        # двигала базу до слияния, содержимое до дерева не доезжало, а отчёт
+        # показывал 0/0/0 — сравнивались-то два одинаковых архива. Слить в таком
+        # состоянии значит УДАЛИТЬ непринесённое: разбор решит, что файлы снесли
+        # вы. Проверка обязана поймать это до слияния.
+        honest = _git(repo, "rev-parse", SNAPSHOT_BRANCH)[1]
+        zip4 = os.path.join(tmp, "a4.zip")
+        _mkzip(zip4, dict(second, **{
+            "tools/dag_builder.py": "# v3\n",
+            "tools/webui/src/NEW.jsx": "новьё\n"}))
+        with tempfile.TemporaryDirectory() as t5:
+            ahead, _ = import_snapshot(extract(zip4, t5), repo, "проба2")
+        _git(repo, "update-ref", "refs/heads/" + SNAPSHOT_BRANCH, ahead)
+        assert base_lies(repo, ahead) == ["tools/webui/src/NEW.jsx"], \
+            base_lies(repo, ahead)
+        assert main([zip4, "--root", repo, "--yes"]) == 1, \
+            "перенос пошёл на лживой базе — это молча съедает правки"
+        assert not exists("tools/webui/src/NEW.jsx")
+        # подсказка про откат обязана указывать на честное значение
+        assert base_candidate(repo, SNAPSHOT_BRANCH) == honest, \
+            base_candidate(repo, SNAPSHOT_BRANCH)
+        _git(repo, "update-ref", "refs/heads/" + SNAPSHOT_BRANCH, honest)
+        assert main([zip4, "--root", repo, "--yes"]) == 0, "после отката не сработало"
+        assert exists("tools/webui/src/NEW.jsx"), "правка так и не доехала"
+
+        # ── лишнее в моих областях: назвать, но молча не удалять ─────────────
+        stray = "tools/webui/src/SqlArea.jsx"   # переименованный, осевший от копирования
+        with open(os.path.join(repo, stray), "w", encoding="utf-8") as fp:
+            fp.write("старьё\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "мусор от копирования")
+        fourth = dict(second, **{"tools/dag_builder.py": "# v4\n",
+                                 "tools/webui/src/NEW.jsx": "новьё\n"})
+        zip5 = os.path.join(tmp, "a5.zip")
+        _mkzip(zip5, fourth)
+        with tempfile.TemporaryDirectory() as t6:
+            # именно на настоящей ветке-снимке: с выдуманной у отчёта не будет
+            # базы, и он честно посчитает запуск первым
+            probe, prev = import_snapshot(extract(zip5, t6), repo, SNAPSHOT_BRANCH)
+            rep = report(repo, probe, prev, SNAPSHOT_BRANCH)
+            assert stray in rep["strays"], rep["strays"]
+            # ваши файлы в этот список попадать не смеют
+            assert "etlFolder/queries/customQueries/MOJ.sql" not in rep["strays"]
+            assert "ЛИШНЕЕ В МОИХ ОБЛАСТЯХ" in render(rep)
+        assert main([zip5, "--root", repo, "--yes"]) == 0
+        assert exists(stray), "лишнее удалили без спроса"
+        zip6 = os.path.join(tmp, "a6.zip")
+        _mkzip(zip6, dict(fourth, **{"tools/dag_builder.py": "# v5\n"}))
+        assert main([zip6, "--root", repo, "--yes", "--clean"]) == 0
+        assert not exists(stray), "--clean не убрал лишнее"
+        assert exists("etlFolder/queries/customQueries/MOJ.sql"), \
+            "--clean снёс пользовательский файл"
 
         # ── архив №3 против ВСТРЕЧНОЙ правки: обязан быть конфликт ───────────
         with open(os.path.join(repo, "etlFolder/config.d/LINE.json"), "w",
