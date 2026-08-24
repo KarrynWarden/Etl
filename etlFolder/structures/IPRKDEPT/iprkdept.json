@@ -80,8 +80,8 @@
     },
     {
       "column_name": "otdel",
-      "data_type": "character varying",
-      "data_scale": null,
+      "data_type": "numeric",
+      "data_scale": 0,
       "is_primary_key": null
     },
     {

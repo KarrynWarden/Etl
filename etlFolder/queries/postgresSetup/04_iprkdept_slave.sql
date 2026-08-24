@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS iprkdept (
     dvizit     date,            -- дата прикрепления
     ddepart    date,            -- дата открепления
     mo         integer,         -- код МО (SpMu.Code)
-    otdel      varchar(4),      -- код отделения МО ОООО (SpOtdel.Code) — СТРОКА, см. ниже
+    otdel      numeric(4),      -- код отделения МО ОООО (SpOtdel.Code), максимум 9999
     dept       integer,         -- код участка МО УУ (SpDept.Code)
     subdept    integer,         -- код пункта/ФАП ПП (SpSubDept.Code)
     methprk    smallint,        -- способ прикрепления (1 — террит.-участк., 2 — по заявлению)
@@ -38,15 +38,17 @@ CREATE TABLE IF NOT EXISTS iprkdept (
 );
 
 --------------------------------------------------------------------------------
--- ПОЧЕМУ otdel — varchar(4), а не integer.
+-- ПОЧЕМУ otdel — numeric(4), а не integer.
 --
--- Код отделения хранится с ведущими нулями («0012»), и это часть значения, а не
--- оформление. В integer нули пропадут, и сопоставление с SpOtdel.Code перестанет
--- находить отделение — молча, без ошибки.
+-- На ведущей это NUMBER со шкалой 0 (structures/IPRKDEPT/IPRKDEPT.json), и
+-- сверка структур сравнивает тип со шкалой дословно. integer в Postgres
+-- отдаётся как `integer`, а NUMBER — как `numeric`; типы не сойдутся, и линия
+-- встанет с FLK на первом же прогоне.
 --
--- Плюс формальное: эталон structures/IPRKDEPT/iprkdept.json объявляет
--- character varying. Сверка структур перед прогоном сравнивает типы дословно,
--- и integer дал бы FLK с остановкой линии на первом же запуске.
+-- Размер 4 — из постановки: код отделения не больше 9999.
+--
+-- Эталон ведомой (structures/IPRKDEPT/iprkdept.json) правится ВМЕСТЕ с этой
+-- строкой: там должно стоять data_type `numeric`, data_scale 0.
 --------------------------------------------------------------------------------
 
 
