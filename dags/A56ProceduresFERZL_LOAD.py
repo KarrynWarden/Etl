@@ -1,74 +1,56 @@
+"""DAG-процедура: вызов pck_ferzl_load.ferzl_load() на Postgres A56
+
+Обвязку ниже — расписание, теги, ретраи, соединения — пишет конструктор.
+Тело do_etl_procedures() принадлежит вам: конструктор читает его в редактор и кладёт
+обратно дословно, ни во что не вмешиваясь.
+
+Задача идёт в пуле Etl (buildOperator), то есть НЕ стартует, пока идёт аудит:
+задача-замок etl_lock занимает пул целиком. Для процедуры, которая правит
+таблицы линий, это и нужно — иначе аудит поймает её на середине правки. Для
+процедуры, к переносам не относящейся, это просто ожидание в очереди.
+─── заметка (правится руками, конструктор её сохраняет) ───
+depends_on_past прежней версии здесь нет намеренно: он вешал весь
+DAG-run в нетерминальном состоянии, см. DEFAULT_ARGS.
+"""
+# dagbuilder: даг-процедура (обвязку правит конструктор, тело — ваше)
 import datetime as dt
 import logging
-import colorlog
-import sys
-import json
 
-sys.path.append("../..")  # добавляем две родительские папки в sys.path
+from airflow.models import DAG
 
-from Connect import DbConnectA56Post, DbConnectA56Orcl
-from airflow.models import DAG, TaskInstance
-from airflow.operators.python_operator import PythonOperator
-from airflow.exceptions import AirflowSkipException, AirflowException
-from Functions.functionsFile.takeOneQuery import TakeOneQuery
-from Src.fullPath import FULL_PATH
+from Connect import DbConnectA56Post
+from Functions._dagHelpers import DEFAULT_ARGS, buildOperator, configureLogger
 
-args = {
-    'owner': 'airflow',
-    'start_date': dt.datetime(2023, 10, 23),
-    'retries': 5,
-    'depends_on_past': True,
-    'retry_delay': dt.timedelta(minutes=1),
-    'timezone': 'Asia/Yekaterinburg',
-}
+args = {**DEFAULT_ARGS,
+        "retries": 5,
+        "retry_delay": dt.timedelta(minutes=1)}
 
-def do_etl_procedures():
-    action = "Procedure"
+
+def do_etl_procedures(**context):
+    con = None
     try:
         con = DbConnectA56Post()
         cursor = con.cursor()
         cursor.execute("call pck_ferzl_load.ferzl_load()")
         con.commit()
-        
     except Exception as error:
-        print('При выполнении произошла критическая ошибка..........', error)
+        logging.error("При выполнении произошла критическая ошибка: %s", error)
     finally:
-        try:
-            con
-        except NameError:
-            print(f"соединение Postgres не было открыто")
+        if con is None:
+            logging.info("соединение Postgres не было открыто")
         else:
             cursor.close()
             con.close()
-            print(f"соединение Postgres закрыто")
+            logging.info("соединение Postgres закрыто")
 
-with DAG(dag_id='A56ProceduresFERZL_LOAD',
-         default_args=args,
-         max_active_runs=1,
-         tags=["A56", "procedures", "DbSync"],
-         schedule_interval=dt.timedelta(minutes=10),
-         catchup=False) as dag:
 
-    logger = logging.getLogger('airflow.task')
-    handler = logging.StreamHandler()
-    formatter = colorlog.ColoredFormatter(
-        '%(log_color)s%(asctime)s - %(levelname)s - %(message)s',
-        log_colors={
-            'DEBUG': 'reset',
-            'INFO': 'green',
-            'WARNING': 'yellow',
-            'ERROR': 'red',
-            'CRITICAL': 'bold_red',
-        }
-    )
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-
-    do_etl_procedures = PythonOperator(
-        task_id='do_etl_procedures',
-        provide_context=True,
-        python_callable=do_etl_procedures,
-        dag=dag
-    )
-
-    do_etl_procedures
+with DAG(
+    dag_id="A56ProceduresFERZL_LOAD",
+    default_args=args,
+    max_active_runs=1,
+    tags=['A56', 'procedures', 'DbSync'],
+    schedule_interval=dt.timedelta(minutes=10),
+    catchup=False,
+) as dag:
+    configureLogger()
+    buildOperator("do_etl_procedures", do_etl_procedures)
