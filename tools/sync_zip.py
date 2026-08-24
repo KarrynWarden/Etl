@@ -763,6 +763,35 @@ def drop_stale_generated(root, theirs):
     return dropped
 
 
+def fresh_script(root, tree):
+    """Путь к свежему скрипту из архива, если он отличается от работающего.
+
+    Кладём его РЯДОМ С .git, а не в дерево: иначе рабочая копия окажется
+    грязной, и слияние тут же откажется работать. Дерево получит этот же файл
+    обычным порядком — переносом.
+    """
+    if os.environ.get("ETL_SYNC_FRESH"):
+        return None            # уже перезапускались, второй раз не надо
+    src = os.path.join(tree, "tools", "sync_zip.py")
+    if not os.path.exists(src):
+        return None
+    with open(src, "rb") as fp:
+        new = fp.read()
+    try:
+        with open(os.path.abspath(__file__), "rb") as fp:
+            if fp.read() == new:
+                return None
+    except OSError:
+        return None
+    git_dir = _git(root, "rev-parse", "--git-dir")[1]
+    if not os.path.isabs(git_dir):
+        git_dir = os.path.join(root, git_dir)
+    dst = os.path.join(git_dir, "etl-sync-fresh.py")
+    with open(dst, "wb") as fp:
+        fp.write(new)
+    return dst
+
+
 def update_self(root, tree):
     """Обновить сам скрипт из архива.
 
@@ -1001,6 +1030,8 @@ def main(argv):
                     help="обновить сам этот скрипт из архива и выйти")
     ap.add_argument("--where", action="store_true",
                     help="напечатать найденный путь к архиву и выйти")
+    ap.add_argument("--no-self-update", action="store_true",
+                    help="не перезапускаться кодом из архива")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv)
 
@@ -1026,6 +1057,21 @@ def main(argv):
             print(update_self(root, extract(archive, tmp)))
             return 0
 
+        tree = extract(archive, tmp)
+        # Правила переноса приезжают тем же архивом, который переносится, — и
+        # старым кодом он разбирается по старым правилам. Так и вышло: правило
+        # «мои правки не трогают ваши запросы» приехало ровно тем переносом,
+        # который перед этим переписал iaddress.sql. Разорвать это может только
+        # перезапуск свежим кодом до разбора.
+        if not args.no_self_update:
+            fresh = fresh_script(root, tree)
+            if fresh:
+                print("В архиве скрипт новее — перезапускаюсь его кодом.\n")
+                sys.stdout.flush()
+                shutil.rmtree(tmp, ignore_errors=True)
+                os.execve(sys.executable, [sys.executable, fresh] + list(argv),
+                          dict(os.environ, ETL_SYNC_FRESH="1"))
+
         note = pending_resolve(root, args.branch)
         if note:
             print(note)
@@ -1033,7 +1079,6 @@ def main(argv):
             if "ещё не разобран" in note:
                 return 1
 
-        tree = extract(archive, tmp)
         commit, parent = import_snapshot(tree, root, args.branch,
                                          note=os.path.basename(archive))
         rep = report(root, commit, parent, args.branch)
@@ -1143,6 +1188,9 @@ def _mkzip(path, files, top="Etl-main"):
 
 def _selftest():
     """Проверка на настоящих репозиториях во временных каталогах."""
+    # Иначе первый же архив со своей копией скрипта заменит процесс самопроверки
+    # на себя: перезапуск проверяется отдельно, без execve.
+    os.environ["ETL_SYNC_FRESH"] = "1"
     with tempfile.TemporaryDirectory() as tmp:
         repo = os.path.join(tmp, "repo")
         os.makedirs(repo)
@@ -1329,6 +1377,19 @@ def _selftest():
         assert _git(repo, "rev-parse", SNAPSHOT_BRANCH)[1] == base_now, \
             "--update-self сдвинул базу"
         os.unlink(me)   # файл только на диске, в индексе его нет
+
+        # Перезапуск свежим кодом: сам execve тут не зовём, но проверяем, что
+        # решение принимается верно и файл кладётся ВНЕ дерева — иначе рабочая
+        # копия станет грязной и слияние тут же откажется работать.
+        del os.environ["ETL_SYNC_FRESH"]
+        with tempfile.TemporaryDirectory() as tS:
+            fresh = fresh_script(repo, extract(zip_self, tS))
+            assert fresh and os.path.exists(fresh), fresh
+            assert _git(repo, "status", "--porcelain")[1] == "", \
+                "свежий скрипт лёг в дерево и запачкал рабочую копию"
+            os.environ["ETL_SYNC_FRESH"] = "1"
+            assert fresh_script(repo, extract(zip_self, tS)) is None, \
+                "перезапуск зациклился бы"
 
         # ── лишнее в моих областях: назвать, но молча не удалять ─────────────
         stray = "tools/webui/src/SqlArea.jsx"   # переименованный, осевший от копирования

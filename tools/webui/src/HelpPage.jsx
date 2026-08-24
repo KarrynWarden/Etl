@@ -133,15 +133,14 @@ export default function HelpPage() {
                   </Paragraph>
                   <pre style={{ margin: 0 }}>
 {`cd <папка репозитория>
-python3 tools/sync_zip.py Etl-main.zip --base          # первый раз
-python3 tools/sync_zip.py Etl-main.zip --update-self   # обновить сам скрипт
-python3 tools/sync_zip.py Etl-main.zip                 # перенос`}
+python3 tools/sync_zip.py Etl-main.zip --base   # первый раз
+python3 tools/sync_zip.py Etl-main.zip          # дальше`}
                   </pre>
                   <Paragraph style={{ marginTop: 8, marginBottom: 0 }}>
                     Путь набирать не нужно — архив ищется на подключённых
-                    носителях по имени, и <Text code>unzip</Text> так не умеет:
-                    отсюда <Text code>--update-self</Text>, которым скрипт
-                    достаёт из архива свою же новую версию. Ваши структуры и
+                    носителях по имени. Если в архиве скрипт новее, он сам
+                    перезапустится его кодом: правила переноса приезжают тем же
+                    архивом, который переносится. Ваши структуры и
                     запросы слияние не трогает: файла нет ни в одном снимке —
                     значит он ваш. Больше того: запросы, структуры и конфиги
                     линий пишет конструктор на этой машине, поэтому мои правки
