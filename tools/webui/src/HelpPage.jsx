@@ -135,7 +135,7 @@ export default function HelpPage() {
 {`cd <папка репозитория>
 python3 tools/sync_zip.py Etl-main.zip --base          # первый раз
 python3 tools/sync_zip.py Etl-main.zip --update-self   # обновить сам скрипт
-python3 tools/sync_zip.py Etl-main.zip --clean         # перенос с уборкой`}
+python3 tools/sync_zip.py Etl-main.zip                 # перенос`}
                   </pre>
                   <Paragraph style={{ marginTop: 8, marginBottom: 0 }}>
                     Путь набирать не нужно — архив ищется на подключённых
@@ -144,8 +144,9 @@ python3 tools/sync_zip.py Etl-main.zip --clean         # перенос с уб�
                     достаёт из архива свою же новую версию. Ваши структуры и
                     запросы слияние не трогает: файла нет ни в одном снимке —
                     значит он ваш. Оборотная сторона того же правила — мусор от
-                    прежних копирований в моих папках; его слияние называет
-                    списком, а убирает по <Text code>--clean</Text>.
+                    переименований; его слияние называет списком, а убирает
+                    только по указанному пути:{' '}
+                    <Text code>--clean tools/webui/src</Text>.
                   </Paragraph>
                 </>
               ),

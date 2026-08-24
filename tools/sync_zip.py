@@ -370,7 +370,8 @@ def _git(root, *args, **kw):
     timeout = kw.get("timeout", 300)
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0", LC_ALL="C.UTF-8")
     p = subprocess.run(["git", "-C", root] + list(args), capture_output=True,
-                       text=True, env=env, timeout=timeout)
+                       text=True, env=env, timeout=timeout,
+                       input=kw.get("stdin"))
     if check and p.returncode != 0:
         raise RuntimeError("git {}:\n{}".format(
             " ".join(args), (p.stderr or p.stdout).strip()))
@@ -508,10 +509,27 @@ def report(root, commit, parent, branch=SNAPSHOT_BRANCH):
     if parent:
         snap |= set(_names(root, "ls-tree", "-r", "--name-only", parent))
     here = _names(root, "ls-tree", "-r", "--name-only", head)
-    out["strays"] = sorted(p for p in here if p not in snap
-                           and not p.startswith(YOURS)
-                           and not p.startswith(GENERATED))
+    strays = [p for p in here if p not in snap
+              and not p.startswith(YOURS)
+              and not p.startswith(GENERATED)]
+    out["strays"] = sorted(set(strays) - _ignored(root, strays))
     return out
+
+
+def _ignored(root, paths):
+    """Какие из путей подпадают под .gitignore.
+
+    В моих архивах таких файлов не бывает по построению — GitHub кладёт в zip
+    только отслеживаемое. Значит `voila-offline/wheels/*.whl`, у меня
+    неверсионируемые, а у вас закоммиченные, будут числиться «лишними» вечно:
+    полсотни строк шума в каждом отчёте, из-за которых список перестают читать.
+    `--no-index` обязателен — без него git не проверяет уже отслеживаемое.
+    """
+    if not paths:
+        return set()
+    rc, out, _ = _git(root, "check-ignore", "--no-index", "--stdin",
+                      stdin="\n".join(paths), check=False)
+    return set(out.splitlines()) if rc == 0 else set()
 
 
 def render(rep):
@@ -553,15 +571,22 @@ def render(rep):
 
     if rep["strays"] and not rep["first"]:
         add("")
-        add("ЛИШНЕЕ В МОИХ ОБЛАСТЯХ ({}) — нет ни в прошлом архиве, ни в этом.".format(
-            len(rep["strays"])))
-        add("Взяться там такому неоткуда, кроме как от копирования папок поверх:")
+        add("НЕТ НИ В ПРОШЛОМ АРХИВЕ, НИ В ЭТОМ ({}):".format(len(rep["strays"])))
         for p in rep["strays"][:20]:
             add("    {}".format(p))
         if len(rep["strays"]) > 20:
             add("    … и ещё {}".format(len(rep["strays"]) - 20))
-        add("  (сам не удаляю: правило «нет в снимках — значит ваш» бережёт запросы.")
-        add("   Убрать вместе с переносом — тот же запуск с --clean)")
+            by_dir = {}
+            for p in rep["strays"]:
+                by_dir[os.path.dirname(p) or "."] = by_dir.get(
+                    os.path.dirname(p) or ".", 0) + 1
+            add("  по каталогам:")
+            for name, count in sorted(by_dir.items(), key=lambda kv: -kv[1])[:8]:
+                add("    {:<40} {}".format(name, count))
+        add("  Часть — мусор от переименований (рядом с CodeArea.jsx осел")
+        add("  SqlArea.jsx), часть — ваши собственные файлы. Разбирать это мне")
+        add("  нечем, поэтому уборка только по указанному пути:")
+        add("      --clean tools/webui/src")
 
     add("")
     if rep["dirty"]:
@@ -733,27 +758,44 @@ def clean_strays(root, strays):
         "    " + p for p in gone)
 
 
-def base_lies(root, base):
-    """Файлы, которые база числит принесёнными, а в дереве их нет.
+def base_lies(root, base, theirs):
+    """Файлы, которые слияние оставит удалёнными, хотя удалять их никто не решал.
 
-    База — это «архив, который уже применён к этому дереву». Если она указывает
-    на архив, чьё содержимое до дерева не доехало, слияние выйдет наизнанку:
-    трёхсторонний разбор решит, что эти файлы УДАЛИЛИ вы, и честно оставит их
-    удалёнными. Отчёт при этом покажет `0/0/0` — сравниваются-то два архива, а
-    они и правда одинаковы, — и перенос молча не состоится.
+    Трёхсторонний разбор считает файл удалённым нами, если он есть в базе и нет в
+    дереве. Опасно это ровно тогда, когда файл при этом ЕСТЬ в принесённом
+    архиве: значит он живой, и слияние молча оставит его снесённым.
 
-    Так уже трижды выходило после неудачных запусков старой версии, двигавшей
-    базу до слияния. Признак у этой поломки точный, поэтому и проверяется точно,
-    а не «на глаз по нулям в отчёте».
+    Пересечение с принесённым архивом здесь не украшение, а суть проверки. Без
+    него ловились и безобидные случаи: файл, переименованный у меня давным-давно
+    и потому отсутствующий и в дереве, и в новом архиве, — удалять там уже нечего
+    и предупреждать не о чем.
 
     Свои области не смотрим: линию вы могли удалить и сами, это ваше право.
     """
-    theirs = set(_names(root, "ls-tree", "-r", "--name-only", base))
+    base_files = set(_names(root, "ls-tree", "-r", "--name-only", base))
+    live = base_files & set(_names(root, "ls-tree", "-r", "--name-only", theirs))
     here = set(_names(root, "ls-tree", "-r", "--name-only", "HEAD"))
-    return sorted(p for p in theirs - here if not p.startswith(YOURS))
+    return sorted(p for p in live - here if not p.startswith(YOURS))
 
 
-def base_candidate(root, branch):
+def base_ran_ahead(root, base, theirs):
+    """База указывает на ТОТ ЖЕ архив, что принесён, а его содержимого в дереве нет.
+
+    Это точная подпись поломки, стоившей трёх переносов подряд: старая версия
+    двигала базу до слияния, и после неудачи база числила применённым то, чего
+    дерево не получало. Отчёт показывал `0/0/0` — сравнивались-то два одинаковых
+    архива, — и понять по нему ничего было нельзя.
+
+    Отличать эту беду от обычного расхождения важно: здесь потерян перенос
+    целиком, и работать дальше нельзя, а там — один устаревший файл, о котором
+    достаточно сказать.
+    """
+    same = (_git(root, "rev-parse", base + "^{tree}")[1]
+            == _git(root, "rev-parse", theirs + "^{tree}")[1])
+    return same and bool(base_lies(root, base, theirs))
+
+
+def base_candidate(root, branch, theirs):
     """Куда откатить базу: свежайшее её прошлое значение, не врущее про дерево.
 
     Ветка помнит все свои значения в reflog — там же лежит и то, которое было до
@@ -761,12 +803,36 @@ def base_candidate(root, branch):
     той же проверкой, что и поймала подмену.
     """
     for sha in _names(root, "rev-list", "-g", branch):
-        if not base_lies(root, sha):
+        if not base_lies(root, sha, theirs):
             return sha
     return None
 
 
-def merge(root, base, theirs):
+def _resolve_both_deleted(root):
+    """Снять «конфликт» там, где файл удалили ОБЕ стороны.
+
+    `read-tree -m` оставляет такой файл в индексе одной первой ступенью, а
+    `git-merge-one-file` на этом спотыкается и выдаёт заведомо неверное:
+    «удалён на одной ветке, но на другой изменены права» — после чего
+    `merge-index` падает целиком. Никакого конфликта тут нет: обе стороны хотят
+    одного, файла быть не должно.
+
+    Случай не редкий: он наступает всякий раз, когда я переименовал файл, а вы
+    у себя старое имя тоже успели снести.
+    """
+    stages = {}
+    for record in _git(root, "ls-files", "-u", "-z")[1].split("\0"):
+        if not record:
+            continue
+        meta, _, path = record.partition("\t")
+        stages.setdefault(path, set()).add(meta.split()[-1])
+    gone = [p for p, s in stages.items() if s == set(["1"])]
+    for path in gone:
+        _git(root, "update-index", "--force-remove", "--", path, check=False)
+    return gone
+
+
+def merge(root, base, theirs, restore=()):
     """Применить снимок к рабочей ветке — ОБЫЧНЫМ коммитом, без слияния веток.
 
     Трёхстороннее слияние делается руками, потому что база известна и без общей
@@ -792,7 +858,12 @@ def merge(root, base, theirs):
                         check=False)
     if rc != 0:
         raise Otkaz("Не смог разложить слияние:\n" + (err or out).strip())
+    _resolve_both_deleted(root)
     _git(root, "merge-index", "-o", "git-merge-one-file", "-a", check=False)
+    # Файлы, живые в архиве, но отсутствующие в дереве, разбор считает
+    # удалёнными нами. Если это не так — берём их из архива как есть.
+    for path in restore:
+        _git(root, "checkout", theirs, "--", path, check=False)
     dropped = drop_stale_generated(root, theirs)
 
     conflicts = _names(root, "diff", "--name-only", "--diff-filter=U")
@@ -827,8 +898,11 @@ def main(argv):
     ap.add_argument("--base", action="store_true",
                     help="первый запуск: завести ветку-снимок, не сливая")
     ap.add_argument("--yes", action="store_true", help="не спрашивать подтверждения")
-    ap.add_argument("--clean", action="store_true",
-                    help="заодно убрать лишнее в моих областях (список — в отчёте)")
+    ap.add_argument("--clean", metavar="ПУТЬ",
+                    help="убрать лишнее под этим путём (список — в отчёте); "
+                         "путь обязателен — сплошной уборки тут не бывает")
+    ap.add_argument("--restore-missing", action="store_true",
+                    help="взять из архива файлы, которых нет в дереве")
     ap.add_argument("--update-self", action="store_true",
                     help="обновить сам этот скрипт из архива и выйти")
     ap.add_argument("--where", action="store_true",
@@ -889,30 +963,43 @@ def main(argv):
         # База обязана описывать дерево, а не соседний архив. Если она врёт,
         # слияние вывернется наизнанку и промолчит — это уже трижды съедало
         # перенос целиком, поэтому проверка стоит до всего остального.
-        if parent and not args.base:
-            lost = base_lies(root, parent)
-            if lost:
-                print()
-                print("!! База врёт: она числит принесёнными {} файлов, которых".format(
-                    len(lost)))
-                print("   в дереве нет. Значит прошлый архив до дерева не доехал,")
-                print("   а базу сдвинули. Слить сейчас — значит удалить их совсем.")
-                for path in lost[:10]:
-                    print("       " + path)
-                if len(lost) > 10:
-                    print("       … и ещё {}".format(len(lost) - 10))
-                back = base_candidate(root, args.branch)
-                print()
-                if back:
-                    print("   Вернуть базу на последнее честное значение:")
-                    print("       git update-ref refs/heads/{} {}".format(
-                        args.branch, back[:9]))
-                    print("   и повторить эту же команду.")
-                else:
-                    print("   Честного значения в истории ветки не нашлось.")
-                    print("   Если эти файлы вы удалили сами и намеренно — скажите")
-                    print("   об этом переносу: тот же запуск с --base.")
-                return 1
+        lost = base_lies(root, parent, commit) if parent and not args.base else []
+        if lost and base_ran_ahead(root, parent, commit):
+            # Подпись потерянного переноса: база равна принесённому архиву, а
+            # его содержимого в дереве нет. Работать дальше нельзя — слияние
+            # оставит непринесённое удалённым.
+            print()
+            print("!! База указывает на этот же архив, но его содержимого в дереве")
+            print("   нет ({} файлов). Значит прошлый перенос не доехал, а базу".format(
+                len(lost)))
+            print("   всё равно сдвинули. Слить сейчас — значит удалить их совсем.")
+            for path in lost[:10]:
+                print("       " + path)
+            if len(lost) > 10:
+                print("       … и ещё {}".format(len(lost) - 10))
+            back = base_candidate(root, args.branch, commit)
+            print()
+            if back:
+                print("   Вернуть базу на последнее честное значение:")
+                print("       git update-ref refs/heads/{} {}".format(
+                    args.branch, back[:9]))
+                print("   и повторить эту же команду.")
+            else:
+                print("   Честного значения в истории ветки не нашлось.")
+                print("   Если эти файлы вы удалили сами и намеренно — скажите")
+                print("   об этом переносу: тот же запуск с --base.")
+            return 1
+        if lost and not args.restore_missing:
+            # Обычное расхождение: файл живой в архиве, но в дереве его нет.
+            # Отказывать из-за этого не за что — сказать надо.
+            print()
+            print("!! В дереве нет {} файлов, которые в архиве живы:".format(len(lost)))
+            for path in lost[:10]:
+                print("       " + path)
+            if len(lost) > 10:
+                print("       … и ещё {}".format(len(lost) - 10))
+            print("   Слияние сочтёт их удалёнными вами и оставит удалёнными.")
+            print("   Если это не так — тот же запуск с --restore-missing.")
 
         if args.dry_run:
             print("\nНичего не применялось и не запомнено — только отчёт.")
@@ -930,11 +1017,13 @@ def main(argv):
                 print("Отменено, ничего не тронуто. Повторите ту же команду,")
                 print("когда будете готовы, — принесёт то же самое.")
                 return 1
-        ok, log = merge(root, parent, commit)
+        ok, log = merge(root, parent, commit,
+                        restore=lost if args.restore_missing else ())
         print(log)
         if ok:
-            if args.clean and rep["strays"]:
-                print(clean_strays(root, rep["strays"]))
+            if args.clean:
+                picked = [p for p in rep["strays"] if p.startswith(args.clean)]
+                print(clean_strays(root, picked))
             remember(root, commit, args.branch)
         else:
             pending_write(root, commit)
@@ -1062,17 +1151,69 @@ def _selftest():
         with tempfile.TemporaryDirectory() as t5:
             ahead, _ = import_snapshot(extract(zip4, t5), repo, "проба2")
         _git(repo, "update-ref", "refs/heads/" + SNAPSHOT_BRANCH, ahead)
-        assert base_lies(repo, ahead) == ["tools/webui/src/NEW.jsx"], \
-            base_lies(repo, ahead)
+        assert base_lies(repo, ahead, ahead) == ["tools/webui/src/NEW.jsx"], \
+            base_lies(repo, ahead, ahead)
+        assert base_ran_ahead(repo, ahead, ahead)
         assert main([zip4, "--root", repo, "--yes"]) == 1, \
             "перенос пошёл на лживой базе — это молча съедает правки"
         assert not exists("tools/webui/src/NEW.jsx")
         # подсказка про откат обязана указывать на честное значение
-        assert base_candidate(repo, SNAPSHOT_BRANCH) == honest, \
-            base_candidate(repo, SNAPSHOT_BRANCH)
+        assert base_candidate(repo, SNAPSHOT_BRANCH, ahead) == honest, \
+            base_candidate(repo, SNAPSHOT_BRANCH, ahead)
         _git(repo, "update-ref", "refs/heads/" + SNAPSHOT_BRANCH, honest)
         assert main([zip4, "--root", repo, "--yes"]) == 0, "после отката не сработало"
         assert exists("tools/webui/src/NEW.jsx"), "правка так и не доехала"
+
+        # ── а вот из-за ДАВНО ПЕРЕИМЕНОВАННОГО файла отказывать не за что ────
+        # Он есть в базе, нет в дереве и нет в новом архиве: удалять нечего,
+        # терять нечего. Первая версия проверки валилась и на таком — один
+        # устаревший .example останавливал весь перенос.
+        stale_base = _git(repo, "rev-parse", SNAPSHOT_BRANCH)[1]
+        gone = "deploy/dagbuilder/apache-etl-configurator.conf.example"
+        with open(os.path.join(repo, "tools/dag_builder.py"), encoding="utf-8") as fp:
+            keep = fp.read()
+        zip_old = os.path.join(tmp, "old.zip")
+        _mkzip(zip_old, dict(second, **{gone: "давно переименован\n",
+                                        "tools/webui/src/NEW.jsx": "новьё\n",
+                                        "tools/dag_builder.py": keep}))
+        with tempfile.TemporaryDirectory() as t7:
+            with_gone, _ = import_snapshot(extract(zip_old, t7), repo, "проба4")
+        assert base_lies(repo, with_gone, stale_base) == [], \
+            "исчезнувший у обеих сторон файл принят за потерю"
+        _git(repo, "update-ref", "refs/heads/" + SNAPSHOT_BRANCH, with_gone)
+        zip7 = os.path.join(tmp, "a7.zip")
+        _mkzip(zip7, dict(second, **{"tools/dag_builder.py": "# v3.5\n",
+                                     "tools/webui/src/NEW.jsx": "новьё\n"}))
+        assert main([zip7, "--root", repo, "--yes"]) == 0, \
+            "перенос остановился из-за давно переименованного файла"
+        _git(repo, "update-ref", "refs/heads/" + SNAPSHOT_BRANCH,
+             _git(repo, "rev-parse", SNAPSHOT_BRANCH)[1])
+
+        # ── а живой в архиве файл, которого нет в дереве, — предупреждение ───
+        # Не отказ: терять нечего, перенос идёт. Но по умолчанию разбор сочтёт
+        # его удалённым нами, и вернуть его должен уметь тот же запуск.
+        live = "deploy/dagbuilder/install.sh"
+        with open(os.path.join(repo, "tools/dag_builder.py"), encoding="utf-8") as fp:
+            same = fp.read()   # чтобы в проверке участвовал ровно один файл
+        eighth = dict(second, **{"tools/dag_builder.py": same,
+                                 "tools/webui/src/NEW.jsx": "новьё\n",
+                                 live: "#!/bin/sh\n"})
+        zip8 = os.path.join(tmp, "a8.zip")
+        _mkzip(zip8, eighth)
+        with tempfile.TemporaryDirectory() as t8:
+            with_live, _ = import_snapshot(extract(zip8, t8), repo, "проба5")
+        _git(repo, "update-ref", "refs/heads/" + SNAPSHOT_BRANCH, with_live)
+        assert base_lies(repo, with_live, with_live) == [live]
+        # база равна архиву — это подпись потерянного переноса, отказ
+        assert main([zip8, "--root", repo, "--yes"]) == 1
+        zip9 = os.path.join(tmp, "a9.zip")
+        _mkzip(zip9, dict(eighth, **{"tools/webui/src/NEW.jsx": "новьё2\n"}))
+        assert main([zip9, "--root", repo, "--yes"]) == 0, "предупреждение стало отказом"
+        assert not exists(live), "файл вернулся сам, без просьбы"
+        zipA = os.path.join(tmp, "aA.zip")
+        _mkzip(zipA, dict(eighth, **{"tools/webui/src/NEW.jsx": "новьё3\n"}))
+        assert main([zipA, "--root", repo, "--yes", "--restore-missing"]) == 0
+        assert exists(live), "--restore-missing не вернул файл"
 
         # ── петля: исправление переносчика приходит его же архивом ───────────
         # Достать его руками нельзя: архив на флешке, а `unzip` носители по
@@ -1096,9 +1237,17 @@ def _selftest():
 
         # ── лишнее в моих областях: назвать, но молча не удалять ─────────────
         stray = "tools/webui/src/SqlArea.jsx"   # переименованный, осевший от копирования
-        with open(os.path.join(repo, stray), "w", encoding="utf-8") as fp:
-            fp.write("старьё\n")
-        _git(repo, "add", "-A")
+        mine_own = "Архив.zip"                  # а это уже ваш файл, не мусор
+        ignored = "voila-offline/wheels/x.whl"  # у меня не версионируется вовсе
+        for path in (stray, mine_own, ignored):
+            full = os.path.join(repo, path)
+            os.makedirs(os.path.dirname(full), exist_ok=True) if os.path.dirname(
+                path) else None
+            with open(full, "w", encoding="utf-8") as fp:
+                fp.write("старьё\n")
+        with open(os.path.join(repo, ".gitignore"), "w", encoding="utf-8") as fp:
+            fp.write("voila-offline/wheels/\n")
+        _git(repo, "add", "-A", "-f")
         _git(repo, "commit", "-q", "-m", "мусор от копирования")
         fourth = dict(second, **{"tools/dag_builder.py": "# v4\n",
                                  "tools/webui/src/NEW.jsx": "новьё\n"})
@@ -1112,13 +1261,20 @@ def _selftest():
             assert stray in rep["strays"], rep["strays"]
             # ваши файлы в этот список попадать не смеют
             assert "etlFolder/queries/customQueries/MOJ.sql" not in rep["strays"]
-            assert "ЛИШНЕЕ В МОИХ ОБЛАСТЯХ" in render(rep)
+            # и неверсионируемое у меня — тоже: в моих архивах его не бывает по
+            # построению, а в отчёте оно давало полсотни строк шума
+            assert ignored not in rep["strays"], rep["strays"]
+            assert "НЕТ НИ В ПРОШЛОМ АРХИВЕ" in render(rep)
         assert main([zip5, "--root", repo, "--yes"]) == 0
         assert exists(stray), "лишнее удалили без спроса"
         zip6 = os.path.join(tmp, "a6.zip")
         _mkzip(zip6, dict(fourth, **{"tools/dag_builder.py": "# v5\n"}))
-        assert main([zip6, "--root", repo, "--yes", "--clean"]) == 0
+        assert main([zip6, "--root", repo, "--yes",
+                     "--clean", "tools/webui/src"]) == 0
         assert not exists(stray), "--clean не убрал лишнее"
+        # уборка ограничена указанным путём: сплошного сноса не бывает, иначе
+        # вместе с мусором уехали бы личные файлы из корня
+        assert exists(mine_own), "--clean вышел за указанный путь"
         assert exists("etlFolder/queries/customQueries/MOJ.sql"), \
             "--clean снёс пользовательский файл"
 
