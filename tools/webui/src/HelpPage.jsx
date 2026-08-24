@@ -133,13 +133,19 @@ export default function HelpPage() {
                   </Paragraph>
                   <pre style={{ margin: 0 }}>
 {`cd <папка репозитория>
-python3 tools/sync_zip.py Etl-main.zip --base   # первый раз
-python3 tools/sync_zip.py Etl-main.zip          # дальше`}
+python3 tools/sync_zip.py Etl-main.zip --base          # первый раз
+python3 tools/sync_zip.py Etl-main.zip --update-self   # обновить сам скрипт
+python3 tools/sync_zip.py Etl-main.zip --clean         # перенос с уборкой`}
                   </pre>
                   <Paragraph style={{ marginTop: 8, marginBottom: 0 }}>
                     Путь набирать не нужно — архив ищется на подключённых
-                    носителях по имени. Ваши структуры и запросы слияние не
-                    трогает: файла нет ни в одном снимке — значит он ваш.
+                    носителях по имени, и <Text code>unzip</Text> так не умеет:
+                    отсюда <Text code>--update-self</Text>, которым скрипт
+                    достаёт из архива свою же новую версию. Ваши структуры и
+                    запросы слияние не трогает: файла нет ни в одном снимке —
+                    значит он ваш. Оборотная сторона того же правила — мусор от
+                    прежних копирований в моих папках; его слияние называет
+                    списком, а убирает по <Text code>--clean</Text>.
                   </Paragraph>
                 </>
               ),

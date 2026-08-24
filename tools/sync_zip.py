@@ -683,6 +683,37 @@ def drop_stale_generated(root, theirs):
     return dropped
 
 
+def update_self(root, tree):
+    """Обновить сам скрипт из архива.
+
+    Задача с петлёй: исправление переносчика приходит тем же архивом, который
+    надо переносить, а переносить его умеет только исправленный переносчик.
+    Раскручивать петлю руками не выходит — архив лежит на флешке, чей путь
+    меняется при каждом подключении, и `unzip Etl-main.zip` его не находит.
+    Искать носители умеет этот скрипт, вот пусть он себя и вынимает.
+
+    Ставим до всех проверок и молча ничего не делаем, если версия та же.
+    """
+    src = os.path.join(tree, "tools", "sync_zip.py")
+    if not os.path.exists(src):
+        raise Otkaz("В архиве нет tools/sync_zip.py — обновлять нечем.")
+    dst = os.path.join(root, "tools", "sync_zip.py")
+    with open(src, "rb") as fp:
+        new = fp.read()
+    old = b""
+    if os.path.exists(dst):
+        with open(dst, "rb") as fp:
+            old = fp.read()
+    if new == old:
+        return "Скрипт уже такой же, как в архиве."
+    with open(dst, "wb") as fp:
+        fp.write(new)
+    return ("Скрипт обновлён из архива: {}\n"
+            "Запустите ту же команду ещё раз — теперь она пойдёт новым кодом.\n"
+            "(правка не закоммичена; тот же файл придёт и самим переносом)"
+            .format(os.path.relpath(dst, root)))
+
+
 def clean_strays(root, strays):
     """Убрать перечисленное отдельным коммитом — по явной просьбе (--clean).
 
@@ -798,6 +829,10 @@ def main(argv):
     ap.add_argument("--yes", action="store_true", help="не спрашивать подтверждения")
     ap.add_argument("--clean", action="store_true",
                     help="заодно убрать лишнее в моих областях (список — в отчёте)")
+    ap.add_argument("--update-self", action="store_true",
+                    help="обновить сам этот скрипт из архива и выйти")
+    ap.add_argument("--where", action="store_true",
+                    help="напечатать найденный путь к архиву и выйти")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv)
 
@@ -813,8 +848,16 @@ def main(argv):
         print(err)
         return 1
 
+    if args.where:
+        print(archive)
+        return 0
+
     tmp = tempfile.mkdtemp(prefix="etl-sync-")
     try:
+        if args.update_self:
+            print(update_self(root, extract(archive, tmp)))
+            return 0
+
         note = pending_resolve(root, args.branch)
         if note:
             print(note)
@@ -1030,6 +1073,26 @@ def _selftest():
         _git(repo, "update-ref", "refs/heads/" + SNAPSHOT_BRANCH, honest)
         assert main([zip4, "--root", repo, "--yes"]) == 0, "после отката не сработало"
         assert exists("tools/webui/src/NEW.jsx"), "правка так и не доехала"
+
+        # ── петля: исправление переносчика приходит его же архивом ───────────
+        # Достать его руками нельзя: архив на флешке, а `unzip` носители по
+        # имени не ищет — искать умеет только этот скрипт. Пусть себя и вынимает.
+        base_now = _git(repo, "rev-parse", SNAPSHOT_BRANCH)[1]
+        me = os.path.join(repo, "tools", "sync_zip.py")
+        os.makedirs(os.path.dirname(me), exist_ok=True)
+        with open(me, "w", encoding="utf-8") as fp:
+            fp.write("# старый\n")
+        zip_self = os.path.join(tmp, "self.zip")
+        _mkzip(zip_self, dict(second, **{"tools/sync_zip.py": "# новый\n"}))
+        assert main([zip_self, "--root", repo, "--update-self"]) == 0
+        with open(me, encoding="utf-8") as fp:
+            assert fp.read() == "# новый\n", "скрипт не обновился из архива"
+        # повтор ничего не портит и говорит об этом
+        assert main([zip_self, "--root", repo, "--update-self"]) == 0
+        # обновление себя НЕ считается переносом: база на месте, дерево не слито
+        assert _git(repo, "rev-parse", SNAPSHOT_BRANCH)[1] == base_now, \
+            "--update-self сдвинул базу"
+        os.unlink(me)   # файл только на диске, в индексе его нет
 
         # ── лишнее в моих областях: назвать, но молча не удалять ─────────────
         stray = "tools/webui/src/SqlArea.jsx"   # переименованный, осевший от копирования
