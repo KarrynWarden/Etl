@@ -134,6 +134,22 @@ YOURS = ("etlFolder/", "dags/")
 # перевёрнуто: чего нет в принесённом снимке — то мусор.
 GENERATED = ("tools/webui/dist/assets/",)
 
+# Файлы, чей ХОЗЯИН — рабочая машина, а не мой репозиторий. Их пишет
+# конструктор, и в них оседает состояние, которого у меня нет и быть не может:
+# я вижу только тот срез, что мне показали. Мои копии здесь нужны для контекста
+# — чтобы понимать, какие линии существуют, — но авторитетом не являются.
+#
+# Поэтому правило переноса тут особое: если файл изменился у МЕНЯ, а у вас нет,
+# слияние всё равно оставит ваш. Проверка это и показала: маркер, положенный
+# мной в customQueries/iaddress.sql, доехал и переписал файл — ровно то, чего
+# делать нельзя. Сказать об изменении надо, применять его — нет.
+#
+# Framework-запросы (`queries/general`, `oracleSetup`, `procedures`) сюда не
+# входят: это мой код, и правки в нём должны доезжать как обычно.
+STATE = ("etlFolder/config.d/", "etlFolder/SpTableName.d/", "etlFolder/SpOnce.d/",
+         "etlFolder/queries/customQueries/", "etlFolder/queries/sp/",
+         "etlFolder/structures/")
+
 
 class Otkaz(Exception):
     """Ошибка, которую пользователю показывают текстом, а не трассировкой."""
@@ -498,6 +514,7 @@ def report(root, commit, parent, branch=SNAPSHOT_BRANCH):
 
     touched = out["added"] + out["changed"] + out["removed"]
     out["yours"] = sorted(p for p in touched if p.startswith(YOURS))
+    out["kept"] = state_kept(root, parent, commit) if parent else []
 
     # Мусор от прежних копирований: файл лежит в дереве, но его нет НИ В ОДНОМ
     # снимке — ни в прошлом архиве, ни в нынешнем. Слияние его не тронет и не
@@ -564,10 +581,15 @@ def render(rep):
     if rep["yours"]:
         add("")
         add("ВАШИ ОБЛАСТИ — посмотрите глазами, здесь бывают ваши собственные правки:")
+        kept = set(rep["kept"])
         for p in rep["yours"]:
-            add("    {}".format(p))
+            add("    {}{}".format(p, "   <- оставлю как есть" if p in kept else ""))
         add("  (структуры, запросы и конфиги линий у вас могут отличаться от моих;")
         add("   слияние без конфликта тут не означает, что этого хотели)")
+        if kept:
+            add("  Помеченные я менял, а вы нет — но хозяин здесь ваша машина:")
+            add("  в файле может стоять состояние, которого в моём срезе нет.")
+            add("  Правку покажу, применять не стану.")
 
     if rep["strays"] and not rep["first"]:
         add("")
@@ -614,18 +636,25 @@ def _pending_path(root):
     return os.path.join(git_dir, "etl-sync-pending")
 
 
-def pending_write(root, commit):
+def pending_write(root, commit, base, conflicts):
     """Отметить перенос незавершённым: остались конфликты.
 
-    Храним И снимок, И то, на каком коммите стояла ветка. По второму потом
-    видно, чем кончился разбор: HEAD сдвинулся — конфликты разрешены и
-    закоммичены, значит архив применён; HEAD на месте — человек откатился
-    (git reset), значит не применён. Без этого пришлось бы либо двигать базу
-    вслепую (и терять правки, если откатились), либо не двигать никогда (и
-    получать те же конфликты на каждом следующем архиве).
+    Храним снимок, базу и список конфликтов — по ним следующий запуск проверит,
+    чем кончился разбор. Сдвиг HEAD для этого не годится: человек может
+    откатиться (`git reset --hard`), а потом закоммитить что-то своё, и по
+    одному лишь «HEAD уехал» перенос засчитался бы применённым. База ушла бы
+    вперёд дерева — та самая поломка, что съела три переноса подряд.
+
+    Признак надёжный: у настоящего разрешения в дереве оказываются ВСЕ
+    неконфликтные файлы архива, потому что `read-tree` разложил их в индекс ещё
+    до вмешательства человека, и его `git commit` забрал их с собой. После
+    отката их там нет, и посторонний коммит этого не изменит.
     """
     with open(_pending_path(root), "w", encoding="utf-8") as fp:
-        fp.write("{} {}\n".format(commit, _git(root, "rev-parse", "HEAD")[1]))
+        fp.write("{} {} {}\n".format(commit, base,
+                                     _git(root, "rev-parse", "HEAD")[1]))
+        for path in conflicts:
+            fp.write(path + "\n")
 
 
 def pending_resolve(root, branch=SNAPSHOT_BRANCH):
@@ -635,22 +664,48 @@ def pending_resolve(root, branch=SNAPSHOT_BRANCH):
         return ""
     try:
         with open(path, encoding="utf-8") as fp:
-            commit, head = fp.read().split()
-    except (OSError, ValueError):
+            lines = fp.read().splitlines()
+        commit, base, head = lines[0].split()
+        conflicts = [l for l in lines[1:] if l.strip()]
+    except (OSError, ValueError, IndexError):
         os.remove(path)
         return ""
     if _git(root, "diff", "--name-only", "--diff-filter=U")[1]:
         return ("Прошлый перенос ещё не разобран — в дереве остались конфликты.\n"
                 "Закончите с ними (git add / git commit) или откатитесь\n"
                 "(git reset --hard HEAD), потом повторите.")
-    now = _git(root, "rev-parse", "HEAD")[1]
     os.remove(path)
-    if now != head:
+    if pending_applied(root, commit, base, conflicts, head):
         remember(root, commit, branch)
         return ("Прошлый перенос был с конфликтами и вы их закоммитили — "
                 "засчитываю\nтот архив применённым.")
     return ("Прошлый перенос был с конфликтами и откачен — считаю, что он не "
             "применялся.\nЕсли те правки нужны, они придут этим архивом снова.")
+
+
+def pending_applied(root, commit, base, conflicts, head):
+    """Доехал ли до дерева тот перенос, что оборвался на конфликтах.
+
+    Смотрим на неконфликтные файлы архива: `read-tree` разложил их в индекс до
+    того, как человек взялся за конфликты, поэтому его `git commit` забрал их с
+    собой. Совпали с архивом — разбор доведён; не совпали — откатились.
+
+    Ваши области из проверки исключены: их слияние намеренно не применяет, и
+    требовать совпадения там значило бы всегда считать перенос неудавшимся.
+    """
+    changed = _names(root, "diff", "--name-only", base, commit)
+    check = [p for p in changed
+             if p not in conflicts and not p.startswith(STATE)]
+    if check:
+        return _git(root, "diff", "--quiet", commit, "HEAD", "--", *check,
+                    check=False)[0] == 0
+    if conflicts:
+        # весь архив свёлся к спорным файлам. Разрешение обязано было хоть один
+        # из них изменить — там стояли метки конфликта. Остались ровно теми же,
+        # что до слияния, значит откатились.
+        return _git(root, "diff", "--quiet", head, "HEAD", "--", *conflicts,
+                    check=False)[0] != 0
+    return _git(root, "rev-parse", "HEAD")[1] != head
 
 
 def stale_join(root, branch=SNAPSHOT_BRANCH):
@@ -808,6 +863,28 @@ def base_candidate(root, branch, theirs):
     return None
 
 
+def state_kept(root, base, theirs):
+    """Ваши файлы, которые менял только я: их правки применять нельзя.
+
+    Условие ровно из двух частей. Файл изменился между прошлым архивом и этим —
+    значит правил его я. И он НЕ менялся у вас с прошлого архива — значит
+    трёхстороннее слияние молча возьмёт мою версию, потому что спорить не с чем.
+    Вот тут и надо остановиться: за одинаковым текстом у меня и у вас может
+    стоять разное состояние, а моя копия — только срез для контекста.
+
+    Если менялось у обоих — это обычный конфликт, и решать его вам в редакторе.
+    Новые файлы и удаления не трогаем: новому файлу нечего затирать, а удаление
+    линии — как раз то, ради чего перенос и делался.
+    """
+    changed_by_me = _names(root, "diff", "--name-only", "--diff-filter=M",
+                           base, theirs, "--", *STATE)
+    if not changed_by_me:
+        return []
+    changed_by_you = set(_names(root, "diff", "--name-only", base, "HEAD",
+                                "--", *changed_by_me))
+    return sorted(p for p in changed_by_me if p not in changed_by_you)
+
+
 def _resolve_both_deleted(root):
     """Снять «конфликт» там, где файл удалили ОБЕ стороны.
 
@@ -854,11 +931,18 @@ def merge(root, base, theirs, restore=()):
             "или отмените их: перенос раскладывает файлы прямо в дерево, и\n"
             "мешать это с недоделанным нельзя.\n" + dirty)
 
+    was = _git(root, "rev-parse", "HEAD")[1]
+    kept = state_kept(root, base, theirs)
+
     rc, out, err = _git(root, "read-tree", "-m", "-u", base, "HEAD", theirs,
                         check=False)
     if rc != 0:
         raise Otkaz("Не смог разложить слияние:\n" + (err or out).strip())
     _resolve_both_deleted(root)
+    # Ваши файлы возвращаем к тому, что в дереве и было: моя правка их не
+    # касается, даже когда спорить не с чем.
+    for path in kept:
+        _git(root, "checkout", was, "--", path, check=False)
     _git(root, "merge-index", "-o", "git-merge-one-file", "-a", check=False)
     # Файлы, живые в архиве, но отсутствующие в дереве, разбор считает
     # удалёнными нами. Если это не так — берём их из архива как есть.
@@ -880,6 +964,16 @@ def merge(root, base, theirs, restore=()):
         return False, (out + "\n" + err).strip()
 
     said = [(out or "перенос применён").strip()]
+    if kept:
+        said.append("")
+        said.append("ВАШИ ФАЙЛЫ ОСТАВЛЕНЫ КАК БЫЛИ ({}) — я их менял, вы нет,".format(
+            len(kept)))
+        said.append("но хозяин здесь ваша машина, а не мой срез:")
+        said.extend("    " + p for p in kept)
+        said.append("  посмотреть, что менялось у меня:")
+        said.append("      git diff HEAD {} -- <файл>".format(SNAPSHOT_BRANCH))
+        said.append("  согласны — взять мою версию:")
+        said.append("      git checkout {} -- <файл>".format(SNAPSHOT_BRANCH))
     if dropped:
         said.append("")
         said.append("Заодно убрал старые файлы сборки ({}):".format(len(dropped)))
@@ -1026,7 +1120,8 @@ def main(argv):
                 print(clean_strays(root, picked))
             remember(root, commit, args.branch)
         else:
-            pending_write(root, commit)
+            pending_write(root, commit, parent,
+                          _names(root, "diff", "--name-only", "--diff-filter=U"))
         return 0 if ok else 2
     except (Otkaz, ValueError) as err:
         print(err)
@@ -1278,13 +1373,83 @@ def _selftest():
         assert exists("etlFolder/queries/customQueries/MOJ.sql"), \
             "--clean снёс пользовательский файл"
 
+        # ── ВАШИ ФАЙЛЫ: правил только я — значит не применять ────────────────
+        # Проверка на живом примере: маркер, положенный мной в customQueries,
+        # доехал и переписал пользовательский запрос. За одинаковым текстом у
+        # меня и у вас может стоять разное состояние, а моя копия — только срез
+        # для контекста. Сказать об изменении надо, применять его — нет.
+        moj = "etlFolder/queries/customQueries/MOJ.sql"
+        stru = "etlFolder/structures/iaddress/select.sql"
+        obshij = "etlFolder/queries/general/newEtl/Post.sql"
+        for path, body in ((stru, "SELECT 1\n"), (obshij, "SELECT общее\n")):
+            full = os.path.join(repo, path)
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "w", encoding="utf-8") as fp:
+                fp.write(body)
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "мои структуры и общий запрос")
+        withstate = dict(fourth, **{moj: "SELECT 1 FROM моё\n",
+                                    stru: "SELECT 1\n", obshij: "SELECT общее\n"})
+        zipB = os.path.join(tmp, "aB.zip")
+        _mkzip(zipB, withstate)
+        assert main([zipB, "--root", repo, "--yes"]) == 0
+        # теперь правлю ТОЛЬКО я — все три файла
+        cdict = dict(withstate, **{
+            moj: "SELECT 1 FROM моё -- КЛАУД БЫЛ ЗДЕСЬ\n",
+            stru: "SELECT 1 -- КЛАУД БЫЛ ЗДЕСЬ\n",
+            obshij: "SELECT общее -- поправил\n"})
+        zipC = os.path.join(tmp, "aC.zip")
+        _mkzip(zipC, cdict)
+        with tempfile.TemporaryDirectory() as t9:
+            probe, prev = import_snapshot(extract(zipC, t9), repo, SNAPSHOT_BRANCH)
+            rep = report(repo, probe, prev, SNAPSHOT_BRANCH)
+            assert sorted(rep["kept"]) == sorted([moj, stru]), rep["kept"]
+            assert "оставлю как есть" in render(rep)
+        assert main([zipC, "--root", repo, "--yes"]) == 0
+        with open(os.path.join(repo, moj), encoding="utf-8") as fp:
+            assert "КЛАУД" not in fp.read(), "моя правка переписала ваш запрос"
+        with open(os.path.join(repo, stru), encoding="utf-8") as fp:
+            assert "КЛАУД" not in fp.read(), "моя правка переписала вашу структуру"
+        # а framework-запрос — мой код, он обязан доезжать как обычно
+        with open(os.path.join(repo, obshij), encoding="utf-8") as fp:
+            assert "поправил" in fp.read(), "правка общего запроса не доехала"
+
+        # правка с ОБЕИХ сторон — обычный конфликт, решать вам, а не правилу
+        with open(os.path.join(repo, moj), "w", encoding="utf-8") as fp:
+            fp.write("SELECT 1 FROM моё -- и я тут был\n")
+        _git(repo, "commit", "-qam", "моя правка запроса")
+        zipD = os.path.join(tmp, "aD.zip")
+        _mkzip(zipD, dict(withstate, **{moj: "SELECT 2 FROM моё\n",
+                                        stru: "SELECT 1 -- КЛАУД БЫЛ ЗДЕСЬ\n",
+                                        obshij: "SELECT общее -- поправил\n"}))
+        assert state_kept(repo, _git(repo, "rev-parse", SNAPSHOT_BRANCH)[1],
+                          _git(repo, "rev-parse", SNAPSHOT_BRANCH)[1]) == []
+        rc = main([zipD, "--root", repo, "--yes"])
+        assert rc == 2, "встречная правка обязана стать конфликтом, а не тишиной"
+        assert _names(repo, "diff", "--name-only", "--diff-filter=U") == [moj]
+        before_abort = _git(repo, "rev-parse", SNAPSHOT_BRANCH)[1]
+        _git(repo, "reset", "--hard", "HEAD")
+        # Откатились — и занялись СВОИМ делом. Прежний признак («HEAD сдвинулся,
+        # значит конфликты закоммичены») на постороннем коммите ошибался и
+        # засчитывал перенос применённым: база уходила вперёд дерева, а это та
+        # самая поломка, что съела три переноса подряд.
+        with open(os.path.join(repo, "своё.txt"), "w", encoding="utf-8") as fp:
+            fp.write("не имеет отношения к переносу\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "своя работа после отката")
+        assert main([zipD, "--root", repo, "--dry-run"]) == 0
+        assert _git(repo, "rev-parse", SNAPSHOT_BRANCH)[1] == before_abort, \
+            "посторонний коммит засчитал откаченный перенос применённым"
+        _git(repo, "rm", "-q", "-f", "--", "своё.txt")
+        _git(repo, "commit", "-q", "-m", "убрал своё")
+
         # ── архив №3 против ВСТРЕЧНОЙ правки: обязан быть конфликт ───────────
         with open(os.path.join(repo, "etlFolder/config.d/LINE.json"), "w",
                   encoding="utf-8") as fp:
             fp.write('{"a": 2, "моё": true}\n')
         _git(repo, "commit", "-qam", "моя правка конфига")
         zip3 = os.path.join(tmp, "a3.zip")
-        _mkzip(zip3, dict(second, **{"etlFolder/config.d/LINE.json": '{"a": 3}\n'}))
+        _mkzip(zip3, dict(cdict, **{"etlFolder/config.d/LINE.json": '{"a": 3}\n'}))
         rc = main([zip3, "--root", repo, "--yes"])
         assert rc == 2, "ожидался конфликт, получено {}".format(rc)
         conflicts = _names(repo, "diff", "--name-only", "--diff-filter=U")
