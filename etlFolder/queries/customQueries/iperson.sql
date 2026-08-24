@@ -1,3 +1,4 @@
+-- КЛАУД: пометка №2 для проверки правила «ваши файлы не переписываются»
 select pers.IDROW
 ---,null TYPEROW,null IDEDROW
 ,ID,NPOLIS::numeric,VPOLIS,ENP::numeric,FAM,IM,OT,W,DR,DBEG,DEND,DVIZIT,DENDDOC,REASON,SMO,PRZCOD,EXT,TERR,C_OKSM,BOMG,SS 
