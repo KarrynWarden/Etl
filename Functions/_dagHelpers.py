@@ -49,7 +49,13 @@ from Src.fullPath import FULL_PATH, WEB_BASE_URL
 DEFAULT_ARGS = {
     "owner": "airflow",
     "start_date": dt.datetime(2023, 10, 23),
-    "timezone": "Asia/Yekaterinburg",
+    # Часовой пояс НЕ задаём: start_date наивный, и airflow берёт
+    # core.default_timezone (UTC). Кроны в проекте написаны по UTC
+    # намеренно — '50 5,7,13 * * *' это 10:50, 12:50 и 18:50 по
+    # Екатеринбургу. Припишешь start_date tzinfo — все они уедут на
+    # пять часов разом. Ключ 'timezone' тут когда-то стоял и не делал
+    # ничего: airflow оставляет из default_args только то, что есть в
+    # сигнатуре оператора, а такого параметра у него нет.
     # retries / retry_delay / depends_on_past убраны намеренно:
     # ретраи — per-mode (см. makeEtlOperator), заморозка — в runEtl.
     # depends_on_past вешал бы весь DAG-run в нетерминальном состоянии.

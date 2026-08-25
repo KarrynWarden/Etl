@@ -39,8 +39,10 @@ const SCHEDULE_HINTS = [
   { value: 'dt.timedelta(minutes=10)', label: 'каждые 10 минут' },
   { value: 'dt.timedelta(minutes=60)', label: 'раз в час' },
   { value: 'dt.timedelta(days=1)', label: 'раз в сутки' },
-  { value: "'50 5,7,13 * * *'", label: 'cron: 5:50, 7:50, 13:50' },
-  { value: "'0 3 * * *'", label: 'cron: каждый день в 3:00' },
+  // Часы в кроне — по UTC: так во всём проекте, и менять это нельзя, иначе
+  // разом уедут ночные чистки и аудит. В подписи сразу местное время.
+  { value: "'50 5,7,13 * * *'", label: 'cron: 10:50, 12:50, 18:50 местного' },
+  { value: "'0 3 * * *'", label: 'cron: каждый день в 8:00 местного' },
   { value: 'None', label: 'только вручную' },
 ]
 
@@ -72,6 +74,29 @@ function humanSchedule(expr) {
   const cron = raw.match(/^['"](.+)['"]$/)
   if (cron) return `cron ${cron[1]}`
   return raw
+}
+
+// Смещение местного времени относительно того, что написано в кроне.
+// Кроны здесь идут по UTC намеренно, поэтому «5:50» в файле — это 10:50 по
+// Екатеринбургу. Показать пересчёт дешевле, чем каждый раз объяснять.
+const UTC_SHIFT_HOURS = 5
+
+// Часы из крон-выражения -> местное время строкой. Разбираем только поле часов
+// и только когда минуты и часы заданы числами: во всём остальном (*/15, шаги,
+// диапазоны) пересчёт был бы враньём, и тогда лучше промолчать.
+function localTimes(expr) {
+  const cron = (expr || '').trim().match(/^['"](.+)['"]$/)
+  if (!cron) return ''
+  const parts = cron[1].trim().split(/\s+/)
+  if (parts.length !== 5) return ''
+  const [minute, hour] = parts
+  if (!/^\d{1,2}$/.test(minute)) return ''
+  if (!/^\d{1,2}(,\d{1,2})*$/.test(hour)) return ''
+  const times = hour
+    .split(',')
+    .map((h) => (Number(h) + UTC_SHIFT_HOURS) % 24)
+    .map((h) => `${String(h).padStart(2, '0')}:${minute.padStart(2, '0')}`)
+  return times.join(', ')
 }
 
 export default function ProcPage() {
@@ -175,6 +200,9 @@ export default function ProcPage() {
                   description={
                     <Text type="secondary" style={{ fontSize: 12 }}>
                       {humanSchedule(item.schedule)}
+                      {localTimes(item.schedule)
+                        ? ` → ${localTimes(item.schedule)} местного`
+                        : ''}
                     </Text>
                   }
                 />
@@ -244,8 +272,11 @@ export default function ProcPage() {
                     <>
                       выражение python: dt.timedelta(...), строка-cron или None.{' '}
                       <b>{humanSchedule(spec.schedule)}</b>
-                      {/^['"]/.test((spec.schedule || '').trim()) && (
-                        <> — cron идёт по часовому поясу airflow, а не по местному</>
+                      {localTimes(spec.schedule) && (
+                        <>
+                          {' '}— <b>по Екатеринбургу: {localTimes(spec.schedule)}</b>.
+                          Кроны здесь пишутся по UTC, это не опечатка.
+                        </>
                       )}
                     </>
                   }
@@ -450,6 +481,9 @@ function AlienProc({ proc }) {
       <Card size="small" title="Обвязка (только чтение)">
         <Space size={[8, 8]} wrap>
           <Tag>расписание: {humanSchedule(proc.schedule)}</Tag>
+          {localTimes(proc.schedule) && (
+            <Tag color="gold">по Екатеринбургу: {localTimes(proc.schedule)}</Tag>
+          )}
           <Tag>задача: {proc.task_id || '—'}</Tag>
           <Tag>ретраи: {proc.retries}</Tag>
           <Tag>пауза: {proc.retry_delay_min} мин</Tag>

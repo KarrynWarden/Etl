@@ -22,7 +22,8 @@ args = {
     'retries': 5,
     'depends_on_past': True,
     'retry_delay': dt.timedelta(minutes=1),
-    'timezone': 'Asia/Yekaterinburg',
+    # пояс не задаём намеренно — см. Functions/_dagHelpers.py,
+    # кроны здесь написаны по UTC (5:50 = 10:50 в Екатеринбурге)
 }
 
 def do_etl_sp():

@@ -120,28 +120,32 @@ def checkConfig(root):
 # ─────────────────── 2.5. часовой пояс расписаний ───────────────────
 
 def checkTimezone(root):
-    """`'timezone'` в default_args — украшение: airflow такого ключа не знает.
+    """Часовой пояс расписаний обязан оставаться UTC — так и задумано.
 
-    `default_args` раздаются оператору, и airflow оставляет из них только те
-    ключи, что есть в сигнатуре оператора. `timezone` в ней отсутствует, и ключ
-    молча отбрасывается — ошибки нет, эффекта тоже. Выглядит же он как рабочая
-    настройка, и в этом вся беда: строка стоит в шести файлах и убеждает
-    читателя, что часовой пояс задан.
+    Кроны в этом проекте написаны по UTC СОЗНАТЕЛЬНО, и время в файле от
+    местного отличается на +5: `'50 5,7,13 * * *'` — это 10:50, 12:50 и 18:50
+    по Екатеринбургу, и запускать надо именно тогда.
 
-    Пояс DAG'а на самом деле берётся из tzinfo у `start_date`. Наивный
-    `dt.datetime(2023, 10, 23)` означает `core.default_timezone`, а он по
-    умолчанию UTC. Тогда `'50 5,7,13 * * *'` срабатывает в 10:50, 12:50 и 18:50
-    по Екатеринбургу — на пять часов позже, чем написано. На timedelta это не
-    влияет никак (интервал есть интервал), поэтому расхождение и не бросается в
-    глаза: замечают его только на кронах.
+    Держится это на том, что `start_date` наивный (`dt.datetime(2023, 10, 23)`
+    без tzinfo): airflow приписывает ему `core.default_timezone`, то есть UTC.
+    Ключ `'timezone'` в `default_args`, который раньше стоял рядом, ничего не
+    делал — airflow оставляет из default_args только те ключи, что есть в
+    сигнатуре оператора, а `timezone` в ней нет. Он молча отбрасывался, но
+    выглядел как настройка, и однажды это уже стоило разбирательства.
 
-    Возвращаем ПРЕДУПРЕЖДЕНИЕ, а не ошибку: чинится это сменой пояса у
-    start_date, а такая правка сдвигает все кроны на пять часов разом — решение
-    человека, а не гейта выкладки.
+    Поэтому опасность здесь ровно обратная той, что кажется: не «пояс забыли»,
+    а «пояс кто-то поставит». Достаточно приписать `start_date` tzinfo, чтобы
+    ВСЕ кроны разом уехали на пять часов — ночные чистки в утро, аудит в
+    середину дня. На timedelta это не влияет никак, поэтому половина дагов
+    промолчит, а вторая начнёт ходить не вовремя.
+
+    Проверка и стережёт эту сторону: наивный start_date — норма, tz-aware —
+    предупреждение. Не ошибка: может, так и решили, — но сказать об этом на
+    выкладке обязательно.
     """
     import ast
 
-    decorative, naive = [], []
+    decorative, aware = [], []
     dagsDir = os.path.join(root, "dags")
     targets = []
     if os.path.isdir(dagsDir):
@@ -164,36 +168,35 @@ def checkTimezone(root):
                     name = getattr(key, "value", None)
                     if name == "timezone":
                         decorative.append(rel)
-                    if name == "start_date" and _isNaiveDatetime(value):
-                        naive.append(rel)
+                    if name == "start_date" and _isTzAware(value):
+                        aware.append(rel)
 
-    if not decorative and not naive:
-        _line(OK, "часовой пояс расписаний")
+    if not decorative and not aware:
+        _line(OK, "часовой пояс расписаний", "кроны по UTC, как и задумано")
         return []
 
     if decorative:
-        _line(SKIP, "'timezone' в default_args ничего не делает",
+        _line(SKIP, "'timezone' в default_args ничего не делает — уберите",
               ", ".join(sorted(set(decorative))))
-    if naive:
-        _line(SKIP, "start_date без часового пояса — кроны идут по "
-                    "core.default_timezone (обычно UTC)",
-              ", ".join(sorted(set(naive))))
-    print("        Проверить, какой пояс на сервере:")
-    print("        airflow config get-value core default_timezone")
+    if aware:
+        _line(SKIP, "у start_date появился часовой пояс — ВСЕ кроны сдвинулись",
+              ", ".join(sorted(set(aware))))
+        print("        Кроны здесь написаны по UTC намеренно: 5:50 в файле — "
+              "это 10:50 в Екатеринбурге.")
+        print("        Если сдвиг не нужен, верните наивный "
+              "dt.datetime(2023, 10, 23).")
     return []                              # предупреждение, выкладку не рушим
 
 
-def _isNaiveDatetime(node):
-    """`dt.datetime(2023, 10, 23)` -> True; с tzinfo/pendulum -> False."""
+def _isTzAware(node):
+    """`dt.datetime(2023, 10, 23, tzinfo=...)` -> True; наивный -> False."""
     import ast
 
     if not isinstance(node, ast.Call):
         return False
     if getattr(node.func, "attr", "") != "datetime":
         return False
-    if any(kw.arg in ("tzinfo", "tz") for kw in node.keywords):
-        return False
-    return True
+    return any(kw.arg in ("tzinfo", "tz") for kw in node.keywords)
 
 
 # ───────────────────────── 3. парсинг DAG'ов ─────────────────────────

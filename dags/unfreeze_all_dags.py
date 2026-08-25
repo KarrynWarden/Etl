@@ -32,7 +32,8 @@ except ImportError:
 DEFAULT_ARGS = {
     "owner": "airflow",
     "start_date": dt.datetime(2023, 10, 23),
-    "timezone": "Asia/Yekaterinburg",
+    # пояс не задаём намеренно — см. Functions/_dagHelpers.py,
+    # кроны здесь написаны по UTC (5:50 = 10:50 в Екатеринбурге)
 }
 
 TARGET_POOL = "Etl"
