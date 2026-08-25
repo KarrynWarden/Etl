@@ -214,10 +214,16 @@ def _period_expr(db, period_column, side):
     return f"make_date({ref}{got['year']}::int, {m}, {d})"
 
 
-def _pk_expr(db, pk_columns, side):
+def _pk_expr(db, pk_columns, side, cast=True):
     """Выражение id для журнала. Составной PK склеивается через '/' — так его
     разбирает do_etl (см. README, «Составной PK»). Элемент списка — имя колонки
-    либо {'expr': ...} (готовое выражение из своего SELECT)."""
+    либо {'expr': ...} (готовое выражение из своего SELECT).
+
+    cast=False (только Postgres, только одиночный ключ) — отдать значение КАК
+    ЕСТЬ, без ::text. В Oracle журнал объявлен `id VARCHAR2(200)` и TO_CHAR
+    уместен; в PostgreSQL той же колонке обычно дают numeric, и text туда не
+    вставляется вовсе — триггер падает вместе с UPDATE ведущей. См.
+    _post_id_type."""
     if not pk_columns:
         raise ValueError(
             "Не отмечен первичный ключ: без PK триггер не сможет записать id "
@@ -227,10 +233,15 @@ def _pk_expr(db, pk_columns, side):
         ready = _expr_for_side(db, c, side)
         if ready is None:
             ref = f"{_side_ref(db, side)}{c}"
-            items.append(f"TO_CHAR({ref})" if db == "Orcl" else f"{ref}::text")
+            if db == "Orcl":
+                items.append(f"TO_CHAR({ref})")
+            else:
+                items.append(f"{ref}::text" if cast else ref)
         else:
-            items.append(f"TO_CHAR({ready})" if db == "Orcl"
-                         else f"({ready})::text")
+            if db == "Orcl":
+                items.append(f"TO_CHAR({ready})")
+            else:
+                items.append(f"({ready})::text" if cast else f"({ready})")
     return " || '/' || ".join(items)
 
 
@@ -765,8 +776,36 @@ BEGIN
 END;"""
 
 
+def _post_id_type(table, pk_columns):
+    """Тип переменной p_id и надо ли приводить ключ к тексту. -> (тип, cast).
+
+    Приводить одиночный ключ к тексту нельзя. В Oracle журнал объявлен как
+    `id VARCHAR2(200)`, и TO_CHAR там уместен; в PostgreSQL этой же колонке
+    сплошь и рядом дают `numeric` — так она заведена на рабочей базе. Вставка
+    text в numeric не проходит вовсе:
+
+        ОШИБКА: столбец "id" имеет тип numeric, а выражение - text
+
+    То есть триггер не просто «неправильно пишет журнал» — он ЗАПРЕЩАЕТ менять
+    ведущую таблицу, потому что падает вместе с UPDATE. Это и случилось на
+    первом же применении сгенерированного триггера к Postgres.
+
+    Поэтому одиночный ключ берётся `%TYPE` от своей колонки и в журнал уходит
+    как есть: numeric ляжет в numeric, а в текстовую колонку Postgres приведёт
+    его сам при присваивании. Составной ключ склеивается через '/' и остаётся
+    текстом — там журнал обязан быть текстовым, иначе такой линии просто не
+    может быть.
+    """
+    plain = (len(pk_columns) == 1 and not isinstance(pk_columns[0], dict))
+    if plain:
+        return f"{table}.{pk_columns[0]}%TYPE", False
+    return "text", True
+
+
 def _post_ddl(name, func, table, journal, targets, pk_columns):
-    pk_new, pk_old = _pk_expr("Post", pk_columns, "new"), _pk_expr("Post", pk_columns, "old")
+    id_type, id_cast = _post_id_type(table, pk_columns)
+    pk_new = _pk_expr("Post", pk_columns, "new", cast=id_cast)
+    pk_old = _pk_expr("Post", pk_columns, "old", cast=id_cast)
     # SECURITY DEFINER: журнал обычно в чужой схеме (etl_user), а писать в него
     # должен любой, кто меняет ведущую. RETURN NULL — для AFTER-триггера
     # возвращаемое значение игнорируется.
@@ -775,7 +814,7 @@ def _post_ddl(name, func, table, journal, targets, pk_columns):
     periods = [(_period_expr("Post", pc, "new"), _period_expr("Post", pc, "old"))
                for _tn, pc in targets]
 
-    declare = "\n".join([f"    {'p_id':<{width}} text;",
+    declare = "\n".join([f"    {'p_id':<{width}} {id_type};",
                          f"    {'p_oper':<{width}} varchar(2);"]
                         + [f"    {v:<{width}} date;" for v in variables])
 
@@ -1768,7 +1807,11 @@ def _selftest():
     assert t3["statements"][0].startswith("CREATE OR REPLACE FUNCTION")
     assert t3["statements"][1] == "DROP TRIGGER IF EXISTS tr_reqprepmo_after_iud ON public.reqprepmo"
     assert "EXECUTE PROCEDURE" in t3["statements"][2]
-    assert "new.idrw::text" in t3["statements"][0]
+    # ключ уходит в журнал КАК ЕСТЬ: приведение к тексту ломает вставку в
+    # numeric-колонку журнала Postgres (см. проверку ниже про %TYPE)
+    assert re.search(r"p_id\s+:= new\.idrw;", t3["statements"][0]), \
+        t3["statements"][0]
+    assert "public.reqprepmo.idrw%TYPE" in t3["statements"][0]
     assert "etl_user.etl_log_iud_row" in t3["statements"][0]
     t3b = build_trigger("Post", "t", "t2", {"year": "y", "month": "m", "day": "d"},
                         ["a", "b"])
@@ -2055,6 +2098,29 @@ def _selftest():
     if pod:
         period, pk = effective_columns(pod[0])
         assert pk == ["id"], pk        # в MOCHECK.sql idrw линии PODCHECK — это id
+    # ── одиночный ключ НЕ приводится к тексту (Postgres) ────────────────
+    # В Oracle журнал объявлен `id VARCHAR2(200)`, и TO_CHAR там уместен. В
+    # PostgreSQL этой же колонке дают numeric, и вставка text не проходит вовсе:
+    #   ОШИБКА: столбец "id" имеет тип numeric, а выражение - text
+    # То есть триггер не «неправильно пишет журнал», а ЗАПРЕЩАЕТ менять ведущую:
+    # падает вместе с UPDATE. Ровно это и случилось на первом же применении.
+    one = build_trigger("Post", "reqprepsmo", "reqprepsmo", "createdate",
+                        ["idrw"])["text"]
+    assert re.search(r"p_id\s+reqprepsmo\.idrw%TYPE;", one), one
+    assert "::text" not in one, one
+    assert re.search(r"p_id\s+:= new\.idrw;", one), one
+
+    # составной ключ склеивается через '/' и остаётся текстом — иначе его
+    # нечем записать; журнал у такой линии обязан быть текстовым
+    many = build_trigger("Post", "t", "t", "d", ["a", "b"])["text"]
+    assert re.search(r"p_id\s+text;", many), many
+    assert "new.a::text || '/' || new.b::text" in many, many
+
+    # Oracle не трогаем: там TO_CHAR правильный
+    orcl = build_trigger("Orcl", "T", "T", "D", ["IDRW"])["text"]
+    assert "TO_CHAR(:new.IDRW)" in orcl, orcl
+    assert "VARCHAR2(200)" in orcl, orcl
+
     # ── цели собираются по ТАБЛИЦЕ, а не по строке формы ────────────────
     # Кнопка «Показать DDL» стоит в строке линии. Пока цели брались оттуда,
     # триггер таблицы, обслуживающей две линии, писал метку только одной —

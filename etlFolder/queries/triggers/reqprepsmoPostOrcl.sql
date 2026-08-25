@@ -60,36 +60,36 @@ CREATE OR REPLACE FUNCTION tr_etl_reqprepsmo_after_iud_func()
  SECURITY DEFINER
 AS $function$
 DECLARE
-    p_id      text;
+    p_id      reqprepsmo.idrw%TYPE;
     p_oper    varchar(2);
     p_period1 date;
     p_period2 date;
 BEGIN
     IF TG_OP = 'DELETE' THEN
-        p_id      := old.idrw::text;
+        p_id      := old.idrw;
         p_oper    := 'D';
         p_period1 := old.createdate;
         p_period2 := old.createdate;
     ELSE
-        p_id      := new.idrw::text;
+        p_id      := new.idrw;
         p_oper    := 'IU';
         p_period1 := new.createdate;
         p_period2 := new.createdate;
         -- reqprepsmo: сменился PK или период — старую строку ведомой нужно удалить.
         IF TG_OP = 'UPDATE'
-           AND (old.idrw::text <> new.idrw::text
+           AND (old.idrw <> new.idrw
                 OR coalesce(old.createdate, '1900-01-01'::date)
                 <> coalesce(new.createdate, '1900-01-01'::date)) THEN
             INSERT INTO etl_user.etl_log_iud_row(tablename, timeoper, oper, period, id, isetl)
-            VALUES ('reqprepsmo', clock_timestamp(), 'D', old.createdate, old.idrw::text, 0);
+            VALUES ('reqprepsmo', clock_timestamp(), 'D', old.createdate, old.idrw, 0);
         END IF;
         -- fublin: сменился PK или период — старую строку ведомой нужно удалить.
         IF TG_OP = 'UPDATE'
-           AND (old.idrw::text <> new.idrw::text
+           AND (old.idrw <> new.idrw
                 OR coalesce(old.createdate, '1900-01-01'::date)
                 <> coalesce(new.createdate, '1900-01-01'::date)) THEN
             INSERT INTO etl_user.etl_log_iud_row(tablename, timeoper, oper, period, id, isetl)
-            VALUES ('fublin', clock_timestamp(), 'D', old.createdate, old.idrw::text, 0);
+            VALUES ('fublin', clock_timestamp(), 'D', old.createdate, old.idrw, 0);
         END IF;
     END IF;
 
