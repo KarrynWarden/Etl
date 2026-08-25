@@ -374,9 +374,9 @@ def _checkDependencies():
 
     # 1. разбор конфига
     assert E._dependencySpecs({}) == []
-    assert E._dependencySpecs(
-        {"iudDependencies": [{"tablename": "fublin", "column": "smo_idrw"}]}
-    ) == [("fublin", "smo_idrw")]
+    one = E._dependencySpecs(
+        {"iudDependencies": [{"tablename": "fublin", "column": "smo_idrw"}]})
+    assert one == [{"tablename": "fublin", "column": "smo_idrw"}], one
     for bad in ({"tablename": "fublin"}, {"column": "x"}, {}):
         try:
             E._dependencySpecs({"iudDependencies": [bad]})
@@ -388,6 +388,7 @@ def _checkDependencies():
     cfg = {
         "dbMaster": "Post", "dbSlave": "Post",
         "tableNameEtlJobs": "проба",
+        "tableNameMaster": "src_table",
         "periodColumn": "createdate",
         "iudDependencies": [{"tablename": "fublin", "column": "smo_idrw"}],
     }
@@ -402,7 +403,13 @@ def _checkDependencies():
                    (77, 502, dt.date(2001, 1, 1), dt.datetime(2024, 5, 2), "IU")]
     resolved = [(77, 11, dt.date(2024, 3, 1)), (77, 12, dt.date(2024, 4, 1))]
 
+    # Таблица помнит связь с ТРЕМЯ строками, а запрос отдаёт только две:
+    # у третьей условие перестало выполняться (обнулили DIRDT).
+    candidates = [(77, 11), (77, 12), (77, 13)]
+
     class _Cur(Cursor):
+        """Журнал -> раскладка запросом -> связанные строки из таблицы."""
+
         def __init__(self):
             super().__init__()
             self.stage = 0
@@ -410,13 +417,13 @@ def _checkDependencies():
 
         def execute(self, sql, params=None):
             self.sqls.append(sql)
-            self.rows = journalRows if self.stage == 0 else resolved
+            self.rows = (journalRows, resolved, candidates)[min(self.stage, 2)]
             self.stage += 1
 
     cur = _Cur()
     ctx = {"cursorMaster": cur, "pkColsMaster": ["idrw"], "structMaster": struct,
            "selectSql": "SELECT * FROM src", "currDt": dt.datetime(2024, 6, 1)}
-    distinct, byDepIdrw = E._selectDependencyWork(cur, cfg, ctx)
+    distinct, missing, byDepIdrw = E._selectDependencyWork(cur, cfg, ctx)
 
     periods = sorted(e[1] for e in distinct)
     assert periods == [dt.date(2024, 3, 1), dt.date(2024, 4, 1)], periods
@@ -424,11 +431,24 @@ def _checkDependencies():
         "период взят из журнальной записи — линия отчитается не о тех группах"
     assert sorted(e[0] for e in distinct) == [11, 12], distinct
     assert all(e[3] == "IU" for e in distinct), distinct
-    assert byDepIdrw == {501: {11, 12}, 502: {11, 12}}, byDepIdrw
+    assert byDepIdrw == {501: {11, 12, 13}, 502: {11, 12, 13}}, byDepIdrw
+
+    # 2а. ГЛАВНОЕ: строка, выпавшая из выборки, идёт на удаление. Без этого
+    # обнулённый DIRDT остался бы незамеченным — событие приходит, запрос по
+    # ключу молчит, строка в ведомой живёт дальше.
+    assert missing == [13], missing
+    assert 13 not in [e[0] for e in distinct], distinct
+
+    # связанные строки спрашиваются у ТАБЛИЦЫ, а не у запроса: запрос отдаёт
+    # только подходящие, и выпавшую по нему уже не найти
+    candSql = cur.sqls[-1]
+    assert "FROM src_table" in candSql, candSql
+    assert "SELECT * FROM src" not in candSql, candSql
+    assert "smo_idrw AS dep_key" in candSql and "idrw AS dep_id" in candSql, candSql
 
     # 3. запрос раскладки идёт ПОВЕРХ запроса линии и тянет ключ вместе со
     #    строкой: без ключа не понять, какая журнальная строка чем закрыта
-    resolveSql = cur.sqls[-1]
+    resolveSql = cur.sqls[1]
     assert "FROM ( SELECT * FROM src ) p" in resolveSql, resolveSql
     assert "p.smo_idrw IN" in resolveSql, resolveSql
     assert "p.smo_idrw AS dep_key" in resolveSql, resolveSql
@@ -445,7 +465,7 @@ def _checkDependencies():
 
     # 5. без зависимостей ничего не спрашивается вовсе
     quiet = Cursor()
-    assert E._selectDependencyWork(quiet, {"dbMaster": "Post"}, ctx) == ([], {})
+    assert E._selectDependencyWork(quiet, {"dbMaster": "Post"}, ctx) == ([], [], {})
     assert quiet.calls == [], quiet.calls
 
 

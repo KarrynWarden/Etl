@@ -1241,59 +1241,110 @@ def _resolveDependencyIds(ctx, cfg, column, values):
     return out
 
 
-def _dependencySpecs(cfg):
-    """Нормализовать `iudDependencies` из конфига. -> [(tablename, column)].
+def _resolveDependencyCandidates(ctx, cfg, dep, values):
+    """Строки ведущей, СВЯЗАННЫЕ с чужими ключами, — без условий запроса линии.
 
-    Формат в конфиге — список объектов, чтобы к паре потом можно было добавить
-    третье поле, не ломая уже написанные конфиги:
+    -> [(значение колонки, ключ строки ведущей)].
+
+    Спрашиваем саму таблицу, а не запрос линии, и в этом весь смысл. Запрос
+    отдаёт только то, что подходит под условие СЕЙЧАС; когда DIRDT обнулили,
+    строка из него исчезает — и по ней уже не узнать, что удалять из ведомой.
+    Таблица связь помнит: `reqprepmo.reqprepsmo_idrw` никуда не делся.
+
+    Разница между этим списком и тем, что отдал запрос, и есть «строки, которые
+    надо снести»: связь осталась, а условию строка больше не отвечает.
+    """
+    values = list(values)
+    if not values:
+        return []
+    dbMaster = cfg["dbMaster"]
+    table = dep.get("masterTable") or cfg.get("tableNameMaster")
+    if not table:
+        raise ValueError(
+            "Зависимость: не знаю, у какой таблицы спрашивать связанные строки. "
+            "Укажите tableNameMaster у линии или masterTable у зависимости.")
+    key = dep.get("masterKey") or ctx["pkColsMaster"][0]
+    column = dep["column"]
+    cursor = ctx["cursorMaster"]
+    out = []
+    for chunk in _chunks(values):
+        inClause, params = _bindInList(dbMaster, chunk, "v")
+        # filterClauseMaster здесь НЕ применяем намеренно: он часть условия
+        # «строка подходит», а нам нужны как раз все связанные, включая уже не
+        # подходящие. Иначе исчезнувшая строка не нашлась бы и тут.
+        sql = (f"SELECT DISTINCT {column} AS dep_key, {key} AS dep_id\n"
+               f"FROM {table}\nWHERE {column} IN ({inClause})")
+        cursor.execute(sql, params)
+        out.extend((row[0], row[1]) for row in cursor.fetchall())
+    return out
+
+
+def _dependencySpecs(cfg):
+    """Нормализовать `iudDependencies` из конфига. -> [dict, ...].
+
+    Обязательны два поля: `tablename` (метка в журнале) и `column` (колонка
+    связи). Необязательные `masterTable` / `masterKey` нужны, когда связь надо
+    искать не в `tableNameMaster` или ключ строки называется в таблице иначе,
+    чем в запросе линии.
 
         "iudDependencies": [{"tablename": "fublin", "column": "reqprepsmo_idrw"}]
     """
     out = []
     for item in cfg.get("iudDependencies") or []:
-        if isinstance(item, (list, tuple)):
-            tablename, column = (list(item) + [None, None])[:2]
-        else:
-            tablename = item.get("tablename") or item.get("tableName")
-            column = item.get("column")
-        if not tablename or not column:
+        dep = dict(zip(("tablename", "column"), item)) if isinstance(
+            item, (list, tuple)) else dict(item)
+        dep.setdefault("tablename", dep.pop("tableName", None))
+        if not dep.get("tablename") or not dep.get("column"):
             raise ValueError(
                 "iudDependencies: у каждой зависимости обязательны 'tablename' "
-                f"(метка в журнале) и 'column' (колонка ведущей), получено {item!r}")
-        out.append((str(tablename), str(column)))
+                f"(метка в журнале) и 'column' (колонка связи), получено {item!r}")
+        dep["tablename"] = str(dep["tablename"])
+        dep["column"] = str(dep["column"])
+        out.append(dep)
     return out
 
 
 def _selectDependencyWork(cursor, cfg, ctx):
     """События ЧУЖИХ таблиц из журнала -> работа в терминах ведущей.
 
-    -> (extraDistinct, byDepIdrw):
-        extraDistinct — [(recId, период, timeoper, 'IU')], как если бы триггер
-                        сработал на самой ведущей;
+    -> (extraDistinct, missing, byDepIdrw):
+        extraDistinct — [(recId, период, timeoper, 'IU')] для строк, которые
+                        запрос линии отдаёт СЕЙЧАС;
+        missing       — [recId] — связь есть, а запрос строку больше не отдаёт:
+                        её надо снести из ведомой;
         byDepIdrw     — {idrw журнальной строки зависимости: {recId, ...}} —
                         кто за что отвечает.
 
+    Разбор идёт «как delete_insert»: сравниваем два списка — что СВЯЗАНО с
+    чужим ключом (спрашиваем таблицу) и что запрос отдаёт СЕЙЧАС. Первое минус
+    второе — строки, переставшие подходить под условие; их удаляем. Иначе
+    обнулённый DIRDT остался бы незамеченным: событие приходит, запрос по ключу
+    молчит, строка в ведомой живёт дальше.
+
     Зачем отдельная бухгалтерия по byDepIdrw: одна чужая строка разворачивается
     в НЕСКОЛЬКО строк ведущей. Пометь её обработанной по первой удавшейся — и
-    падение второй потеряется совсем: своих журнальных строк у той нет, парковать
-    нечего. Поэтому зависимость закрывается, только когда доехали ВСЕ её строки.
+    падение второй потеряется совсем: своих журнальных строк у той нет,
+    парковать нечего. Поэтому зависимость закрывается, только когда доехали ВСЕ
+    её строки.
 
     Тип операции чужой строки ('IU' или 'D') намеренно не различается, и это
     главное решение здесь. Триггер на чужой таблице остаётся глупым: он говорит
-    «строка с таким ключом трогалась», и всё. Что из этого следует, знает
-    источник — он либо отдаёт строки сейчас, либо нет. Разбирать в триггере,
-    появилась строка в выборке или исчезла, значило бы продублировать в нём
-    условие запроса линии со всеми его JOIN'ами.
+    «строка с таким ключом трогалась», и всё. Что из этого следует, выясняется
+    сравнением двух списков. Разбирать в триггере, появилась строка в выборке
+    или исчезла, значило бы продублировать в нём условие запроса линии со всеми
+    его JOIN'ами.
     """
     deps = _dependencySpecs(cfg)
     if not deps:
-        return [], {}
+        return [], [], {}
 
     sqlTpl = _pickSql(cfg["dbMaster"], selectEtlIudPostSql, selectEtlIudOrclSql)
     latest = {}                       # (период, recId) -> запись работы
+    missing = {}                      # _idKey -> recId (как отдала таблица)
     byDepIdrw = {}
 
-    for tablename, column in deps:
+    for dep in deps:
+        tablename, column = dep["tablename"], dep["column"]
         rows = _executeQuery(cursor, sqlTpl, {"tablename": tablename})
         if not rows:
             logger.info("Зависимость %s: в журнале ничего нет", tablename)
@@ -1303,21 +1354,31 @@ def _selectDependencyWork(cursor, cfg, ctx):
         for depId, idrw, _period, _timeoper, _oper in rows:
             idrwsByValue[_idKey(depId)].append(idrw)
             byDepIdrw.setdefault(idrw, set())
+        values = list(idrwsByValue)
 
-        resolved = _resolveDependencyIds(ctx, cfg, column, list(idrwsByValue))
-        for depKey, recId, period in resolved:
+        live = _resolveDependencyIds(ctx, cfg, column, values)
+        liveIds = {_idKey(recId) for _k, recId, _p in live}
+        for depKey, recId, period in live:
             latest[(period, recId)] = (recId, period, ctx["currDt"], "IU")
             for idrw in idrwsByValue.get(_idKey(depKey), ()):
                 byDepIdrw[idrw].add(recId)
 
-        empty = sum(1 for v, idrws in idrwsByValue.items()
-                    if not any(byDepIdrw[i] for i in idrws))
-        logger.info(
-            "Зависимость %s: событий %d, ключей %d, строк ведущей %d"
-            "%s", tablename, len(rows), len(idrwsByValue), len(resolved),
-            f", по {empty} ключам источник ничего не отдал" if empty else "")
+        # Связь есть, а строки в выборке нет — значит она из неё ВЫПАЛА.
+        gone = 0
+        for depKey, recId in _resolveDependencyCandidates(ctx, cfg, dep, values):
+            if _idKey(recId) in liveIds:
+                continue
+            missing[_idKey(recId)] = recId
+            gone += 1
+            for idrw in idrwsByValue.get(_idKey(depKey), ()):
+                byDepIdrw[idrw].add(recId)
 
-    return list(latest.values()), byDepIdrw
+        logger.info(
+            "Зависимость %s: событий %d, ключей %d, строк к переносу %d, "
+            "выпавших из выборки %d", tablename, len(rows), len(values),
+            len(live), gone)
+
+    return list(latest.values()), list(missing.values()), byDepIdrw
 
 
 def _fetchMasterRowsById(ctx, cfg, ids):
@@ -1733,7 +1794,8 @@ def _periodFromParts(spec, row):
 #                       Индивидуальные обновления (etl_log_iud_row)
 # ----------------------------------------------------------------------------
 
-def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords, byDepIdrw=None):
+def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords,
+                              byDepIdrw=None, depMissing=()):
     """Точечная синхронизация по событиям из etl_log_iud_row.
 
     ИЗМЕНЕНИЕ: Master-запрос может вернуть НЕСКОЛЬКО записей для одного id.
@@ -1745,6 +1807,7 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords, byDepIdrw=None)
     потерять падение второй — своих журнальных строк у той нет, парковать
     нечего.
     """
+    distinctIds = list(distinctIds)
     if not distinctIds and not byDepIdrw:
         logger.info("Записи для индивидуального обновления отсутствуют")
         return
@@ -1757,16 +1820,11 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords, byDepIdrw=None)
     action = "ETL_LOG_IUD_ROW"
 
     logger.info("Старт индивидуальных обновлений: %d записей", len(distinctIds))
-    groupsData = _groupSummary(distinctIds)
 
     # idrw по recId (для пометки isetl) — O(1) вместо обхода iudRecords на каждый id.
     idrwsByRecId = defaultdict(list)
     for rid, idrw in iudRecords:
         idrwsByRecId[rid].append(idrw)
-    # Префетч строк ведущей по ВСЕМ IU-id одним батчем (IN, чанки по 1000),
-    # а не SELECT на каждую запись — главное ускорение при тысячах изменений.
-    iuIds = [e[0] for e in distinctIds if e[3] == "IU"]
-    masterById = _fetchMasterRowsById(ctx, cfg, iuIds)
     pkKey = lambda recId: _recIdKey(recId, ctx["pkColsMaster"])
 
     conSlave = None
@@ -1785,6 +1843,28 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords, byDepIdrw=None)
             raise AirflowFailException(
                 f"FLK: структура ведомой {cfg['tableNameSlave']} не совпадает с json-эталоном"
             )
+
+        # Строки, выпавшие из выборки по зависимости, разворачиваем в удаления
+        # ЗДЕСЬ, а не раньше: период для них знает только ведомая — в ведущей
+        # такой строки уже нет. Период нужен по-настоящему: по нему ведётся
+        # etl_jobs, и удаление, приписанное чужой группе, испортило бы отчётность
+        # обеим.
+        if depMissing:
+            slavePeriods = _fetchSlavePeriodsById(cursorSlave, cfg, ctx, depMissing)
+            added = 0
+            for recId in depMissing:
+                for period in sorted(slavePeriods.get(pkKey(recId), ()),
+                                     key=lambda p: (p is not None, p)):
+                    distinctIds.append((recId, period, ctx["currDt"], "D"))
+                    added += 1
+            logger.info("Зависимости: к удалению из ведомой %d строк "
+                        "(по %d ключам)", added, len(depMissing))
+
+        groupsData = _groupSummary(distinctIds)
+        # Префетч строк ведущей по ВСЕМ IU-id одним батчем (IN, чанки по 1000),
+        # а не SELECT на каждую запись — главное ускорение при тысячах изменений.
+        iuIds = [e[0] for e in distinctIds if e[3] == "IU"]
+        masterById = _fetchMasterRowsById(ctx, cfg, iuIds)
 
         recordErrors = []  # [(recId, period, errStr), ...]
         shutdown = False   # получен SIGTERM -> выходим, ничего не паркуя
@@ -2744,8 +2824,9 @@ def _run(cfg):
         # самой ведущей при этом не меняется НИЧЕГО — её триггер молчит по
         # делу. Такую линию нельзя чинить триггером: пришлось бы повторить в
         # нём условие запроса вместе с JOIN'ами. Разбирается это здесь.
-        depDistinct, byDepIdrw = _selectDependencyWork(cursorMaster, cfg, ctx)
-        if depDistinct:
+        depDistinct, depMissing, byDepIdrw = _selectDependencyWork(
+            cursorMaster, cfg, ctx)
+        if depDistinct or depMissing:
             if mode == "delete_insert":
                 raise ValueError(
                     "iudDependencies пока поддержаны только в режиме iud, "
@@ -2766,7 +2847,7 @@ def _run(cfg):
             _processDeleteInsert(cfg, ctx, distinctIds, iudRecords)
         else:
             _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords,
-                                      byDepIdrw=byDepIdrw)
+                                      byDepIdrw=byDepIdrw, depMissing=depMissing)
     except (AirflowSkipException, AirflowFailException, RecordScopeError,
             ShutdownRequested):
         # пропускаем через — это специальные классы, runEtl их различает
