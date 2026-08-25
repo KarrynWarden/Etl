@@ -229,6 +229,12 @@ export default function LineForm({ lineKey, onChanged }) {
         </Col>
       </Row>
 
+      <DependenciesEditor
+        value={extra.iudDependencies}
+        masterNames={masterNames}
+        onChange={(v) => patchExtra({ iudDependencies: v && v.length ? v : undefined })}
+      />
+
       <Row gutter={16}>
         <Col span={12}>
           <Form.Item
@@ -542,5 +548,142 @@ export default function LineForm({ lineKey, onChanged }) {
         />
       )}
     </Space>
+  )
+}
+
+// Зависимости линии: чужая таблица, чья правка вводит строку в выборку.
+//
+// Нужны там, где строка появляется из-за соседней таблицы, а сама ведущая не
+// меняется. Так у reqprepmomocheck: REQPREPSMO заводится с пустым DIRDT, к ней
+// привязывается REQPREPMO, и лишь потом DIRDT проставляют — на этом шаге
+// ведущую не трогают вовсе, и её триггер молчит совершенно по делу.
+//
+// Лечится это не умным триггером, а лишней МЕТКОЙ в журнале: триггер соседней
+// таблицы пишет строку со своим ключом под чужим именем, а разложить её в ключи
+// ведущей умеет перенос. Условие запроса вместе с JOIN'ами в триггер при этом
+// не переезжает — он остаётся ровно таким же глупым.
+function DependenciesEditor({ value, masterNames, onChange }) {
+  const items = Array.isArray(value) ? value : []
+  const patch = (i, changes) =>
+    onChange(items.map((d, n) => (n === i ? { ...d, ...changes } : d)))
+
+  return (
+    <Card
+      size="small"
+      style={{ marginBottom: 16 }}
+      title="Зависимости: правка в соседней таблице вводит строку в выборку"
+      extra={
+        <Button
+          size="small"
+          onClick={() =>
+            onChange([
+              ...items,
+              { tablename: '', column: '', sourceTable: '', sourceDb: 'Post',
+                sourcePeriodColumn: 'createdate' },
+            ])
+          }
+        >
+          + Добавить
+        </Button>
+      }
+    >
+      {items.length === 0 && (
+        <Typography.Text type="secondary">
+          Нужны, только когда строка появляется в выборке из-за правки в другой
+          таблице, а сама ведущая при этом не меняется — её триггер тогда молчит
+          по делу, и события линия не получает.
+        </Typography.Text>
+      )}
+
+      {items.map((dep, i) => (
+        <Row gutter={12} key={i} align="bottom" style={{ marginBottom: 8 }}>
+          <Col span={5}>
+            <Form.Item
+              label="Метка в журнале"
+              help="tablename в etl_log_iud_row"
+              style={{ marginBottom: 0 }}
+            >
+              <Input
+                value={dep.tablename || ''}
+                onChange={(e) => patch(i, { tablename: e.target.value })}
+              />
+            </Form.Item>
+          </Col>
+          <Col span={6}>
+            <Form.Item
+              label="Колонка ведущей"
+              help="по ней ключ чужой строки раскладывается в ключи ведущей"
+              style={{ marginBottom: 0 }}
+            >
+              {/* Колонка обязана отдаваться ЗАПРОСОМ линии — раскладывать
+                  можно только то, что запрос возвращает. В структуру она при
+                  этом входить не обязана: перенос выбирает из запроса лишь то,
+                  что перечислено в структуре. */}
+              <ComboBox
+                value={dep.column || ''}
+                onChange={(v) => patch(i, { column: v })}
+                options={masterNames}
+              />
+            </Form.Item>
+          </Col>
+          <Col span={6}>
+            <Form.Item
+              label="Таблица-источник"
+              help="на неё встанет метка; её триггер соберёт конструктор"
+              style={{ marginBottom: 0 }}
+            >
+              <Input
+                value={dep.sourceTable || ''}
+                onChange={(e) => patch(i, { sourceTable: e.target.value })}
+              />
+            </Form.Item>
+          </Col>
+          <Col span={3}>
+            <Form.Item label="БД" style={{ marginBottom: 0 }}>
+              <Select
+                value={dep.sourceDb || 'Post'}
+                onChange={(v) => patch(i, { sourceDb: v })}
+                options={[{ value: 'Post' }, { value: 'Orcl' }]}
+              />
+            </Form.Item>
+          </Col>
+          <Col span={3}>
+            <Form.Item label="Период источника" style={{ marginBottom: 0 }}>
+              <Input
+                value={dep.sourcePeriodColumn || ''}
+                onChange={(e) => patch(i, { sourcePeriodColumn: e.target.value })}
+              />
+            </Form.Item>
+          </Col>
+          <Col span={1}>
+            <Button
+              size="small"
+              danger
+              onClick={() => onChange(items.filter((_, n) => n !== i))}
+            >
+              ×
+            </Button>
+          </Col>
+        </Row>
+      ))}
+
+      {items.length > 0 && (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginTop: 8 }}
+          message="Период источника в перенос не идёт"
+          description={
+            <>
+              Он нужен только триггеру источника, чтобы было что положить в
+              колонку <Typography.Text code>period</Typography.Text> журнала.
+              Период переносимых строк линия берёт из СВОЕЙ выборки: чужой
+              период ушёл бы в <Typography.Text code>etl_jobs</Typography.Text>,
+              и линия отчиталась бы о переносе не тех групп, которые перенесла.
+            </>
+          }
+        />
+      )}
+    </Card>
   )
 }

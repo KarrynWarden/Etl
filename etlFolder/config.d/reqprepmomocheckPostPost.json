@@ -1,6 +1,6 @@
 {
   "reqprepmomocheckPostPost": {
-    "_doc": "postgres->postgres: reqprepmo -> mocheck (doctype=7), частичный уникальный индекс mocheck по (idrw, doctype) WHERE doctype=7.",
+    "_doc": "postgres->postgres: reqprepmo -> mocheck (doctype=7), частичный уникальный индекс mocheck по (idrw, doctype) WHERE doctype=7. Строка появляется в выборке из-за правки в REQPREPSMO (проставили DIRDT), а сама REQPREPMO при этом не меняется — её триггер молчит по делу. Поэтому у линии есть зависимость: триггер REQPREPSMO пишет в журнал метку 'fublin' с собственным idrw, а линия раскладывает её в ключи ведущей по колонке reqprepsmo_idrw.",
     "tableNameMaster": "reqprepmo",
     "tableNameSlave": "mocheck",
     "structureMaster": "structures/reqprepmo/reqprepmomocheck.json",
@@ -9,6 +9,15 @@
     "filterClauseSlave": "doctype = 7",
     "conflictExtra": "doctype",
     "conflictWhere": "doctype = 7",
-    "mode": "iud"
+    "mode": "iud",
+    "iudDependencies": [
+      {
+        "tablename": "fublin",
+        "column": "reqprepsmo_idrw",
+        "sourceTable": "reqprepsmo",
+        "sourceDb": "Post",
+        "sourcePeriodColumn": "createdate"
+      }
+    ]
   }
 }

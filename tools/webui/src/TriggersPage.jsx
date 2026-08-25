@@ -106,6 +106,20 @@ export default function TriggersPage() {
           период: <Typography.Text code>{String(r.period_column ?? '—')}</Typography.Text>
           <br />
           ключ: <Typography.Text code>{(r.pk_columns || []).join(', ') || '—'}</Typography.Text>
+          {(r.also || []).length > 0 && (
+            <>
+              <br />
+              {/* Триггер один на таблицу, а меток он пишет столько, сколько
+                  линий и зависимостей на ней висит. Без этой строки DDL
+                  выглядит так, будто в него попало лишнее. */}
+              <Typography.Text type="secondary">
+                тот же триггер пишет также:{' '}
+                {(r.also || []).map((n) => (
+                  <Typography.Text code key={n}>{n}</Typography.Text>
+                ))}
+              </Typography.Text>
+            </>
+          )}
           {r.note && (
             <>
               <br />

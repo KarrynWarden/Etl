@@ -1186,6 +1186,140 @@ def _masterRowsInChunks(ctx, cfg, ids):
     return rows
 
 
+def _resolveDependencyIds(ctx, cfg, column, values):
+    """Строки ведущей, у которых <column> входит в values.
+
+    -> [(значение колонки, ключ строки ведущей, период)].
+
+    Сердце «зависимостей»: журнал принёс ключ ЧУЖОЙ таблицы, а работать надо с
+    ключами ведущей. Спрашиваем об этом сам источник линии — тот же SELECT, из
+    которого потом поедут данные, — и получаем ровно те строки, которые он
+    отдаёт СЕЙЧАС. Никакой отдельной «карты связей» держать не нужно: связь уже
+    описана запросом линии, а второе её описание рано или поздно разойдётся с
+    первым.
+
+    Значение колонки возвращаем вместе со строкой, чтобы знать, какая
+    журнальная запись за какие строки отвечает: без этого зависимость нельзя
+    закрыть честно (см. _selectDependencyWork).
+
+    Период берём отсюда же, а НЕ из журнальной записи. Период чужой строки к
+    группам этой линии отношения не имеет: он ушёл бы в etl_jobs, в регистрацию
+    затронутых периодов и в аудит — линия отчитывалась бы о переносе не тех
+    групп, которые перенесла. Ошибка при этом молчаливая: строки на месте, а
+    сверка периодов не сходится.
+    """
+    values = list(values)
+    if not values:
+        return []
+    dbMaster = cfg["dbMaster"]
+    pkCols = ctx["pkColsMaster"]
+    if len(pkCols) != 1:
+        raise ValueError(
+            "Зависимости поддержаны только для ведущей с ОДНОЙ колонкой ключа, "
+            f"а тут {pkCols}. Составной ключ пришлось бы склеивать в строку — "
+            "ровно та операция, из-за которой ключ линии iprkdept переехал на "
+            "idrw (см. oracleSetup/11).")
+    pk = pkCols[0]
+    periodExpr = _periodExpr(dbMaster, _periodSpec(cfg["periodColumn"]),
+                             "p", cfg.get("truncatePeriod"))
+    fcm = _asAndClause(cfg.get("filterClauseMaster"))
+    filterParams = cfg.get("filterParams") or {}
+    cursor = ctx["cursorMaster"]
+    out = []
+    for chunk in _chunks(values):
+        inClause, params = _bindInList(dbMaster, chunk, "v")
+        cond = f"p.{column} IN ({inClause})"
+        if fcm:
+            cond += f" AND ({fcm})"
+        params.update(filterParams)
+        sql = (f"SELECT DISTINCT p.{column} AS dep_key, p.{pk} AS dep_id,\n"
+               f"       {periodExpr} AS dep_period\n"
+               f"FROM ( {ctx['selectSql']} ) p\nWHERE {cond}")
+        cursor.execute(sql, params)
+        out.extend((row[0], row[1], _normalizePeriod(row[2]))
+                   for row in cursor.fetchall())
+    return out
+
+
+def _dependencySpecs(cfg):
+    """Нормализовать `iudDependencies` из конфига. -> [(tablename, column)].
+
+    Формат в конфиге — список объектов, чтобы к паре потом можно было добавить
+    третье поле, не ломая уже написанные конфиги:
+
+        "iudDependencies": [{"tablename": "fublin", "column": "reqprepsmo_idrw"}]
+    """
+    out = []
+    for item in cfg.get("iudDependencies") or []:
+        if isinstance(item, (list, tuple)):
+            tablename, column = (list(item) + [None, None])[:2]
+        else:
+            tablename = item.get("tablename") or item.get("tableName")
+            column = item.get("column")
+        if not tablename or not column:
+            raise ValueError(
+                "iudDependencies: у каждой зависимости обязательны 'tablename' "
+                f"(метка в журнале) и 'column' (колонка ведущей), получено {item!r}")
+        out.append((str(tablename), str(column)))
+    return out
+
+
+def _selectDependencyWork(cursor, cfg, ctx):
+    """События ЧУЖИХ таблиц из журнала -> работа в терминах ведущей.
+
+    -> (extraDistinct, byDepIdrw):
+        extraDistinct — [(recId, период, timeoper, 'IU')], как если бы триггер
+                        сработал на самой ведущей;
+        byDepIdrw     — {idrw журнальной строки зависимости: {recId, ...}} —
+                        кто за что отвечает.
+
+    Зачем отдельная бухгалтерия по byDepIdrw: одна чужая строка разворачивается
+    в НЕСКОЛЬКО строк ведущей. Пометь её обработанной по первой удавшейся — и
+    падение второй потеряется совсем: своих журнальных строк у той нет, парковать
+    нечего. Поэтому зависимость закрывается, только когда доехали ВСЕ её строки.
+
+    Тип операции чужой строки ('IU' или 'D') намеренно не различается, и это
+    главное решение здесь. Триггер на чужой таблице остаётся глупым: он говорит
+    «строка с таким ключом трогалась», и всё. Что из этого следует, знает
+    источник — он либо отдаёт строки сейчас, либо нет. Разбирать в триггере,
+    появилась строка в выборке или исчезла, значило бы продублировать в нём
+    условие запроса линии со всеми его JOIN'ами.
+    """
+    deps = _dependencySpecs(cfg)
+    if not deps:
+        return [], {}
+
+    sqlTpl = _pickSql(cfg["dbMaster"], selectEtlIudPostSql, selectEtlIudOrclSql)
+    latest = {}                       # (период, recId) -> запись работы
+    byDepIdrw = {}
+
+    for tablename, column in deps:
+        rows = _executeQuery(cursor, sqlTpl, {"tablename": tablename})
+        if not rows:
+            logger.info("Зависимость %s: в журнале ничего нет", tablename)
+            continue
+
+        idrwsByValue = defaultdict(list)
+        for depId, idrw, _period, _timeoper, _oper in rows:
+            idrwsByValue[_idKey(depId)].append(idrw)
+            byDepIdrw.setdefault(idrw, set())
+
+        resolved = _resolveDependencyIds(ctx, cfg, column, list(idrwsByValue))
+        for depKey, recId, period in resolved:
+            latest[(period, recId)] = (recId, period, ctx["currDt"], "IU")
+            for idrw in idrwsByValue.get(_idKey(depKey), ()):
+                byDepIdrw[idrw].add(recId)
+
+        empty = sum(1 for v, idrws in idrwsByValue.items()
+                    if not any(byDepIdrw[i] for i in idrws))
+        logger.info(
+            "Зависимость %s: событий %d, ключей %d, строк ведущей %d"
+            "%s", tablename, len(rows), len(idrwsByValue), len(resolved),
+            f", по {empty} ключам источник ничего не отдал" if empty else "")
+
+    return list(latest.values()), byDepIdrw
+
+
 def _fetchMasterRowsById(ctx, cfg, ids):
     """{ключ -> [строки ведущей]} для набора id. Ключ совместим с _recIdKey."""
     pkCols = ctx["pkColsMaster"]
@@ -1599,13 +1733,19 @@ def _periodFromParts(spec, row):
 #                       Индивидуальные обновления (etl_log_iud_row)
 # ----------------------------------------------------------------------------
 
-def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords):
+def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords, byDepIdrw=None):
     """Точечная синхронизация по событиям из etl_log_iud_row.
 
     ИЗМЕНЕНИЕ: Master-запрос может вернуть НЕСКОЛЬКО записей для одного id.
     Все записи обрабатываются атомарно: если одна упала — роллбек всей пачки.
+
+    byDepIdrw — {idrw журнальной строки ЗАВИСИМОСТИ: {recId, ...}}. Такие строки
+    помечаются не по ходу цикла, а в конце: одна чужая строка разворачивается в
+    несколько строк ведущей, и закрыть её по первой удавшейся значило бы
+    потерять падение второй — своих журнальных строк у той нет, парковать
+    нечего.
     """
-    if not distinctIds:
+    if not distinctIds and not byDepIdrw:
         logger.info("Записи для индивидуального обновления отсутствуют")
         return
 
@@ -1749,6 +1889,22 @@ def _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords):
                 f"Линия {tableNameEtlJobs}: получен SIGTERM, перенос прерван. "
                 f"Необработанные записи остались в журнале (isetl=0) и уедут "
                 f"следующим запуском — чинить руками ничего не нужно.")
+
+        # Закрыть журнальные строки ЗАВИСИМОСТЕЙ — только теперь, когда видно
+        # судьбу всех строк, которые по ним нашлись. Зависимость без единой
+        # найденной строки тоже закрывается: работы по ней нет, а держать её в
+        # журнале значит перебирать её каждый прогон вечно.
+        if byDepIdrw:
+            failed = {r[0] for r in recordErrors}
+            done = [idrw for idrw, recIds in byDepIdrw.items()
+                    if not (recIds & failed)]
+            parked = [idrw for idrw, recIds in byDepIdrw.items()
+                      if recIds & failed]
+            _markEtlIud(cursorMaster, dbMaster, done, 1)
+            _markEtlIud(cursorMaster, dbMaster, parked, -1)
+            conMaster.commit()
+            logger.info("Зависимости: закрыто %d журнальных строк, "
+                        "припарковано %d", len(done), len(parked))
 
         # Зарегистрировать затронутые периоды (из лога) — без полного скана
         # источника: новые createdate приходят только вместе с событиями iud.
@@ -2582,7 +2738,26 @@ def _run(cfg):
         iudRecords, distinctIds = _selectIudWork(
             cursorMaster, dbMaster, tableNameEtlJobs,
         )
-        if not iudRecords:
+
+        # 7.1. Зависимости: события ЧУЖИХ таблиц, разложенные в ключи ведущей.
+        # Строка появляется в выборке из-за правки в соседней таблице, а на
+        # самой ведущей при этом не меняется НИЧЕГО — её триггер молчит по
+        # делу. Такую линию нельзя чинить триггером: пришлось бы повторить в
+        # нём условие запроса вместе с JOIN'ами. Разбирается это здесь.
+        depDistinct, byDepIdrw = _selectDependencyWork(cursorMaster, cfg, ctx)
+        if depDistinct:
+            if mode == "delete_insert":
+                raise ValueError(
+                    "iudDependencies пока поддержаны только в режиме iud, "
+                    f"а у линии {tableNameEtlJobs} режим {mode}. Скажите — "
+                    "сделаем: разница только в бухгалтерии пометок.")
+            # Сверяем через _idKey: журнал отдаёт ключ строкой, источник —
+            # числом, и без нормализации одна и та же строка поехала бы дважды.
+            known = {(e[1], _idKey(e[0])) for e in distinctIds}
+            distinctIds = list(distinctIds) + [
+                e for e in depDistinct if (e[1], _idKey(e[0])) not in known]
+
+        if not iudRecords and not byDepIdrw:
             logger.info("В etl_log_iud_row для %s ничего нет", tableNameEtlJobs)
             if not groups:
                 raise AirflowSkipException
@@ -2590,7 +2765,8 @@ def _run(cfg):
         if mode == "delete_insert":
             _processDeleteInsert(cfg, ctx, distinctIds, iudRecords)
         else:
-            _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords)
+            _processIndividualUpdates(cfg, ctx, distinctIds, iudRecords,
+                                      byDepIdrw=byDepIdrw)
     except (AirflowSkipException, AirflowFailException, RecordScopeError,
             ShutdownRequested):
         # пропускаем через — это специальные классы, runEtl их различает

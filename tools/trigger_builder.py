@@ -1366,6 +1366,83 @@ def sp_master_tables(data):
     return out
 
 
+def dependency_targets(include_disabled=False):
+    """Зависимости линий: чья таблица должна дополнительно писать метку.
+
+    Элемент: {key, tablename, column, db, table, period_column, line}.
+
+    Зависимость нужна там, где строка появляется в выборке из-за правки в
+    СОСЕДНЕЙ таблице, а сама ведущая не меняется. Так у линии
+    reqprepmomocheck: REQPREPSMO заводится с пустым DIRDT, к ней привязывается
+    REQPREPMO, и лишь потом DIRDT проставляют — на этом шаге REQPREPMO не
+    трогают вовсе, и её триггер молчит совершенно по делу.
+
+    Лечится это не умным триггером, а лишней МЕТКОЙ: триггер соседней таблицы
+    пишет в журнал строку со своим ключом под чужим именем, а разложить её в
+    ключи ведущей умеет перенос (см. Functions/do_etl._selectDependencyWork).
+    Триггер при этом остаётся ровно таким же глупым, каким был.
+    """
+    out = []
+    archived = set()
+    try:
+        archived = set(B.list_archived_lines())
+    except Exception:
+        pass
+    for key, body in sorted(B._all_config_bodies().items()):
+        if (bool(body.get("disabled")) or key in archived) and not include_disabled:
+            continue
+        line, dbm, _dbs = B.split_key(key)
+        for dep in body.get("iudDependencies") or []:
+            if not isinstance(dep, dict):
+                continue
+            table = dep.get("sourceTable")
+            tablename = dep.get("tablename")
+            if not table or not tablename:
+                continue
+            out.append({
+                "key": key, "line": line,
+                "tablename": tablename,
+                "column": dep.get("column"),
+                "db": dep.get("sourceDb") or dbm,
+                "table": table,
+                "period_column": dep.get("sourcePeriodColumn") or "createdate",
+            })
+    return out
+
+
+def targets_for_table(db, table, include_disabled=False):
+    """ВСЕ метки, которые обязан писать триггер этой таблицы.
+
+    -> [(tablename, period_column)] — и по линиям, где таблица ведущая, и по
+    зависимостям, где она источник события.
+
+    Считать это должен сервер, а не форма. Кнопка «Показать DDL» стоит в строке
+    ЛИНИИ и знает только её метку — а на EXPMED живут две линии с разными
+    колонками периода (docexpdt и docpenaltydt). Триггер, собранный по одной
+    строке, писал бы только её метку, и вторая линия перестала бы получать
+    события. Молча: журнал не пустеет, ошибок нет, просто половина изменений не
+    доезжает. Здесь таблица собирается целиком — и зависимости попадают в неё
+    тем же способом, ничего не зная про форму.
+    """
+    seen, out = set(), []
+
+    def add(tablename, period_column):
+        item = (str(tablename), str(period_column))
+        if item[0] in seen:
+            return
+        seen.add(item[0])
+        out.append(item)
+
+    same = lambda a, b: str(a or "").strip().lower() == str(b or "").strip().lower()
+    for t in trigger_targets(include_disabled=include_disabled):
+        if t["needs"] and same(t["db_master"], db) and same(t["table_master"], table):
+            add(t["tablename"], t["period_column"])
+    for d in dependency_targets(include_disabled=include_disabled):
+        if same(d["db"], db) and same(d["table"], table):
+            add(d["tablename"], d["period_column"])
+    return out
+
+
 def trigger_targets(include_sp=True, include_disabled=False):
     """Список линий с данными, нужными для проверки/генерации триггера.
 
@@ -1978,6 +2055,36 @@ def _selftest():
     if pod:
         period, pk = effective_columns(pod[0])
         assert pk == ["id"], pk        # в MOCHECK.sql idrw линии PODCHECK — это id
+    # ── цели собираются по ТАБЛИЦЕ, а не по строке формы ────────────────
+    # Кнопка «Показать DDL» стоит в строке линии. Пока цели брались оттуда,
+    # триггер таблицы, обслуживающей две линии, писал метку только одной —
+    # вторая переставала получать события молча.
+    both = targets_for_table("Post", "reqprepmo")
+    assert ("reqprepmo", "createdate") in both, both
+    assert ("reqprepmomocheck", "createdate") in both, \
+        f"вторая линия той же ведущей потерялась: {both}"
+
+    # ── зависимость попадает в цели своего ИСТОЧНИКА ────────────────────
+    deps = dependency_targets()
+    assert any(d["tablename"] == "fublin" and d["table"] == "reqprepsmo"
+               for d in deps), deps
+    smo = targets_for_table("Post", "reqprepsmo")
+    assert ("reqprepsmo", "createdate") in smo, smo
+    assert ("fublin", "createdate") in smo, smo
+
+    # и триггер по ним остаётся ГЛУПЫМ: две одинаковые вставки, никакого
+    # условия про DIRDT или JOIN — иначе смысл затеи теряется
+    ddl = build_trigger("Post", "reqprepsmo", "reqprepsmo", "createdate",
+                        ["idrw"], targets=smo)["text"]
+    assert ddl.count("INSERT INTO etl_user.etl_log_iud_row") == 4, ddl
+    assert "'fublin'" in ddl and "'reqprepsmo'" in ddl, ddl
+    assert "DIRDT" not in ddl.upper(), "в триггер уехало условие запроса линии"
+    assert "JOIN" not in ddl.upper(), "в триггер уехал JOIN запроса линии"
+
+    # метка не задваивается, даже если её объявят дважды
+    once = targets_for_table("Post", "reqprepsmo")
+    assert len(once) == len({t[0] for t in once}), once
+
     print("trigger_builder selftest OK")
 
 

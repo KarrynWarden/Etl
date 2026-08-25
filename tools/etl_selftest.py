@@ -358,8 +358,100 @@ def _checkGroupFlow():
     print("  перезаливка группы: порядок действий и бинды — ок")
 
 
+def _checkDependencies():
+    """Зависимости: чужое событие -> ключи ведущей, с ЕЁ периодом.
+
+    Проверяется то, из-за чего механика вообще заведена, и то, чем она опасна:
+      1. метка чужой таблицы раскладывается в ключи ведущей запросом линии;
+      2. период берётся из ВЕДУЩЕЙ, а не из журнальной записи — иначе линия
+         отчиталась бы в etl_jobs о переносе не тех групп, и сверка периодов
+         разошлась бы молча;
+      3. журнальная строка зависимости отвечает за ВСЕ найденные по ней строки
+         (иначе падение второй строки потерялось бы: своих журнальных строк у
+         неё нет и парковать нечего).
+    """
+    print("  зависимости (iudDependencies)")
+
+    # 1. разбор конфига
+    assert E._dependencySpecs({}) == []
+    assert E._dependencySpecs(
+        {"iudDependencies": [{"tablename": "fublin", "column": "smo_idrw"}]}
+    ) == [("fublin", "smo_idrw")]
+    for bad in ({"tablename": "fublin"}, {"column": "x"}, {}):
+        try:
+            E._dependencySpecs({"iudDependencies": [bad]})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"принята кривая зависимость: {bad}")
+
+    cfg = {
+        "dbMaster": "Post", "dbSlave": "Post",
+        "tableNameEtlJobs": "проба",
+        "periodColumn": "createdate",
+        "iudDependencies": [{"tablename": "fublin", "column": "smo_idrw"}],
+    }
+    struct = {"data": [
+        {"column_name": "idrw", "data_type": "bigint", "is_primary_key": "Primary Key"},
+        {"column_name": "createdate", "data_type": "date"},
+    ]}
+
+    # 2. журнал отдаёт ДВЕ строки по одному чужому ключу 77, источник —
+    #    две строки ведущей с СОБСТВЕННЫМ периодом
+    journalRows = [(77, 501, dt.date(2001, 1, 1), dt.datetime(2024, 5, 1), "IU"),
+                   (77, 502, dt.date(2001, 1, 1), dt.datetime(2024, 5, 2), "IU")]
+    resolved = [(77, 11, dt.date(2024, 3, 1)), (77, 12, dt.date(2024, 4, 1))]
+
+    class _Cur(Cursor):
+        def __init__(self):
+            super().__init__()
+            self.stage = 0
+            self.sqls = []
+
+        def execute(self, sql, params=None):
+            self.sqls.append(sql)
+            self.rows = journalRows if self.stage == 0 else resolved
+            self.stage += 1
+
+    cur = _Cur()
+    ctx = {"cursorMaster": cur, "pkColsMaster": ["idrw"], "structMaster": struct,
+           "selectSql": "SELECT * FROM src", "currDt": dt.datetime(2024, 6, 1)}
+    distinct, byDepIdrw = E._selectDependencyWork(cur, cfg, ctx)
+
+    periods = sorted(e[1] for e in distinct)
+    assert periods == [dt.date(2024, 3, 1), dt.date(2024, 4, 1)], periods
+    assert dt.date(2001, 1, 1) not in periods, \
+        "период взят из журнальной записи — линия отчитается не о тех группах"
+    assert sorted(e[0] for e in distinct) == [11, 12], distinct
+    assert all(e[3] == "IU" for e in distinct), distinct
+    assert byDepIdrw == {501: {11, 12}, 502: {11, 12}}, byDepIdrw
+
+    # 3. запрос раскладки идёт ПОВЕРХ запроса линии и тянет ключ вместе со
+    #    строкой: без ключа не понять, какая журнальная строка чем закрыта
+    resolveSql = cur.sqls[-1]
+    assert "FROM ( SELECT * FROM src ) p" in resolveSql, resolveSql
+    assert "p.smo_idrw IN" in resolveSql, resolveSql
+    assert "p.smo_idrw AS dep_key" in resolveSql, resolveSql
+    assert "p.idrw AS dep_id" in resolveSql, resolveSql
+
+    # 4. составной ключ ведущей — отказ, а не молчаливая склейка в строку
+    try:
+        E._resolveDependencyIds({**ctx, "pkColsMaster": ["a", "b"]}, cfg,
+                                "smo_idrw", [1])
+    except ValueError as err:
+        assert "ОДНОЙ колонкой ключа" in str(err), err
+    else:
+        raise AssertionError("составной ключ ведущей принят")
+
+    # 5. без зависимостей ничего не спрашивается вовсе
+    quiet = Cursor()
+    assert E._selectDependencyWork(quiet, {"dbMaster": "Post"}, ctx) == ([], {})
+    assert quiet.calls == [], quiet.calls
+
+
 def _selftest():
     print("проверка изменённых мест переноса (заглушки драйверов):")
+    _checkDependencies()
     _checkPeriodCond()
     _checkJournalCond()
     _checkJournalBoundary()

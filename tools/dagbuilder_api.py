@@ -524,16 +524,25 @@ def r_prod_deploy(params):
 
 def r_trigger_targets(params):
     """Линии, которым нужен триггер, с предположенными колонками ведущей."""
-    targets = T.trigger_targets(include_disabled=bool(params.get("include_disabled")))
+    include = bool(params.get("include_disabled"))
+    targets = T.trigger_targets(include_disabled=include)
+    deps = T.dependency_targets(include_disabled=include)
     out = []
     for t in targets:
         period, pk = T.effective_columns(t)
+        # Метки, которые триггер этой таблицы обязан писать ПОМИМО своей. Без
+        # них строка выглядит как «одна линия — одна метка», а триггер пишет
+        # больше, и человек не понимает, откуда в DDL лишние вставки.
+        extra = [x for x in T.targets_for_table(t["db_master"], t["table_master"],
+                                                include_disabled=include)
+                 if x[0] != t["tablename"]]
         out.append({"key": t["key"], "table": t["table_master"],
                     "tablename": t["tablename"], "db": t["db_master"],
                     "mode": t["mode"], "needs": t["needs"],
                     "period_column": period, "pk_columns": pk,
+                    "also": [x[0] for x in extra],
                     "note": t.get("note")})
-    return {"targets": out}
+    return {"targets": out, "dependencies": deps}
 
 
 def r_trigger_build(params):
@@ -542,6 +551,16 @@ def r_trigger_build(params):
     targets = params.get("targets")
     if targets:
         targets = [(t[0], t[1]) for t in targets]
+    else:
+        # Собираем цели по ТАБЛИЦЕ, а не по строке формы. Кнопка стоит в строке
+        # линии и знает только её метку — а на EXPMED живут две линии с разными
+        # колонками периода, и триггер по одной строке писал бы только её.
+        # Вторая линия перестала бы получать события молча: журнал не пустеет,
+        # ошибок нет, просто половина изменений не доезжает. Тем же способом
+        # сюда попадают и метки зависимостей.
+        found = T.targets_for_table(_db(db), table)
+        if found and [t for t in found if t[0] != tablename]:
+            targets = found
     built = T.build_trigger(_db(db), table, tablename,
                             params.get("period_column"),
                             params.get("pk_columns") or [],
@@ -1174,6 +1193,45 @@ def _selftest():
     assert code == 400 and "regular" in body["detail"], body
 
     # 8.5) ВЕРСИИ, ОТКАТ, ПРОД — всё, что читает, проверяется на живом репозитории.
+    # ── зависимость переживает правку через форму ────────────────────────
+    # Ключа iudDependencies форма не знает по именам полей — он проходит
+    # насквозь через extra. Проверяем именно круг: открыли линию, собрали
+    # файлы, ключ на месте и файл не «изменился». Иначе первая же правка
+    # соседнего поля тихо снесла бы зависимость, и линия перестала бы получать
+    # события — без единой ошибки.
+    got = dispatch("GET", "line", {"key": "reqprepmomocheckPostPost"})[1]["result"]["spec"]
+    deps = (got.get("extra") or {}).get("iudDependencies")
+    assert deps and deps[0]["tablename"] == "fublin", deps
+    code, body = dispatch("POST", "preview", {"spec": got})
+    assert code == 200, body
+    cfgFile = [f for f in body["result"]["files"] if "config.d" in f["path"]][0]
+    assert "iudDependencies" in cfgFile["content"], cfgFile["content"]
+    assert cfgFile["path"] in body["result"]["unchanged"], \
+        "пересборка без правок изменила конфиг линии"
+
+    # ── триггер собирается по ТАБЛИЦЕ, а не по строке формы ──────────────
+    # Кнопка «Показать DDL» стоит в строке линии и знает только её метку. Пока
+    # цели брались оттуда, триггер таблицы с двумя линиями писал метку одной —
+    # вторая переставала получать события молча. Тем же путём в него попадают
+    # метки зависимостей.
+    code, body = dispatch("POST", "triggers/build",
+                          {"db": "Post", "table": "reqprepsmo",
+                           "tablename": "reqprepsmo",
+                           "period_column": "createdate",
+                           "pk_columns": ["idrw"]})
+    assert code == 200, body
+    ddl = body["result"]["text"]
+    assert "'fublin'" in ddl, "метка зависимости не попала в триггер источника"
+    assert "DIRDT" not in ddl.upper(), "в триггер уехало условие запроса линии"
+
+    code, body = dispatch("POST", "triggers/build",
+                          {"db": "Post", "table": "reqprepmo",
+                           "tablename": "reqprepmo",
+                           "period_column": "createdate",
+                           "pk_columns": ["idrw"]})
+    assert code == 200 and "'reqprepmomocheck'" in body["result"]["text"], \
+        "вторая линия той же ведущей потерялась в триггере"
+
     # ── даги-процедуры ───────────────────────────────────────────────────
     code, body = dispatch("GET", "proc/list", {})
     assert code == 200 and body["result"]["procs"], body
