@@ -17,7 +17,16 @@ export default function GitBar({ reloadToken }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadToken, push.result])
 
-  const dirty = status.result?.status || []
+  // Сервис отдаёт список путей. Массив проверяем всё равно: одна страница на
+  // весь конструктор, и падение здесь уносит ВСЁ — вкладки, формы,
+  // незаписанные правки. Ошибку формы ответа лучше показать строкой, чем
+  // погасить экран.
+  const raw = status.result?.status
+  const dirty = Array.isArray(raw)
+    ? raw
+    : typeof raw === 'string'
+      ? raw.split('\n').filter(Boolean)
+      : []
 
   return (
     <Card size="small">

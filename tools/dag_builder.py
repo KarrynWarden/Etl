@@ -1630,6 +1630,30 @@ def git_status_short(root=ROOT, areas=GIT_AREAS):
     return out if rc == 0 else ""
 
 
+def git_status_files(root=ROOT, areas=GIT_AREAS):
+    """То же, что git_status_short, но СПИСКОМ путей.
+
+    Отдельная функция, а не «разберите строку на месте»: строку разбирали на
+    месте ровно один раз, в интерфейсе, и разобрали неправильно — обошлись с ней
+    как со списком. `dirty.length` тогда считает символы («не запушено файлов:
+    143»), а `dirty.map` роняет отрисовку целиком. Падало не всегда: пока в
+    областях конструктора чисто, строка пустая и подменяется пустым списком, —
+    поэтому дожило до первой записи без немедленного пуша.
+
+    Формат `--porcelain`: два символа статуса, пробел, путь. Переименование
+    отдаётся как `R  старое -> новое` — берём новое имя, оно и уедет в коммит.
+    """
+    out = []
+    for line in (git_status_short(root, areas) or "").splitlines():
+        path = line[3:].strip() if len(line) > 3 else line.strip()
+        if not path:
+            continue
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1].strip()
+        out.append(path.strip('"'))
+    return out
+
+
 def git_commit_push(paths, message, root=ROOT, areas=GIT_AREAS, include_saved=True):
     """Проиндексировать файлы линии и запушить текущую ветку в origin.
 
@@ -2192,6 +2216,28 @@ def _selftest():
         (None, "Post", ""),
     ):
         assert to_db_case(name, db) == want, (name, db, to_db_case(name, db))
+    # ── статус клона: СПИСОК путей, а не текст --porcelain ──────────────
+    # Строку разбирали на месте, в интерфейсе, и разобрали как список:
+    # `dirty.length` считал символы, `dirty.map` ронял отрисовку целиком.
+    # Разбор теперь здесь и проверен на всех формах, которые git выдаёт.
+    _orig = globals()["git_status_short"]
+    globals()["git_status_short"] = lambda *a, **k: (
+        " M etlFolder/config.d/LINE.json\n"
+        "?? etlFolder/queries/customQueries/новый.sql\n"
+        "R  dags/Old.py -> dags/New.py\n"
+        'A  "dags/имя с пробелом.py"\n')
+    try:
+        files = git_status_files()
+    finally:
+        globals()["git_status_short"] = _orig
+    assert files == ["etlFolder/config.d/LINE.json",
+                     "etlFolder/queries/customQueries/новый.sql",
+                     # переименование: в коммит уедет НОВОЕ имя
+                     "dags/New.py",
+                     # git закавычивает имя с пробелом — кавычки не часть пути
+                     "dags/имя с пробелом.py"], files
+    assert git_status_files.__doc__, "разбор без объяснения — вернётся тем же способом"
+
     print("selftest OK")
 
 

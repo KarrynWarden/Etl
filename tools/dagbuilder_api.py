@@ -215,8 +215,13 @@ def r_group_dags(params):
 
 
 def r_git_status(params):
-    """Состояние рабочего клона — его видно в шапке интерфейса."""
-    return {"branch": B.current_branch(), "status": B.git_status_short()}
+    """Состояние рабочего клона — его видно в шапке интерфейса.
+
+    `status` — СПИСОК путей, а не текст `git status --porcelain`. Интерфейс
+    считает по нему количество и печатает список; со строкой он считал символы
+    и падал на `.map`, унося всю страницу.
+    """
+    return {"branch": B.current_branch(), "status": B.git_status_files()}
 
 
 def r_defaults(params):
@@ -1193,6 +1198,19 @@ def _selftest():
     assert code == 400 and "regular" in body["detail"], body
 
     # 8.5) ВЕРСИИ, ОТКАТ, ПРОД — всё, что читает, проверяется на живом репозитории.
+    # ── git/status отдаёт СПИСОК путей, а не текст ───────────────────────
+    # Интерфейс считает по нему количество и печатает список. Со строкой
+    # `git status --porcelain` он считал символы («не запушено файлов: 143») и
+    # падал на `.map`, унося всю страницу — вкладки, формы, незаписанные
+    # правки. Падало не всегда: пока в областях конструктора чисто, строка
+    # пустая и подменялась пустым списком, — поэтому дожило до первой записи
+    # без немедленного пуша.
+    code, body = dispatch("GET", "git/status", {})
+    assert code == 200, body
+    assert isinstance(body["result"]["status"], list), body["result"]
+    assert all(isinstance(p, str) for p in body["result"]["status"]), body["result"]
+    assert not any("\n" in p for p in body["result"]["status"]), body["result"]
+
     # ── зависимость переживает правку через форму ────────────────────────
     # Ключа iudDependencies форма не знает по именам полей — он проходит
     # насквозь через extra. Проверяем именно круг: открыли линию, собрали

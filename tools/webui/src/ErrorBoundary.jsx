@@ -39,11 +39,17 @@ export default class ErrorBoundary extends Component {
           description={
             <Space direction="vertical" style={{ display: 'flex' }}>
               <Typography.Text>
-                Данные на диске не пострадали: страница падает при отрисовке, до
-                записи дело не доходит. Ошибка ниже — то, что нужно показать
-                разработчику.
+                Ничего непоправимого: падает отрисовка, а файлы пишет сервис —
+                он про это падение не знает. Ошибка ниже — то, что нужно
+                показать разработчику.
               </Typography.Text>
               <Typography.Text code>{String(error?.message || error)}</Typography.Text>
+              <Typography.Text type="secondary">
+                Если падение случилось после «Записать» — запись, скорее всего,
+                уже прошла, а вот пуш мог не успеть. Обновите страницу и
+                посмотрите в шапке: «не запушено файлов» и список подскажут, на
+                чём остановились.
+              </Typography.Text>
               <details>
                 <summary>подробности</summary>
                 <pre style={{ overflow: 'auto', maxHeight: 320 }}>
