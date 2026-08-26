@@ -75,7 +75,12 @@ export default function VersionsPage() {
   }
 
   const st = prodStatus.result
-  const canDeploy = Boolean(st?.remote && st?.reachable)
+  // Выкладка и откат НЕ ждут проверки доступа. Раньше обе кнопки были заперты,
+  // пока «Проверить доступ» не сходит по сети, — то есть обычное действие
+  // начиналось с обязательного лишнего шага ради случая, которого практически
+  // не бывает. Недоступный прод и так виден: скрипт вернёт ненулевой код, а его
+  // вывод показан целиком. Отказ по факту лучше запрета заранее: запрет ничего
+  // не объясняет, а неудача объясняет всё.
   const rows = versions.result?.versions || []
   const prodList = versions.result?.prod_tags || []
 
@@ -117,18 +122,16 @@ export default function VersionsPage() {
             >
               Чем прод отличается от теста
             </Button>
-            {/* Кнопка выкладки появляется, только если доступ РЕАЛЬНО есть.
-                Иначе на её месте — команда для того, у кого права: прод-репо
-                лежит в группе etlprod, а конструктор работает под jupyter из
-                etldev, и «нажал — ничего не произошло» здесь худший исход. */}
-            <Tooltip
-              title={canDeploy ? '' : 'Сначала «Проверить доступ» — без него неизвестно, дойдёт ли push'}
-            >
+            {/* Кнопка доступна всегда. Прав у конструктора может и не быть
+                (прод-репо в группе etlprod, сервис под jupyter из etldev) — но
+                узнаётся это по отказу выкладки, с полным выводом скрипта и
+                командами для рук. Запрет заранее не объясняет ничего, а
+                неудача объясняет всё. */}
+            <Tooltip title="Соберёт коммит на прод из текущего теста и запушит">
               <Button
                 type="primary"
                 danger
                 icon={<CloudUploadOutlined />}
-                disabled={!canDeploy}
                 loading={prodDeploy.loading}
                 onClick={() => {
                   setWord('')
@@ -153,26 +156,12 @@ export default function VersionsPage() {
             <Alert
               type={st.reachable === false || !st.remote ? 'warning' : 'info'}
               showIcon
-              message={st.reachable === false ? 'Выложить отсюда не выйдет' : 'Состояние прода'}
+              // Не «выложить не выйдет»: выложить теперь можно попробовать
+              // всегда, и отказ по факту скажет больше, чем запрет заранее.
+              message={st.reachable === false ? 'Прод не ответил на проверку' : 'Состояние прода'}
               description={<pre style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{st.detail}</pre>}
             />
           )}
-          {!canDeploy && (
-            <Alert
-              type="info"
-              showIcon
-              message="Выкладка руками — тем, у кого есть права"
-              description={
-                <pre style={{ margin: 0, whiteSpace: 'pre-wrap' }}>
-{`ssh devel@airflow
-cd /путь/к/клону
-bash deploy/deploy-prod.sh            # весь тест
-bash deploy/deploy-prod.sh --diff     # сначала посмотреть, что уедет`}
-                </pre>
-              }
-            />
-          )}
-
           <ActionError error={prodStatus.error || prodDiff.error || prodDeploy.error} />
           {prodDiff.result && (
             <pre style={{ maxHeight: '30vh', overflow: 'auto', margin: 0 }}>
@@ -185,9 +174,26 @@ bash deploy/deploy-prod.sh --diff     # сначала посмотреть, ч�
               showIcon
               message={prodDeploy.result.ok ? 'Выложено' : 'Выкладка не прошла'}
               description={
-                <pre style={{ maxHeight: '40vh', overflow: 'auto', margin: 0 }}>
-                  {prodDeploy.result.log}
-                </pre>
+                <>
+                  <pre style={{ maxHeight: '40vh', overflow: 'auto', margin: 0 }}>
+                    {prodDeploy.result.log}
+                  </pre>
+                  {/* Команды для рук — здесь, а не постоянным баннером. Нужны
+                      они ровно в этот момент: у конструктора нет прав на
+                      прод-репо (он под jupyter из etldev, репо в etlprod), и
+                      тогда выложить может только тот, у кого права есть. */}
+                  {!prodDeploy.result.ok && (
+                    <details style={{ marginTop: 8 }}>
+                      <summary>выложить руками — тому, у кого есть права</summary>
+                      <pre style={{ margin: '6px 0 0', whiteSpace: 'pre-wrap' }}>
+{`ssh devel@airflow
+cd /путь/к/клону
+bash deploy/deploy-prod.sh --diff     # сначала посмотреть, что уедет
+bash deploy/deploy-prod.sh            # выложить`}
+                      </pre>
+                    </details>
+                  )}
+                </>
               }
             />
           )}
@@ -216,7 +222,6 @@ bash deploy/deploy-prod.sh --diff     # сначала посмотреть, ч�
                   <Button
                     size="small"
                     danger
-                    disabled={!canDeploy}
                     icon={<UndoOutlined />}
                     onClick={() => {
                       setWord('')
