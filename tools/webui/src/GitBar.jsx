@@ -4,6 +4,7 @@ import { Alert, Button, Card, Popconfirm, Space, Tag, Typography } from 'antd'
 import { api } from './api'
 import { useAction } from './useAction'
 import ActionError from './ActionError'
+import DeployStatus from './DeployStatus'
 
 // Состояние рабочего клона. Вынесено наверх намеренно: конструктор пишет файлы
 // в репозиторий, и «сохранил, но не запушил» — самая частая причина того, что
@@ -31,6 +32,9 @@ export default function GitBar({ reloadToken }) {
   return (
     <Card size="small">
       <Space wrap>
+        {/* Перезапуск сервисов — рядом с состоянием клона: и то и другое
+            отвечает на «уехало ли сделанное на сервер». */}
+        <DeployStatus reloadToken={reloadToken} />
         <Typography.Text type="secondary">ветка</Typography.Text>
         <Tag color="geekblue">{status.result?.branch ?? '…'}</Tag>
         {dirty.length ? (

@@ -37,8 +37,10 @@ import json
 import logging
 import os
 import re
+import subprocess
 import sys
 import tempfile
+import time
 import traceback
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -76,6 +78,9 @@ def _dist_stamp():
 # безусловный рестарт в deploy/setup-airflow-test.sh): на диске новый код, в
 # памяти старый. Там её закрыли рестартом в хуке, здесь — сначала хотя бы
 # честной диагностикой.
+# Когда стартовал САМ конструктор. Спрашивать про это systemd незачем: процесс
+# знает о себе точно, а на dev-ПК юнита нет вовсе.
+_STARTED_AT = time.time()
 _STARTED_DIST = _dist_stamp()
 _STARTED_REV = (G._git(ROOT, "rev-parse", "--short", "HEAD")[1] or "").strip()
 
@@ -457,6 +462,80 @@ def r_git_push(params):
             else B.git_push_saved(message))
     ok, log = done if isinstance(done, tuple) else (True, str(done))
     return dict({"ok": bool(ok), "log": log}, **_push_digest(log))
+
+
+DEPLOY_UNITS = ("airflow-test-scheduler", "airflow-test-webserver",
+                "etl-dagbuilder-api")
+RESTART_STAMP = os.environ.get("ETL_RESTART_STAMP",
+                               "/opt/airflow-test/.restart-request")
+
+
+def _unit_started(unit):
+    """Когда юнит стал active. -> epoch-секунды или None.
+
+    Берём ActiveEnterTimestampMonotonic (микросекунды от загрузки) и переводим
+    в обычное время через /proc/uptime, а не разбираем ActiveEnterTimestamp
+    строкой: та зависит от локали («Втр 2026-08-26 09:33:14 +05»), и разбор
+    сломался бы ровно на сервере, где локаль русская.
+
+    Прав не требует: `systemctl show` читают все.
+    """
+    try:
+        out = subprocess.run(
+            ["systemctl", "show", "-p", "ActiveEnterTimestampMonotonic",
+             "--value", unit],
+            capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    value = (out.stdout or "").strip()
+    if not value.isdigit() or value == "0":
+        return None
+    try:
+        with open("/proc/uptime") as fp:
+            uptime = float(fp.read().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+    return time.time() - uptime + int(value) / 1_000_000.0
+
+
+def r_deploy_status(params):
+    """Перезапустились ли сервисы — фактами, а не обещаниями.
+
+    «Заявка на перезапуск подана» — честная формулировка, но человеку от неё
+    мало толку: он хочет знать не что попросили, а что произошло. Причём хук
+    ответить не может в принципе — перезапуск случается ПОСЛЕ того, как он
+    закончился, а конструктор при этом перезапускает сам себя, то есть убивает
+    процесс, в котором хук и работал.
+
+    Поэтому смотрим с другой стороны: когда сервисы стартовали на самом деле.
+    Старт позже заявки — перезапуск состоялся; раньше — ещё нет.
+
+    Своё время старта берём у себя же, а не у systemd: конструктор точно знает,
+    когда запустился, и это работает даже там, где юнита нет вовсе (dev-ПК).
+    """
+    try:
+        requested = os.path.getmtime(RESTART_STAMP)
+    except OSError:
+        requested = None
+
+    units = []
+    for name in DEPLOY_UNITS:
+        started = (_STARTED_AT if name == "etl-dagbuilder-api"
+                   else _unit_started(name))
+        units.append({
+            "name": name,
+            "started": started,
+            # «ждём перезапуска»: заявка есть и она новее старта
+            "pending": bool(requested and (not started or started < requested)),
+        })
+    return {
+        "requested": requested,
+        "units": units,
+        "pending": any(u["pending"] for u in units),
+        "head": _STARTED_REV,
+        "stale": bool(_STARTED_DIST and _dist_stamp() != _STARTED_DIST),
+        "now": time.time(),
+    }
 
 
 def r_health(params):
@@ -849,6 +928,7 @@ GET_ROUTES = {
     "tags": r_tags,
     "group-dags": r_group_dags,
     "health": r_health,
+    "deploy/status": r_deploy_status,
     "git/status": r_git_status,
     "git/versions": r_versions,
     "defaults": r_defaults,
@@ -1234,6 +1314,26 @@ def _selftest():
     assert code == 400 and "regular" in body["detail"], body
 
     # 8.5) ВЕРСИИ, ОТКАТ, ПРОД — всё, что читает, проверяется на живом репозитории.
+    # ── deploy/status отвечает фактами, а не обещаниями ──────────────────
+    # «Заявка на перезапуск подана» человеку мало что даёт: он хочет знать не
+    # что попросили, а что произошло. Ответить в выводе push'а нельзя в
+    # принципе — перезапуск случается после того, как хук закончился.
+    code, body = dispatch("GET", "deploy/status", {})
+    assert code == 200, body
+    st = body["result"]
+    assert isinstance(st["units"], list) and st["units"], st
+    names = [u["name"] for u in st["units"]]
+    assert "etl-dagbuilder-api" in names, names
+    me = [u for u in st["units"] if u["name"] == "etl-dagbuilder-api"][0]
+    # Своё время старта берём у СЕБЯ, а не у systemd: процесс знает о себе
+    # точно, и это работает там, где юнита нет вовсе (dev-ПК, самопроверка).
+    assert me["started"] and me["started"] <= st["now"], me
+    # Нет заявки — нечего и ждать: «ждём перезапуска» без заявки означало бы
+    # вечный спиннер в шапке.
+    if not st["requested"]:
+        assert st["pending"] is False, st
+        assert all(u["pending"] is False for u in st["units"]), st
+
     # ── итог пуша разобран, а не отдан простынёй ─────────────────────────
     # Страница печатала пару (ok, log) через String() — получалось
     # «true,git commit: [test 913da64]…» и следом полсотни строк вывода хука.

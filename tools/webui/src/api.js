@@ -70,6 +70,7 @@ export const api = {
   tags: () => call('GET', 'tags'),
   groupDags: () => call('GET', 'group-dags'),
   health: () => call('GET', 'health'),
+  deployStatus: () => call('GET', 'deploy/status'),
   gitStatus: () => call('GET', 'git/status'),
   defaults: (params) => call('GET', 'defaults', params),
   triggerTargets: () => call('GET', 'triggers/targets'),
