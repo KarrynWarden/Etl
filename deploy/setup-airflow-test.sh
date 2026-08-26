@@ -201,7 +201,7 @@ restart_units() {
         return 0
     fi
     if date +%s > "$RESTART_STAMP" 2>/dev/null; then
-        echo "перезапуск запрошен через файл-заявку (sudo из этого процесса недоступен)"
+        echo "заявка на перезапуск подана (\$*) — выполнит etl-deploy-restart.service"
         return 0
     fi
     echo "!! перезапустить не вышло: \$*"
@@ -271,7 +271,12 @@ while read oldrev newrev ref; do
            && systemctl is-enabled --quiet etl-dagbuilder-api 2>/dev/null; then
             restart_units etl-dagbuilder-api
         fi
-        echo "deploy: ветка $DEPLOY_BRANCH -> $SRC, airflow-test перезапущен"
+        # Строка ИТОГА говорит только про то, что точно произошло. Раньше она
+        # утверждала «airflow-test перезапущен» безусловно — и продолжала это
+        # утверждать, когда рестарт всего лишь ЗАПРОШЕН заявкой (а до починки
+        # хука — когда его не было вовсе). Проверить фактический перезапуск:
+        #     bash $SRC/deploy/check-restart.sh
+        echo "deploy: ветка $DEPLOY_BRANCH разложена в $SRC"
         # ==================================
     else
         echo "ветка \$branch получена (без деплоя)"
