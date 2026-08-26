@@ -190,15 +190,7 @@ export default function FilesPreview({
 
       <ActionError error={error} />
       <ActionError error={pushError} />
-      {pushed && (
-        <Alert
-          style={{ marginTop: 12 }}
-          type="success"
-          showIcon
-          message="Запушено в git"
-          description={String(pushed.done)}
-        />
-      )}
+      <PushResult pushed={pushed} />
 
       {written && (
         <Alert
@@ -222,5 +214,57 @@ export default function FilesPreview({
         />
       )}
     </Card>
+  )
+}
+
+
+// Итог пуша. Отдельным компонентом, потому что показывать его надо в ДВУХ
+// местах: внутри предпросмотра, пока он открыт, и в форме после того, как он
+// закрылся. Пуш — последнее действие, и его результат обязан пережить закрытие
+// того, из чего его запустили.
+export function PushResult({ pushed }) {
+  if (!pushed) return null
+  return (
+          <Alert
+            style={{ marginTop: 12 }}
+            type={pushed.problems?.length ? 'warning' : 'success'}
+            showIcon
+            message={
+              pushed.problems?.length
+                ? 'Запушено, но на сервере не всё прошло гладко'
+                : `Запушено: ${pushed.commit || 'коммит создан'}`
+            }
+            description={
+              <>
+                {/* Проблемы — на экран и первыми. Ровно в простыне вывода хука
+                    тонула единственная важная строка: sudo не смог стать root,
+                    сервисы не перезапустились, тест остался на старом коде. */}
+                {pushed.problems?.length > 0 && (
+                  <ul style={{ margin: '0 0 8px', paddingLeft: 18 }}>
+                    {pushed.problems.map((p, i) => (
+                      <li key={i}>
+                        <Typography.Text type="warning">{p}</Typography.Text>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {pushed.ref && (
+                  <div>
+                    <Typography.Text code>{pushed.ref}</Typography.Text>
+                  </div>
+                )}
+                {/* Полсотни строк проверки синтаксиса и парсинга дагов читать
+                    незачем — но иногда нужно, поэтому не выбрасываем, а прячем. */}
+                {pushed.log && (
+                  <details style={{ marginTop: 8 }}>
+                    <summary>полный вывод git и серверного хука</summary>
+                    <pre style={{ whiteSpace: 'pre-wrap', margin: '6px 0 0', fontSize: 12 }}>
+                      {pushed.log}
+                    </pre>
+                  </details>
+                )}
+              </>
+            }
+          />
   )
 }

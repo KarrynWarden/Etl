@@ -414,13 +414,49 @@ def r_delete(params):
     return {"done": B.delete_line(key, remove_struct=params.get("remove_struct", True))}
 
 
+_PUSH_TROUBLE = ("!!", "error:", "rejected", "sudo:", "fatal:", "не вышло",
+                 "не обновлён", "ОТКЛОНЁН")
+
+
+def _push_digest(log):
+    """Из простыни вывода git+хука — то, что человек обязан увидеть.
+
+    Вывод хука на удачном push'е — это полсотни строк: проверка синтаксиса,
+    сборка конфига, парсинг тридцати дагов. Читать их незачем, а прятать
+    целиком нельзя: ровно в этой простыне тонет единственная важная строка
+    вроде «sudo: эффективный uid не равен 0» — после которой сервисы не
+    перезапустились, и тест остался на старом коде.
+
+    Поэтому делим: короткая сводка и список проблем — на экран, всё остальное —
+    под раскрывающийся список.
+    """
+    lines = [l.rstrip() for l in (log or "").splitlines()]
+    commit, ref = "", ""
+    problems = []
+    for line in lines:
+        low = line.lower()
+        if not commit and "] " in line and line.lstrip().startswith("git commit: ["):
+            commit = line.split("git commit:", 1)[1].strip()
+        if "->" in line and (" " + line.strip()).rstrip().endswith(("test", "prod")):
+            ref = line.strip()
+        if any(mark.lower() in low for mark in _PUSH_TROUBLE):
+            problems.append(line.strip())
+    return {"commit": commit, "ref": ref, "problems": problems}
+
+
 def r_git_push(params):
-    """Закоммитить и запушить. paths пуст — пушим всё уже сохранённое."""
+    """Закоммитить и запушить. paths пуст — пушим всё уже сохранённое.
+
+    Отдаём разобранный результат, а не пару (ok, log) как есть: страница
+    печатала её через String(), и получалось «true,git commit: [test 913da64]…»
+    — сначала непонятное `true`, потом полсотни строк вывода хука.
+    """
     message = params.get("message") or "конструктор: правка линии"
     paths = params.get("paths") or []
-    if paths:
-        return {"done": B.git_commit_push(paths, message)}
-    return {"done": B.git_push_saved(message)}
+    done = (B.git_commit_push(paths, message) if paths
+            else B.git_push_saved(message))
+    ok, log = done if isinstance(done, tuple) else (True, str(done))
+    return dict({"ok": bool(ok), "log": log}, **_push_digest(log))
 
 
 def r_health(params):
@@ -1198,6 +1234,31 @@ def _selftest():
     assert code == 400 and "regular" in body["detail"], body
 
     # 8.5) ВЕРСИИ, ОТКАТ, ПРОД — всё, что читает, проверяется на живом репозитории.
+    # ── итог пуша разобран, а не отдан простынёй ─────────────────────────
+    # Страница печатала пару (ok, log) через String() — получалось
+    # «true,git commit: [test 913da64]…» и следом полсотни строк вывода хука.
+    # Ровно в этой простыне тонула единственная важная строка: sudo не смог
+    # стать root, сервисы не перезапустились, тест остался на старом коде.
+    digest = _push_digest(
+        "git commit: [test 913da64] конструктор: reqprepmomocheckPostPost\n"
+        "git push origin test: ok\n"
+        "remote:    OK  синтаксис: 65 .py\n"
+        "remote: sudo: эффективный uid не равен 0, возможно, /usr/bin/sudo\n"
+        "To /opt/airflow-test/etl.git\n"
+        "   6dc530c..913da64  HEAD -> test")
+    assert digest["commit"].startswith("[test 913da64]"), digest
+    assert digest["ref"] == "6dc530c..913da64  HEAD -> test", digest
+    assert len(digest["problems"]) == 1, digest
+    assert "эффективный uid" in digest["problems"][0], digest
+    # обычные строки проверки в проблемы не попадают — иначе список перестанут
+    # читать ровно так же, как перестали читать полный вывод
+    assert not any("синтаксис" in p for p in digest["problems"]), digest
+
+    clean = _push_digest("git commit: [test abc1234] правка\n"
+                         "git push origin test: ok\n"
+                         "   111..abc1234  HEAD -> test")
+    assert clean["problems"] == [], clean
+
     # ── git/status отдаёт СПИСОК путей, а не текст ───────────────────────
     # Интерфейс считает по нему количество и печатает список. Со строкой
     # `git status --porcelain` он считал символы («не запушено файлов: 143») и

@@ -30,5 +30,19 @@ export function useAction(fn) {
     [fn],
   )
 
-  return { run, loading, error, result, reset: () => setError(null) }
+  return {
+    run,
+    loading,
+    error,
+    result,
+    // reset — убрать ТОЛЬКО ошибку: результат при этом остаётся на экране.
+    reset: () => setError(null),
+    // clear — убрать и результат: нужно там, где показанное перестало быть
+    // правдой. Предпросмотр после пуша — ровно этот случай: файлы уже уехали,
+    // а список «что изменится» продолжает висеть и предлагать записать.
+    clear: () => {
+      setError(null)
+      setResult(null)
+    },
+  }
 }

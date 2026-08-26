@@ -25,7 +25,7 @@ import { useAction } from './useAction'
 import ActionError from './ActionError'
 import CodeArea from './CodeArea'
 import ComboBox from './ComboBox'
-import FilesPreview from './FilesPreview'
+import FilesPreview, { PushResult } from './FilesPreview'
 import MappingEditor from './MappingEditor'
 import TableNamePair from './TableNamePair'
 import LineActions from './LineActions'
@@ -533,11 +533,23 @@ export default function LineForm({ lineKey, onChanged }) {
           onPush={(chosen) =>
             writeChosen(chosen).then(
               (res) =>
-                res && push.run({ message: `конструктор: ${lineKey}` }).then(() => onChanged?.()),
+                res &&
+                push.run({ message: `конструктор: ${lineKey}` }).then((done) => {
+                  onChanged?.()
+                  // Предпросмотр после пуша закрываем: файлы уже уехали, и
+                  // список «что изменится» перестал быть правдой — он висит
+                  // на экране и предлагает записать то, что записано. Итог
+                  // пуша при этом остаётся: его показывает GitBar в шапке.
+                  if (done?.ok !== false) preview.clear()
+                }),
             )
           }
         />
       )}
+
+      {/* Предпросмотр закрылся после пуша — а его итог должен остаться:
+          именно там видно, что на сервере пошло не так. */}
+      {!preview.result && <PushResult pushed={push.result} />}
 
       {!preview.result && dirty && (
         <Alert

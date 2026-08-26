@@ -25,6 +25,10 @@ JUPYTER_CLONE=/opt/jupyter/workdir/konkin/etl   # общий Jupyter-клон (�
 
 BARE=$ROOT/etl.git
 SRC=$ROOT/test-src
+# Файл-заявка на перезапуск: его трогает post-receive, когда sudo из своего
+# процесса недоступен (push из конструктора — NoNewPrivileges). За файлом следит
+# path-юнит, см. шаг 9d.
+RESTART_STAMP=$ROOT/.restart-request
 AHOME=$ROOT/home
 ENVFILE=$ROOT/airflow-test.env         # systemd EnvironmentFile (структурные airflow-переменные)
 ### ────────────────────────────────────────────────────────
@@ -175,6 +179,36 @@ cat > "$BARE/hooks/post-receive" <<HOOK
 set -e
 umask 002
 
+# Перезапуск сервисов. ОТДЕЛЬНОЙ функцией и БЕЗ права уронить хук.
+#
+# Раньше здесь стоял голый \`sudo systemctl restart ...\`, и при set -e его
+# отказ обрывал хук целиком: не обновлялся Jupyter-клон, не перезапускался
+# конструктор, не печаталась итоговая строка. Снаружи это выглядело как удачный
+# push — сообщение об отказе тонуло в середине длинного вывода.
+#
+# Отказать sudo может по причине, которая правами не лечится. Push из
+# КОНСТРУКТОРА идёт внутри его systemd-сервиса, а там NoNewPrivileges=yes: флаг
+# наследуют все потомки, setuid перестаёт действовать, и sudo не может стать
+# root вовсе — «эффективный uid не равен 0». Строки в sudoers при этом на
+# месте и всё равно бесполезны.
+#
+# Поэтому запасной путь без привилегий: тронуть файл-заявку, за которым следит
+# path-юнит (см. setup-airflow-test.sh, шаг 9d). Он и перезапустит — уже от
+# root и вне процесса push'а.
+restart_units() {
+    if sudo -n systemctl restart "\$@" 2>/dev/null; then
+        echo "перезапущено: \$*"
+        return 0
+    fi
+    if date +%s > "$RESTART_STAMP" 2>/dev/null; then
+        echo "перезапуск запрошен через файл-заявку (sudo из этого процесса недоступен)"
+        return 0
+    fi
+    echo "!! перезапустить не вышло: \$*"
+    echo "!! сделайте руками: sudo systemctl restart \$*"
+    return 0
+}
+
 while read oldrev newrev ref; do
     branch=\${ref#refs/heads/}
     if [ "\$branch" = "$DEPLOY_BRANCH" ]; then
@@ -207,7 +241,7 @@ while read oldrev newrev ref; do
         # показывает старое поведение (например, отладочные print'ы, которых в
         # файле уже нет). Не рестартовать при провале смысла нет: код всё равно
         # лежит в DAGS_FOLDER, и scheduler его перечитает сам.
-        sudo systemctl restart airflow-test-scheduler airflow-test-webserver
+        restart_units airflow-test-scheduler airflow-test-webserver
 
         if [ -d "$JUPYTER_CLONE/.git" ]; then
             ( unset GIT_DIR GIT_WORK_TREE
@@ -235,9 +269,7 @@ while read oldrev newrev ref; do
         # — тогда молча пропускаем.
         if systemctl list-unit-files etl-dagbuilder-api.service >/dev/null 2>&1 \
            && systemctl is-enabled --quiet etl-dagbuilder-api 2>/dev/null; then
-            sudo systemctl restart etl-dagbuilder-api \
-                && echo "конструктор перезапущен" \
-                || echo "конструктор перезапустить не вышло (нет прав в sudoers?) — перезапустите руками"
+            restart_units etl-dagbuilder-api
         fi
         echo "deploy: ветка $DEPLOY_BRANCH -> $SRC, airflow-test перезапущен"
         # ==================================
@@ -374,6 +406,56 @@ if [[ -d "$JUPYTER_CLONE/.git" ]]; then
 else
     echo "  ($JUPYTER_CLONE не найден — пропуск)"
 fi
+
+echo "== 9d. перезапуск по файлу-заявке (для push'а из конструктора) =="
+# Зачем это нужно вообще.
+#
+# Push из конструктора идёт ВНУТРИ его systemd-сервиса, а у того
+# NoNewPrivileges=yes. Флаг наследуют все потомки: git -> hook -> sudo. С ним
+# setuid не действует, и sudo не может стать root в принципе — сообщение
+# «эффективный uid не равен 0», к правам в sudoers отношения не имеющее.
+# Строки sudoers из шага 9 работают только когда push пришёл по ssh (dev-push).
+#
+# Обходится это без ослабления сервиса: хук трогает файл-заявку, за файлом
+# следит path-юнит, перезапуск делает root вне процесса push'а.
+#
+# sleep перед рестартом обязателен. Конструктор перезапускает САМ СЕБЯ, а push,
+# который к этому привёл, — его собственный дочерний процесс: без паузы сервис
+# умрёт раньше, чем отдаст ответ, и человек увидит оборванный запрос вместо
+# «запушено».
+STAMP_UNIT=/etc/systemd/system/etl-deploy-restart
+: > "$RESTART_STAMP" 2>/dev/null || true
+chgrp "$GROUP" "$RESTART_STAMP" 2>/dev/null || true
+chmod 0664 "$RESTART_STAMP" 2>/dev/null || true
+
+cat > "$STAMP_UNIT.service" <<UNIT
+[Unit]
+Description=Перезапуск airflow-test и конструктора по заявке из git-хука
+
+[Service]
+Type=oneshot
+# Пауза — чтобы push успел отдать ответ до того, как конструктор себя убьёт.
+ExecStartPre=/bin/sleep 3
+ExecStart=$SCTL restart airflow-test-scheduler airflow-test-webserver
+ExecStart=-$SCTL restart etl-dagbuilder-api
+UNIT
+
+cat > "$STAMP_UNIT.path" <<UNIT
+[Unit]
+Description=Следит за заявкой на перезапуск ($RESTART_STAMP)
+
+[Path]
+PathModified=$RESTART_STAMP
+Unit=etl-deploy-restart.service
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable --now etl-deploy-restart.path >/dev/null 2>&1 \
+    && echo "  ok ($RESTART_STAMP)" \
+    || echo "  !! path-юнит не включился — push из конструктора не будет перезапускать сервисы"
 
 echo "== 10. Запуск =="
 systemctl daemon-reload
