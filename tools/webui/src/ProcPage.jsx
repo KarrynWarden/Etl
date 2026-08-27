@@ -35,16 +35,39 @@ import FilesPreview from './FilesPreview'
 // стёрла бы остальное.
 const { Paragraph, Text } = Typography
 
-const SCHEDULE_HINTS = [
-  { value: 'dt.timedelta(minutes=10)', label: 'каждые 10 минут' },
-  { value: 'dt.timedelta(minutes=60)', label: 'раз в час' },
-  { value: 'dt.timedelta(days=1)', label: 'раз в сутки' },
-  // Часы в кроне — по UTC: так во всём проекте, и менять это нельзя, иначе
-  // разом уедут ночные чистки и аудит. В подписи сразу местное время.
-  { value: "'50 5,7,13 * * *'", label: 'cron: 10:50, 12:50, 18:50 местного' },
-  { value: "'0 3 * * *'", label: 'cron: каждый день в 8:00 местного' },
-  { value: 'None', label: 'только вручную' },
+// В файле расписание живёт ВЫРАЖЕНИЕМ python: `dt.timedelta(minutes=10)`,
+// строка-cron, `None`. Так его и надо хранить — на этом держится замыкание
+// круга: разобрали файл, собрали обратно, получили тот же текст до символа.
+//
+// А человеку нужны поля, как у сложных дагов: «каждые N минут» или cron. Поэтому
+// поля не отдельное состояние формы, а РАЗБОР того же выражения: выбрали вид —
+// сразу записали в spec.schedule готовое выражение этого вида. Второго источника
+// правды нет, и рассинхронизироваться нечему.
+const UNITS = [
+  { value: 'minutes', label: 'минут' },
+  { value: 'hours', label: 'часов' },
+  { value: 'days', label: 'суток' },
 ]
+
+function parseSchedule(expr) {
+  const raw = (expr || '').trim()
+  if (!raw || raw === 'None') return { kind: 'none' }
+  const td = raw.match(/^dt\.timedelta\(\s*(minutes|hours|days)\s*=\s*(\d+)\s*\)$/)
+  if (td) return { kind: 'interval', unit: td[1], n: Number(td[2]) }
+  const cron = raw.match(/^['"](.+)['"]$/)
+  if (cron) return { kind: 'cron', cron: cron[1] }
+  // Ничего из знакомого — значит выражение своё. Прятать его за полями нельзя:
+  // форма перезаписала бы то, чего не поняла.
+  return { kind: 'raw', raw }
+}
+
+function buildSchedule(state) {
+  if (state.kind === 'none') return 'None'
+  if (state.kind === 'interval')
+    return `dt.timedelta(${state.unit}=${Math.max(1, Number(state.n) || 1)})`
+  if (state.kind === 'cron') return `'${state.cron || ''}'`
+  return state.raw || ''
+}
 
 // Расписание в файле — выражение python, и в списке оно читается как код:
 // `dt.timedelta(minutes=10)`. Человеку нужно «каждые 10 минут», поэтому
@@ -266,38 +289,10 @@ export default function ProcPage() {
                   </Col>
                 </Row>
 
-                <Form.Item
-                  label="Расписание"
-                  help={
-                    <>
-                      выражение python: dt.timedelta(...), строка-cron или None.{' '}
-                      <b>{humanSchedule(spec.schedule)}</b>
-                      {localTimes(spec.schedule) && (
-                        <>
-                          {' '}— <b>по Екатеринбургу: {localTimes(spec.schedule)}</b>.
-                          Кроны здесь пишутся по UTC, это не опечатка.
-                        </>
-                      )}
-                    </>
-                  }
-                >
-                  <Select
-                    value={spec.schedule}
-                    onChange={(v) => set({ schedule: v })}
-                    options={SCHEDULE_HINTS.map((s) => ({
-                      value: s.value,
-                      label: `${s.value}  —  ${s.label}`,
-                    }))}
-                    showSearch
-                    /* Готовые варианты — подсказка, а не ограничение: cron
-                       бывает любой, и запрещать его набор значило бы отправлять
-                       человека править файл руками, то есть ровно туда, откуда
-                       эта страница его и уводит. */
-                    filterOption={false}
-                    onSearch={(v) => set({ schedule: v })}
-                    notFoundContent={null}
-                  />
-                </Form.Item>
+                <ScheduleField
+                  value={spec.schedule}
+                  onChange={(v) => set({ schedule: v })}
+                />
 
                 <Row gutter={12}>
                   <Col xs={12} md={6}>
@@ -504,5 +499,126 @@ function AlienProc({ proc }) {
         <CodeArea lang="python" readOnly value={proc.source} minRows={20} maxRows={60} />
       </Card>
     </Space>
+  )
+}
+
+
+// Расписание полями — как у сложных дагов, но без второго источника правды.
+//
+// Состояния у поля нет вовсе: вид расписания ВЫЧИСЛЯЕТСЯ из выражения, а выбор
+// вида сразу пишет в spec готовое выражение этого вида. Держи форма свой
+// «выбранный вид» отдельно — он разошёлся бы с текстом при переключении на
+// другую процедуру, и человек правил бы одно, а записывалось бы другое.
+function ScheduleField({ value, onChange }) {
+  const st = parseSchedule(value)
+  const put = (patch) => onChange(buildSchedule({ ...st, ...patch }))
+  const local = localTimes(value)
+
+  return (
+    <Row gutter={12}>
+      <Col xs={24} md={8}>
+        <Form.Item label="Расписание">
+          <Select
+            value={st.kind}
+            onChange={(kind) =>
+              onChange(
+                buildSchedule(
+                  kind === 'interval'
+                    ? { kind, unit: 'minutes', n: st.n || 60 }
+                    : kind === 'cron'
+                      ? { kind, cron: st.cron || '0 3 * * *' }
+                      : { kind },
+                ),
+              )
+            }
+            options={[
+              { value: 'interval', label: 'каждые N…' },
+              { value: 'cron', label: 'cron-выражение' },
+              { value: 'none', label: 'только вручную' },
+              // «своё выражение» не предлагается — оно появляется само, когда в
+              // файле стоит что-то незнакомое. Предложить его значило бы звать
+              // человека писать python там, где хватает двух полей.
+              ...(st.kind === 'raw'
+                ? [{ value: 'raw', label: 'своё выражение' }]
+                : []),
+            ]}
+          />
+        </Form.Item>
+      </Col>
+
+      {st.kind === 'interval' && (
+        <>
+          <Col xs={12} md={8}>
+            <Form.Item label="каждые">
+              <InputNumber
+                min={1}
+                style={{ width: '100%' }}
+                value={st.n}
+                onChange={(n) => put({ n: n ?? 1 })}
+              />
+            </Form.Item>
+          </Col>
+          <Col xs={12} md={8}>
+            <Form.Item label="единицы">
+              <Select
+                value={st.unit}
+                onChange={(unit) => put({ unit })}
+                options={UNITS}
+              />
+            </Form.Item>
+          </Col>
+        </>
+      )}
+
+      {st.kind === 'cron' && (
+        <Col xs={24} md={16}>
+          <Form.Item
+            label="cron (мин час день месяц день-недели)"
+            help={
+              <>
+                {local ? (
+                  <>
+                    по Екатеринбургу: <b>{local}</b>. Часы пишутся{' '}
+                    <b>по UTC</b> — так во всём проекте, это не опечатка.
+                  </>
+                ) : (
+                  <>
+                    часы пишутся <b>по UTC</b>: 5:50 в поле — это 10:50 по
+                    Екатеринбургу. Так во всём проекте.
+                  </>
+                )}
+              </>
+            }
+          >
+            <Input
+              placeholder="50 5,7,13 * * *"
+              value={st.cron || ''}
+              onChange={(e) => put({ cron: e.target.value })}
+            />
+          </Form.Item>
+        </Col>
+      )}
+
+      {st.kind === 'raw' && (
+        <Col xs={24} md={16}>
+          <Form.Item
+            label="выражение python"
+            help="в файле стоит что-то, чего форма не разбирает — правьте как есть"
+          >
+            <Input value={st.raw || ''} onChange={(e) => put({ raw: e.target.value })} />
+          </Form.Item>
+        </Col>
+      )}
+
+      {st.kind === 'none' && (
+        <Col xs={24} md={16}>
+          <Form.Item label=" " colon={false}>
+            <Text type="secondary">
+              schedule_interval = None: даг запускается только руками из airflow.
+            </Text>
+          </Form.Item>
+        </Col>
+      )}
+    </Row>
   )
 }

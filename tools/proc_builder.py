@@ -147,11 +147,55 @@ def check_schedule(expr):
     if not expr:
         raise BadSpec("не задано расписание (schedule_interval)")
     try:
-        ast.parse(expr, mode="eval")
+        tree = ast.parse(expr, mode="eval")
     except SyntaxError as err:
         raise BadSpec("расписание не разбирается как выражение python: "
                       "{}\n    {}".format(err.msg, expr))
+
+    # Строка в этом месте — это cron, и разбирать её как python мало.
+    # `''` — совершенно правильное выражение python и совершенно негодное
+    # расписание: airflow не сможет его разобрать, даг упадёт на импорте и
+    # ИСЧЕЗНЕТ из списка. Проверка «разбирается как python» такое пропускает,
+    # а форма даёт получить пустой cron одним щелчком по «cron-выражение».
+    try:
+        value = ast.literal_eval(tree)
+    except (ValueError, SyntaxError):
+        return expr                       # не литерал (dt.timedelta и прочее)
+    if isinstance(value, str):
+        _check_cron(value)
     return expr
+
+
+# Пресеты airflow вместо cron-строки.
+_CRON_PRESETS = frozenset((
+    "@once", "@hourly", "@daily", "@weekly", "@monthly", "@yearly",
+    "@annually", "@continuous", "@midnight",
+))
+_CRON_FIELD_RE = re.compile(r"^[0-9*/,\-A-Za-z?#LW]+$")
+
+
+def _check_cron(value):
+    """Cron-строка: пять полей либо пресет @-вида."""
+    text = (value or "").strip()
+    if not text:
+        raise BadSpec(
+            "пустое cron-выражение. Как выражение python пустая строка "
+            "правильная, а как расписание — нет: airflow не разберёт её, даг "
+            "упадёт на импорте и исчезнет из списка.")
+    if text.startswith("@"):
+        if text not in _CRON_PRESETS:
+            raise BadSpec("нет такого пресета: {}. Есть: {}".format(
+                text, ", ".join(sorted(_CRON_PRESETS))))
+        return
+    parts = text.split()
+    if len(parts) != 5:
+        raise BadSpec(
+            "в cron должно быть ПЯТЬ полей (минуты часы день месяц день-недели), "
+            "а тут {}: {!r}".format(len(parts), text))
+    bad = [p for p in parts if not _CRON_FIELD_RE.match(p)]
+    if bad:
+        raise BadSpec("недопустимые символы в поле cron: {}".format(
+            ", ".join(repr(p) for p in bad)))
 
 
 def check_body(body):
@@ -595,6 +639,18 @@ def _selftest():
     bad({"max_active_runs": 0}, "max_active_runs = 0")
     bad({"schedule": ""}, "пустое расписание")
     bad({"schedule": "dt.timedelta(minutes=10"}, "расписание с незакрытой скобкой")
+    # Пустой cron — правильное выражение python и негодное расписание: даг
+    # упадёт на импорте и исчезнет из списка airflow. Форма даёт получить его
+    # одним щелчком по «cron-выражение», поэтому ловим здесь.
+    bad({"schedule": "''"}, "пустое cron-выражение")
+    bad({"schedule": "'0 3 * *'"}, "cron из четырёх полей")
+    bad({"schedule": "'0 3 * * * *'"}, "cron из шести полей")
+    bad({"schedule": "'@каждый-день'"}, "несуществующий пресет")
+    bad({"schedule": "'0 3 * * !'"}, "недопустимый символ в поле cron")
+    # …а годные варианты обязаны проходить
+    for good in ("'0 3 * * *'", "'50 5,7,13 * * 1-5'", "'*/15 * * * *'",
+                 "'@daily'", "None", "dt.timedelta(hours=6)"):
+        build_all(dict(spec, schedule=good))
     bad({"body": ""}, "пустое тело")
     bad({"body": "if True:\npass"}, "тело со сломанным отступом")
     bad({"body": "cursor.execute('x'"}, "тело с незакрытой скобкой")
