@@ -570,9 +570,15 @@ def r_versions(params):
     limit = params.get("limit") or 40
     scope = params.get("scope") or "areas"
     paths = None if scope == "all" else list(G.AREAS)
+    note = ""
+    if params.get("refresh_tags"):
+        # По сети — только когда попросили. Список версий открывают часто, и
+        # ходить за тегами на каждое открытие незачем.
+        _count, note = G.fetch_prod_tags()
     return {"branch": B.current_branch(),
             "versions": G.versions(limit=int(limit), paths=paths),
-            "prod_tags": G.prod_tags(limit=int(limit))}
+            "prod_tags": G.prod_tags(limit=int(limit)),
+            "tags_note": note}
 
 
 def r_rollback_plan(params):
@@ -1460,6 +1466,22 @@ def _selftest():
 
     code, body = dispatch("GET", "git/versions", {"limit": 5})
     assert code == 200 and body["result"]["versions"], body
+
+    # Теги выкладок ставит ТОТ клон, из которого запускали deploy-prod.sh, и
+    # пушит в прод-репозиторий. У конструктора их может не быть вовсе — тогда
+    # список выкладок пуст, и «откатить прод к прошлой версии» выглядит как
+    # отсутствующая возможность. Обновление тегов ходит по сети, поэтому идёт
+    # только по просьбе — и НЕ имеет права уронить список версий: нет remote
+    # 'prod', не дошли до него, кончился таймаут — показываем локальное и
+    # говорим почему.
+    code, body = dispatch("GET", "git/versions",
+                          {"limit": 5, "refresh_tags": True})
+    assert code == 200, body
+    assert body["result"]["versions"], body
+    assert isinstance(body["result"]["prod_tags"], list), body["result"]
+    assert isinstance(body["result"]["tags_note"], str), body["result"]
+    # без просьбы по сети не ходим вовсе
+    assert dispatch("GET", "git/versions", {"limit": 5})[1]["result"]["tags_note"] == ""
     first = body["result"]["versions"][0]
     assert first["sha"] and first["date"] and first["subject"], first
 

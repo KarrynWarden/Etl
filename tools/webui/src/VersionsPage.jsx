@@ -3,6 +3,7 @@ import {
   Alert,
   Button,
   Card,
+  Checkbox,
   Input,
   Modal,
   Popconfirm,
@@ -54,6 +55,10 @@ export default function VersionsPage() {
   // только спрашиваем.
   const [ask, setAsk] = useState(null)           // {from_ref, title} или null
   const [word, setWord] = useState('')
+  // Во время отладки за день набегают десятки коммитов, а прод-точек среди них
+  // единицы. Искать их глазами в общем списке — то же, что искать линию без
+  // фильтра по имени: работает, пока список короткий.
+  const [onlyProd, setOnlyProd] = useState(false)
 
   const versions = useAction(api.gitVersions)
   const prodStatus = useAction(api.prodStatus)
@@ -68,10 +73,13 @@ export default function VersionsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const reload = () => {
+  const reload = (refreshTags = false) => {
     setPlan(null)
     setPicked(null)
-    versions.run({ limit: 40 })
+    // Теги выкладок ставит тот клон, из которого запускали deploy-prod.sh, и
+    // пушит в прод-репозиторий. У конструктора их может не быть вовсе —
+    // тогда список выкладок пуст, и выглядит это как «функции нет».
+    versions.run({ limit: 40, refresh_tags: refreshTags || undefined })
   }
 
   const st = prodStatus.result
@@ -81,8 +89,13 @@ export default function VersionsPage() {
   // не бывает. Недоступный прод и так виден: скрипт вернёт ненулевой код, а его
   // вывод показан целиком. Отказ по факту лучше запрета заранее: запрет ничего
   // не объясняет, а неудача объясняет всё.
-  const rows = versions.result?.versions || []
+  const all = versions.result?.versions || []
+  const rows = onlyProd
+    ? all.filter((r) => (r.tags || []).some((t) => t.startsWith('prod-')))
+    : all
   const prodList = versions.result?.prod_tags || []
+  const prodCount = all.filter((r) =>
+    (r.tags || []).some((t) => t.startsWith('prod-'))).length
 
   const showPlan = (ref) => {
     setPicked(ref)
@@ -201,8 +214,43 @@ bash deploy/deploy-prod.sh            # выложить`}
       </Card>
 
       {/* ── ВЫКЛАДКИ ПРОДА ─────────────────────────────────────────────── */}
-      {prodList.length > 0 && (
-        <Card size="small" title="Выкладки прода">
+      {/* Карточка показывается ВСЕГДА, даже пустой. Раньше при пустом списке её
+          не было вовсе, и «откатить прод к прошлой версии» выглядело как
+          отсутствующая возможность — хотя дело в том, что тегов нет в клоне:
+          их ставит тот клон, из которого запускали deploy-prod.sh. */}
+      <Card
+        size="small"
+        title="Выкладки прода"
+        extra={
+          <Tooltip title="Забрать теги prod-* из прод-репозитория: их ставит тот клон, из которого запускали выкладку">
+            <Button
+              size="small"
+              icon={<ReloadOutlined />}
+              loading={versions.loading}
+              onClick={() => reload(true)}
+            >
+              Обновить из прода
+            </Button>
+          </Tooltip>
+        }
+      >
+        {versions.result?.tags_note && (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 8 }}
+            message="Теги из прода забрать не вышло — показаны те, что есть локально"
+            description={<pre style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{versions.result.tags_note}</pre>}
+          />
+        )}
+        {prodList.length === 0 ? (
+          <Typography.Text type="secondary">
+            Выкладок не видно. Если они точно были — нажмите «Обновить из прода»:
+            теги ставит тот клон, из которого запускали{' '}
+            <Typography.Text code>deploy/deploy-prod.sh</Typography.Text>, и в этом
+            клоне их может не быть.
+          </Typography.Text>
+        ) : (
           <Table
             size="small"
             bordered
@@ -234,17 +282,34 @@ bash deploy/deploy-prod.sh            # выложить`}
               },
             ]}
           />
-        </Card>
-      )}
+        )}
+      </Card>
 
       {/* ── ВЕРСИИ ТЕСТА ───────────────────────────────────────────────── */}
       <Card
         size="small"
         title={<b>Версии {versions.result?.branch ? `(${versions.result.branch})` : ''}</b>}
         extra={
-          <Tooltip title="Перечитать историю">
-            <Button size="small" icon={<ReloadOutlined />} loading={versions.loading} onClick={reload} />
-          </Tooltip>
+          <Space>
+            {/* Десятки коммитов за день отладки, прод-точек среди них единицы.
+                Фильтр — то же, что фильтр по имени в списке линий: без него
+                поиск работает, только пока список короткий. */}
+            <Checkbox
+              checked={onlyProd}
+              disabled={!prodCount}
+              onChange={(e) => setOnlyProd(e.target.checked)}
+            >
+              только выложенные на прод{prodCount ? ` (${prodCount})` : ''}
+            </Checkbox>
+            <Tooltip title="Перечитать историю">
+              <Button
+                size="small"
+                icon={<ReloadOutlined />}
+                loading={versions.loading}
+                onClick={() => reload(false)}
+              />
+            </Tooltip>
+          </Space>
         }
       >
         <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
@@ -277,9 +342,17 @@ bash deploy/deploy-prod.sh            # выложить`}
               render: (_v, r) => (
                 <Space size={4} wrap>
                   <span>{r.subject}</span>
-                  {r.tags.map((t) => (
-                    <Tag key={t} color={t.startsWith('prod-') ? 'green' : undefined}>{t}</Tag>
-                  ))}
+                  {r.tags.map((t) =>
+                    t.startsWith('prod-') ? (
+                      // Прод-точку надо видеть, не вчитываясь: именно её ищут,
+                      // когда спрашивают «до какой версии откатить».
+                      <Tag key={t} color="green" icon={<CloudUploadOutlined />}>
+                        {t}
+                      </Tag>
+                    ) : (
+                      <Tag key={t}>{t}</Tag>
+                    ),
+                  )}
                 </Space>
               ),
             },
