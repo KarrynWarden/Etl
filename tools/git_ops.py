@@ -46,7 +46,7 @@ AREAS = B.GIT_AREAS                      # ("etlFolder", "dags")
 
 # Разделитель полей в git log: \x00 не встречается в теме коммита, в отличие
 # от любого печатного символа, который кто-нибудь однажды напишет.
-_FMT = "%H%x00%h%x00%aI%x00%an%x00%D%x00%s"
+_FMT = "%H%x00%h%x00%aI%x00%an%x00%D%x00%s%x00%T"
 
 
 def _git(root, *args, timeout=120):
@@ -73,9 +73,17 @@ def _parse_log(text):
         if len(parts) < 6:
             continue
         sha, short, date, author, refs, subject = parts[:6]
+        tree = parts[6] if len(parts) > 6 else ""
         tags = [r.strip()[5:] for r in refs.split(",") if r.strip().startswith("tag: ")]
         out.append({"sha": sha, "short": short, "date": date, "author": author,
-                    "subject": subject, "refs": refs, "tags": tags})
+                    "subject": subject, "refs": refs, "tags": tags,
+                    # Дерево — чтобы сопоставить версию теста с выкладкой прода.
+                    # Прод это ОТДЕЛЬНАЯ линия истории: коммит поверх прода с
+                    # деревом теста. Значит тег prod-* висит на прод-коммите и в
+                    # истории теста не появляется никогда — искать его там по
+                    # refs бесполезно. А вот дерево у полной выкладки совпадает
+                    # с деревом теста ровно, побайтово (read-tree --reset).
+                    "tree": tree})
     return out
 
 
@@ -120,10 +128,19 @@ def fetch_prod_tags(root=ROOT, timeout=20):
 def prod_tags(limit=40, root=ROOT):
     """Выкладки прода — теги prod-*, новые сверху. Это и есть «версии прода»:
     каждая выкладка ставит такой тег (deploy/deploy-prod.sh)."""
+    # Разделитель здесь %00, а НЕ %x00. `%x00` — язык `git log --format`;
+    # `for-each-ref` его не понимает и печатает буквально, четырьмя символами.
+    # Строка тогда не делится вовсе, `len(parts) >= 4` не выполняется никогда, и
+    # список выкладок ВСЕГДА пуст. Молча: git отвечает нулём, ошибок нет, просто
+    # «выкладок прода не найдено» — и выглядит это как «их и не было».
+    # Дерево берём двумя атомами: у аннотированного тега заполнен %(*tree)
+    # (дерево коммита, на который тег указывает), у лёгкого — %(tree).
+    # Второй всегда пуст, когда заполнен первый, поэтому просто берём непустой.
     rc, out, err = _git(root, "for-each-ref", "--sort=-creatordate",
                         f"--count={int(limit)}",
-                        "--format=%(refname:short)%x00%(creatordate:iso-strict)"
-                        "%x00%(objectname:short)%x00%(contents:subject)",
+                        "--format=%(refname:short)%00%(creatordate:iso-strict)"
+                        "%00%(objectname:short)%00%(contents:subject)"
+                        "%00%(tree)%00%(*tree)",
                         "refs/tags/prod-*")
     if rc != 0:
         raise RuntimeError(f"git for-each-ref не удался: {err.strip()}")
@@ -131,8 +148,12 @@ def prod_tags(limit=40, root=ROOT):
     for line in out.splitlines():
         parts = line.split("\x00")
         if len(parts) >= 4:
+            tree = ""
+            if len(parts) >= 6:
+                tree = parts[4] or parts[5]
             tags.append({"tag": parts[0], "date": parts[1],
-                         "short": parts[2], "subject": parts[3]})
+                         "short": parts[2], "subject": parts[3],
+                         "tree": tree})
     return tags
 
 

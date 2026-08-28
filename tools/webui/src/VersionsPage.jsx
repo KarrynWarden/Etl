@@ -90,12 +90,13 @@ export default function VersionsPage() {
   // вывод показан целиком. Отказ по факту лучше запрета заранее: запрет ничего
   // не объясняет, а неудача объясняет всё.
   const all = versions.result?.versions || []
-  const rows = onlyProd
-    ? all.filter((r) => (r.tags || []).some((t) => t.startsWith('prod-')))
-    : all
+  // Признак «эта версия лежит на проде» приходит полем prod_tag: сервер
+  // сопоставляет версии теста с выкладками по дереву коммита. По r.tags искать
+  // бесполезно — прод это отдельная линия истории, тег prod-* висит на
+  // прод-коммите и в истории теста не появляется никогда.
+  const rows = onlyProd ? all.filter((r) => r.prod_tag) : all
   const prodList = versions.result?.prod_tags || []
-  const prodCount = all.filter((r) =>
-    (r.tags || []).some((t) => t.startsWith('prod-'))).length
+  const prodCount = all.filter((r) => r.prod_tag).length
 
   const showPlan = (ref) => {
     setPicked(ref)
@@ -366,17 +367,14 @@ bash deploy/deploy-prod.sh            # выложить`}
               render: (_v, r) => (
                 <Space size={4} wrap>
                   <span>{r.subject}</span>
-                  {r.tags.map((t) =>
-                    t.startsWith('prod-') ? (
-                      // Прод-точку надо видеть, не вчитываясь: именно её ищут,
-                      // когда спрашивают «до какой версии откатить».
-                      <Tag key={t} color="green" icon={<CloudUploadOutlined />}>
-                        {t}
-                      </Tag>
-                    ) : (
-                      <Tag key={t}>{t}</Tag>
-                    ),
-                  )}
+                  {r.prod_tag ? (
+                    // Прод-точку надо видеть, не вчитываясь: именно её ищут,
+                    // когда спрашивают «до какой версии откатить».
+                    <Tag color="green" icon={<CloudUploadOutlined />}>
+                      {r.prod_tag}
+                    </Tag>
+                  ) : null}
+                  {(r.tags || []).map((t) => <Tag key={t}>{t}</Tag>)}
                 </Space>
               ),
             },

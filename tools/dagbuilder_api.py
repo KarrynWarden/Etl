@@ -575,9 +575,22 @@ def r_versions(params):
         # По сети — только когда попросили. Список версий открывают часто, и
         # ходить за тегами на каждое открытие незачем.
         _count, note = G.fetch_prod_tags()
+    versions = G.versions(limit=int(limit), paths=paths)
+    tags = G.prod_tags(limit=int(limit))
+    # Помечаем версии теста выкладками прода ПО ДЕРЕВУ, а не по тегу.
+    # Прод — отдельная линия истории: выкладка делает коммит поверх прода с
+    # деревом теста (`git read-tree -u --reset`), тег prod-* висит на нём, и в
+    # истории теста этого тега нет и не будет. Зато дерево совпадает побайтово,
+    # по нему и находим: «эта версия теста сейчас лежит на проде».
+    by_tree = {}
+    for t in tags:
+        if t.get("tree"):
+            by_tree.setdefault(t["tree"], t["tag"])
+    for v in versions:
+        v["prod_tag"] = by_tree.get(v.get("tree") or "", "")
     return {"branch": B.current_branch(),
-            "versions": G.versions(limit=int(limit), paths=paths),
-            "prod_tags": G.prod_tags(limit=int(limit)),
+            "versions": versions,
+            "prod_tags": tags,
             "tags_note": note}
 
 
@@ -1503,6 +1516,36 @@ def _selftest():
     assert dispatch("GET", "git/versions", {"limit": 5})[1]["result"]["tags_note"] == ""
     first = body["result"]["versions"][0]
     assert first["sha"] and first["date"] and first["subject"], first
+
+    # Здесь тегов prod-* обычно нет, и пустой список ни о чём не говорит: он
+    # одинаково выглядит и когда выкладок не было, и когда разбор ответа git
+    # сломан. Ровно так и жил год баг с `%x00` в for-each-ref (это язык
+    # `git log --format`, for-each-ref печатает его буквально): строка не
+    # делилась, ни один тег не проходил разбор, список выкладок был вечно пуст,
+    # и выглядело это как «выкладок и не было». Поэтому проверяем на настоящем
+    # временном репозитории с настоящим тегом.
+    with tempfile.TemporaryDirectory() as tmp:
+        def _g(*a):
+            subprocess.run(("git",) + a, cwd=tmp, check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        _g("init", "-q")
+        _g("config", "user.email", "selftest@example.org")
+        _g("config", "user.name", "selftest")
+        open(os.path.join(tmp, "f.txt"), "w").write("x\n")
+        _g("add", "f.txt")
+        _g("commit", "-qm", "версия")
+        _g("tag", "-a", "prod-20200101-0000", "-m", "выкладка")
+        _g("tag", "prod-20200102-0000")          # лёгкий тег — тоже выкладка
+        got = G.prod_tags(root=tmp)
+        assert len(got) == 2, got
+        имена = {t["tag"] for t in got}
+        assert имена == {"prod-20200101-0000", "prod-20200102-0000"}, got
+        for t in got:
+            assert t["date"] and t["short"], t
+            # Дерево — то, чем версия теста опознаётся как выложенная.
+            assert len(t["tree"]) == 40, t
+        rc, out, _e = G._git(tmp, "rev-parse", "HEAD^{tree}")
+        assert rc == 0 and all(t["tree"] == out.strip() for t in got), got
 
     # План отката до HEAD пуст — и это не мелочь: «откатить туда, где мы уже
     # стоим» не должно предлагать ни одного файла, иначе первый же откат
