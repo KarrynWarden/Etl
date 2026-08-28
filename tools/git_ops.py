@@ -28,6 +28,7 @@
 Самопроверка (без сети и без прода):  python3 tools/git_ops.py --selftest
 """
 import os
+import re
 import subprocess
 import sys
 
@@ -350,7 +351,32 @@ def prod_deploy(from_ref=None, lines=None, root=ROOT):
     if from_ref:
         env["FROM"] = str(from_ref)
     rc, out = prod_run(args, root=root, env=env)
-    return {"rc": rc, "log": out, "ok": rc == 0}
+    result = {"rc": rc, "log": out, "ok": rc == 0}
+    result.update(_deploy_outcome(out if rc == 0 else ""))
+    return result
+
+
+# Скрипт выходит с НУЛЁМ и в случае «выкладывать нечего»: это не ошибка, прод
+# и правда уже в нужном состоянии. Но интерфейс показывал такой исход как
+# «Выложено» — то есть человек несколько раз подряд видел успех, а на проде не
+# появилось ни коммита, ни тега, и понять это было нечем.
+_NOTHING = ("выкладывать нечего", "Нечего выкладывать")
+_TAG_RE = re.compile(r"\bprod-\d{8}-\d{4}(?:-\d+)?\b")
+
+
+def _deploy_outcome(log):
+    """Что на самом деле сделала выкладка. -> {deployed, tag}.
+
+    `deployed` отвечает на вопрос, который и задают: появился ли на проде новый
+    коммит. Тег — доказательство: его ставит сама выкладка, и по нему потом
+    откатываются.
+    """
+    if not log:
+        return {"deployed": False, "tag": ""}
+    if any(mark in log for mark in _NOTHING):
+        return {"deployed": False, "tag": ""}
+    found = _TAG_RE.findall(log)
+    return {"deployed": bool(found), "tag": found[-1] if found else ""}
 
 
 # ─────────────────────────── самопроверка ───────────────────────────

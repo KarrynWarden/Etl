@@ -183,9 +183,25 @@ export default function VersionsPage() {
           )}
           {prodDeploy.result && (
             <Alert
-              type={prodDeploy.result.ok ? 'success' : 'error'}
+              // Скрипт выходит с НУЛЁМ и когда выкладывать нечего: прод уже в
+              // нужном состоянии, это не ошибка. Но «Выложено» здесь — ложь:
+              // ни коммита, ни тега не появилось, и человек несколько раз
+              // подряд видел успех, не понимая, почему на проде пусто.
+              type={
+                !prodDeploy.result.ok
+                  ? 'error'
+                  : prodDeploy.result.deployed
+                    ? 'success'
+                    : 'warning'
+              }
               showIcon
-              message={prodDeploy.result.ok ? 'Выложено' : 'Выкладка не прошла'}
+              message={
+                !prodDeploy.result.ok
+                  ? 'Выкладка не прошла'
+                  : prodDeploy.result.deployed
+                    ? `Выложено: ${prodDeploy.result.tag || 'коммит создан'}`
+                    : 'Ничего не выложено — прод уже в этом состоянии'
+              }
               description={
                 <>
                   <pre style={{ maxHeight: '40vh', overflow: 'auto', margin: 0 }}>
@@ -195,6 +211,14 @@ export default function VersionsPage() {
                       они ровно в этот момент: у конструктора нет прав на
                       прод-репо (он под jupyter из etldev, репо в etlprod), и
                       тогда выложить может только тот, у кого права есть. */}
+                  {prodDeploy.result.ok && !prodDeploy.result.deployed && (
+                    <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }}>
+                      Новый коммит на проде не появился, тега тоже нет. Обычно
+                      это значит, что источник выкладки (<Typography.Text code>origin/test</Typography.Text>)
+                      не содержит новых правок: их записали, но не запушили.
+                      Проверьте в шапке «не запушено файлов».
+                    </Typography.Paragraph>
+                  )}
                   {!prodDeploy.result.ok && (
                     <details style={{ marginTop: 8 }}>
                       <summary>выложить руками — тому, у кого есть права</summary>
@@ -389,6 +413,10 @@ bash deploy/deploy-prod.sh            # выложить`}
               if (!r) return
               setAsk(null)
               prodStatus.run({ probe: true })
+              // Тег только что поставлен в этом же клоне — но список версий
+              // держит прежний ответ. Перечитываем, иначе новой выкладки в
+              // «Выкладках прода» не видно до перезагрузки страницы.
+              reload(false)
             })}
       >
         <Typography.Paragraph>
@@ -420,6 +448,10 @@ bash deploy/deploy-prod.sh            # выложить`}
               if (!r) return
               setAsk(null)
               prodStatus.run({ probe: true })
+              // Тег только что поставлен в этом же клоне — но список версий
+              // держит прежний ответ. Перечитываем, иначе новой выкладки в
+              // «Выкладках прода» не видно до перезагрузки страницы.
+              reload(false)
             })}
         />
         <ActionError error={prodDeploy.error} />

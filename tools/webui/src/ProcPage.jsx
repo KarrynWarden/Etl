@@ -10,6 +10,7 @@ import {
   InputNumber,
   List,
   Row,
+  Popconfirm,
   Select,
   Space,
   Tag,
@@ -19,6 +20,7 @@ import {
 import { api } from './api'
 import { useAction } from './useAction'
 import ActionError from './ActionError'
+import { UndoOutlined } from '@ant-design/icons'
 import CodeArea from './CodeArea'
 import FilesPreview, { PushResult } from './FilesPreview'
 
@@ -127,6 +129,10 @@ export default function ProcPage({ onChanged }) {
   const [creating, setCreating] = useState(false)
   const [spec, setSpec] = useState(null)
   const [alien, setAlien] = useState(null)
+  // Слепок формы на момент открытия. По нему видно, есть ли несохранённые
+  // правки, и к нему же возвращает «Отменить»: перечитывать файл с диска для
+  // этого незачем, а на новой процедуре читать и вовсе неоткуда.
+  const [original, setOriginal] = useState(null)
   const [reloadToken, setReloadToken] = useState(0)
 
   const list = useAction(api.procList)
@@ -149,6 +155,7 @@ export default function ProcPage({ onChanged }) {
     if (got.generated) {
       setAlien(null)
       setSpec(got)
+      setOriginal(JSON.stringify(got))
     } else {
       // Чужой файл в форму не кладём вовсе: пустая форма рядом с его текстом —
       // приглашение нажать «Записать» и потерять всё, чего форма не знает.
@@ -165,10 +172,24 @@ export default function ProcPage({ onChanged }) {
     if (got) {
       setCreating(true)
       setSpec(got)
+      setOriginal(JSON.stringify(got))
     }
   }
 
   const set = (patch) => setSpec((prev) => ({ ...prev, ...patch }))
+
+  const dirty = useMemo(
+    () => Boolean(spec && original && JSON.stringify(spec) !== original),
+    [spec, original],
+  )
+
+  // Возврат к слепку, а не перечитывание файла: у новой процедуры файла ещё
+  // нет, а поведение кнопки должно быть одинаковым в обоих случаях.
+  const revert = () => {
+    if (!original) return
+    setSpec(JSON.parse(original))
+    preview.clear()
+  }
 
   // Запись — общая для «Записать» и «Записать и запушить»: вторая это первая
   // плюс коммит, и расходиться они не должны.
@@ -182,6 +203,9 @@ export default function ProcPage({ onChanged }) {
       })
       .then((res) => {
         if (!res) return undefined
+        // Записанное и есть новое «как на диске»: иначе форма продолжала бы
+        // считать себя изменённой сразу после успешной записи.
+        setOriginal(JSON.stringify(spec))
         setReloadToken((n) => n + 1)
         // Шапка сама о записи не узнаёт: она перечитывает состояние клона по
         // сигналу сверху. Без него кнопка «Закоммитить и запушить» остаётся
@@ -279,7 +303,33 @@ export default function ProcPage({ onChanged }) {
 
         {spec && (
           <Space direction="vertical" size="middle" style={{ display: 'flex' }}>
-            <Card size="small" title={creating ? 'Новая процедура' : spec.dag_id}>
+            <Card
+              size="small"
+              title={
+                <Space>
+                  <span>{creating ? 'Новая процедура' : spec.dag_id}</span>
+                  {dirty && <Tag color="orange">есть несохранённые правки</Tag>}
+                </Space>
+              }
+              extra={
+                <Popconfirm
+                  title="Отменить все правки?"
+                  description={
+                    creating
+                      ? 'Форма вернётся к заготовке новой процедуры.'
+                      : 'Форма вернётся к тому, что сейчас лежит на диске.'
+                  }
+                  okText="Отменить правки"
+                  cancelText="Нет"
+                  disabled={!dirty}
+                  onConfirm={revert}
+                >
+                  <Button size="small" icon={<UndoOutlined />} disabled={!dirty}>
+                    Отменить
+                  </Button>
+                </Popconfirm>
+              }
+            >
               <Form layout="vertical" size="small">
                 <Row gutter={12}>
                   <Col xs={24} md={12}>
