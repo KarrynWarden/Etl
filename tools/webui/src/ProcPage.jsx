@@ -20,7 +20,7 @@ import { api } from './api'
 import { useAction } from './useAction'
 import ActionError from './ActionError'
 import CodeArea from './CodeArea'
-import FilesPreview from './FilesPreview'
+import FilesPreview, { PushResult } from './FilesPreview'
 
 // Даги-процедуры. Здесь нет ни структур, ни сопоставления колонок — есть
 // расписание и КОД, который человек пишет сам.
@@ -122,7 +122,7 @@ function localTimes(expr) {
   return times.join(', ')
 }
 
-export default function ProcPage() {
+export default function ProcPage({ onChanged }) {
   const [selected, setSelected] = useState(null)
   const [creating, setCreating] = useState(false)
   const [spec, setSpec] = useState(null)
@@ -134,6 +134,7 @@ export default function ProcPage() {
   const blank = useAction(api.procDefaults)
   const preview = useAction(api.procPreview)
   const write = useAction(api.write)
+  const push = useAction(api.gitPush)
 
   useEffect(() => {
     list.run()
@@ -168,6 +169,30 @@ export default function ProcPage() {
   }
 
   const set = (patch) => setSpec((prev) => ({ ...prev, ...patch }))
+
+  // Запись — общая для «Записать» и «Записать и запушить»: вторая это первая
+  // плюс коммит, и расходиться они не должны.
+  const writeChosen = (chosen) =>
+    write
+      .run({
+        files: chosen.map((f) => [f.path, f.content]),
+        // У НОВОЙ процедуры перезапись запрещена: файл с таким именем уже
+        // есть — значит имя занято, и лучше отказ, чем молча съеденный чужой даг.
+        overwrite: !creating,
+      })
+      .then((res) => {
+        if (!res) return undefined
+        setReloadToken((n) => n + 1)
+        // Шапка сама о записи не узнаёт: она перечитывает состояние клона по
+        // сигналу сверху. Без него кнопка «Закоммитить и запушить» остаётся
+        // серой, хотя файл на диске уже изменён.
+        onChanged?.()
+        if (creating) {
+          setCreating(false)
+          setSelected(spec.dag_id)
+        }
+        return res
+      })
 
   const procs = list.result?.procs || []
   const connections = list.result?.connections || spec?.known_connections || []
@@ -421,6 +446,8 @@ export default function ProcPage() {
               <ActionError error={preview.error} onClose={preview.reset} />
             </Card>
 
+            {!preview.result && <PushResult pushed={push.result} />}
+
             {preview.result && (
               <FilesPreview
                 files={preview.result.files}
@@ -429,23 +456,23 @@ export default function ProcPage() {
                 busy={write.loading}
                 error={write.error}
                 written={write.result}
-                onWrite={(chosen) =>
-                  write
-                    .run({
-                      files: chosen.map((f) => [f.path, f.content]),
-                      // У НОВОЙ процедуры перезапись запрещена: файл с таким
-                      // именем уже есть — значит имя занято, и лучше отказ,
-                      // чем молча съеденный чужой даг.
-                      overwrite: !creating,
-                    })
-                    .then((r) => {
-                      if (!r) return
-                      setReloadToken((n) => n + 1)
-                      if (creating) {
-                        setCreating(false)
-                        setSelected(spec.dag_id)
-                      }
-                    })
+                onWrite={writeChosen}
+                pushing={push.loading}
+                pushError={push.error}
+                pushed={push.result}
+                // «Записать и запушить» — одно действие: запись, и только если
+                // она прошла, коммит. Пушить неудавшуюся запись нечего.
+                onPush={(chosen) =>
+                  writeChosen(chosen).then(
+                    (res) =>
+                      res &&
+                      push
+                        .run({ message: `конструктор: ${spec.dag_id}` })
+                        .then((done) => {
+                          onChanged?.()
+                          if (done?.ok !== false) preview.clear()
+                        }),
+                  )
                 }
               />
             )}

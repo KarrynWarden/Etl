@@ -192,17 +192,17 @@ export default function App() {
               {
                 key: 'sp',
                 label: 'Справочники',
-                children: <SpPage kind="regular" />,
+                children: <SpPage kind="regular" onChanged={bump} />,
               },
               {
                 key: 'once',
                 label: 'Разовый перенос',
-                children: <SpPage kind="once" />,
+                children: <SpPage kind="once" onChanged={bump} />,
               },
               { key: 'triggers', label: 'Триггеры', children: <TriggersPage /> },
               // Процедуры стоят рядом с триггерами: и то и другое — код в базе
               // и вокруг неё, который живёт своей жизнью, а не переносом строк.
-              { key: 'procs', label: 'Процедуры', children: <ProcPage /> },
+              { key: 'procs', label: 'Процедуры', children: <ProcPage onChanged={bump} /> },
               // Последней: сюда приходят, когда работа с линиями уже сделана —
               // выложить сделанное или вернуть то, что было.
               { key: 'versions', label: 'Версии и прод', children: <VersionsPage /> },

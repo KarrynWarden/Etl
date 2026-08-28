@@ -26,7 +26,7 @@ import { api } from './api'
 import { useAction } from './useAction'
 import ActionError from './ActionError'
 import ComboBox from './ComboBox'
-import FilesPreview from './FilesPreview'
+import FilesPreview, { PushResult } from './FilesPreview'
 import TableNamePair from './TableNamePair'
 import { isPlainName, toDbCase } from './dbCase'
 import SpMappingEditor from './SpMappingEditor'
@@ -58,7 +58,7 @@ const WORK = { any: 'Все', on: 'В работе', off: 'Отключённы�
 // (isokaudit = 0) и обновляется сам, разовый запускают руками под конкретную
 // задачу. Держать их на одной вкладке значило показывать вперемешку то, что и
 // делают в разное время, и по разным поводам.
-export default function SpPage({ kind }) {
+export default function SpPage({ kind, onChanged: onPageChanged }) {
   // Храним КЛЮЧ, а не сам объект линии. Объект после перезагрузки списка
   // становится копией из прошлого ответа, и форма продолжает показывать
   // прежнее состояние: выключаешь линию — в списке она краснеет, а
@@ -202,11 +202,17 @@ export default function SpPage({ kind }) {
           key={creating ? `new-${kind}` : `${kind}:${selected?.key || 'none'}`}
           entry={creating ? { kind, key: null } : selected}
           existingKeys={(lines.result?.lines || []).map((l) => l.key)}
-          onChanged={() => lines.run()}
+          onChanged={() => {
+            lines.run()
+            // Шапка о записи сама не узнаёт — перечитывает состояние клона по
+            // сигналу сверху. Без него «Закоммитить и запушить» остаётся серой.
+            onPageChanged?.()
+          }}
           onCreated={(key) => {
             setCreating(false)
             setSelectedKey(key)
             lines.run()
+            onPageChanged?.()
           }}
         />
       </Col>
@@ -257,6 +263,27 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
   const load = useAction(api.spLine)
   const preview = useAction(api.spPreview)
   const write = useAction(api.write)
+  const push = useAction(api.gitPush)
+
+  // Запись — общая для «Записать» и «Записать и запушить»: вторая это первая
+  // плюс коммит, и расходиться они не должны.
+  const writeChosen = (chosen) =>
+    write
+      .run({
+        files: chosen.map((f) => [f.path, f.content]),
+        // У НОВОЙ линии перезапись запрещена: если файл с таким именем уже
+        // есть, значит ключ занят — лучше отказ, чем молча съеденная чужая линия.
+        overwrite: !isNew,
+      })
+      .then((res) => {
+        if (!res) return undefined
+        setOriginal(JSON.stringify(spec))
+        // onCreated сам обновляет список и выбирает новую линию, поэтому
+        // второй раз дёргать onChanged незачем
+        if (isNew) onCreated?.(preview.result.key)
+        else onChanged?.()
+        return res
+      })
   const move = useAction(api.spMove)
   const delTargets = useAction(api.spDeleteTargets)
   const remove = useAction(api.spDelete)
@@ -968,6 +995,8 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
         <ActionError error={preview.error} onClose={preview.reset} />
       </Card>
 
+      {!preview.result && <PushResult pushed={push.result} />}
+
       {preview.result && (
         <FilesPreview
           files={preview.result.files}
@@ -976,23 +1005,23 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
           busy={write.loading}
           error={write.error}
           written={write.result}
-          onWrite={(chosen) =>
-            write
-              .run({
-                files: chosen.map((f) => [f.path, f.content]),
-                // У НОВОЙ линии перезапись запрещена: если файл с таким именем
-                // уже есть, значит ключ занят — лучше отказ, чем молча съеденная
-                // чужая линия.
-                overwrite: !isNew,
-              })
-              .then((r) => {
-                if (!r) return
-                setOriginal(JSON.stringify(spec))
-                // onCreated сам обновляет список и выбирает новую линию,
-                // поэтому второй раз дёргать onChanged незачем
-                if (isNew) onCreated?.(preview.result.key)
-                else onChanged?.()
-              })
+          onWrite={writeChosen}
+          pushing={push.loading}
+          pushError={push.error}
+          pushed={push.result}
+          // «Записать и запушить» — одно действие: запись, и только если она
+          // прошла, коммит. Пушить неудавшуюся запись нечего.
+          onPush={(chosen) =>
+            writeChosen(chosen).then(
+              (res) =>
+                res &&
+                push
+                  .run({ message: `конструктор: ${entry?.key || previewKey || 'справочник'}` })
+                  .then((done) => {
+                    onChanged?.()
+                    if (done?.ok !== false) preview.clear()
+                  }),
+            )
           }
         />
       )}
