@@ -406,7 +406,7 @@ export default function LineForm({ lineKey, onChanged }) {
           minRows={6}
           maxRows={24}
           value={spec.select_sql_text || ''}
-          onChange={(e) => patch({ select_sql_text: e.target.value })}
+          onChange={(v) => patch({ select_sql_text: v })}
         />
       </Form.Item>
       {/* SQL периодов читает РОВНО ОДИН режим — query_section (do_etl.
@@ -423,7 +423,7 @@ export default function LineForm({ lineKey, onChanged }) {
             minRows={4}
             maxRows={16}
             value={spec.periods_sql_text || ''}
-            onChange={(e) => patch({ periods_sql_text: e.target.value })}
+            onChange={(v) => patch({ periods_sql_text: v })}
           />
         </Form.Item>
       ) : (

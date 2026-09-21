@@ -775,7 +775,7 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
           maxRows={20}
           readOnly={selectLocked}
           value={spec.select_sql_text || ''}
-          onChange={(e) => patch({ select_sql_text: e.target.value })}
+          onChange={(v) => patch({ select_sql_text: v })}
           onBlur={(e) => reparseSql({ select_sql_text: e.target.value })}
         />
       </Form.Item>
@@ -787,7 +787,7 @@ function SpForm({ entry, existingKeys, onChanged, onCreated }) {
           minRows={3}
           maxRows={12}
           value={spec.add_sql_text || ''}
-          onChange={(e) => patch({ add_sql_text: e.target.value })}
+          onChange={(v) => patch({ add_sql_text: v })}
           onBlur={(e) => reparseSql({ add_sql_text: e.target.value })}
         />
       </Form.Item>

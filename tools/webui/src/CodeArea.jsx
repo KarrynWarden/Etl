@@ -295,7 +295,15 @@ export default function CodeArea({
         value={text}
         readOnly={readOnly}
         spellCheck={false}
-        onChange={(e) => onChange?.(e)}
+        // Наружу отдаём ТЕКСТ, а не событие. CodeArea — свой редактор, а не
+        // голый <textarea>, и в форме рядом с ним стоят Select и InputNumber,
+        // которые дают значение. Обработчик вида `(v) => set({ body: v })`
+        // пишется здесь сам собой, и если onChange отдаёт событие, в поле
+        // спецификации ложится объект события React. Дальше первое же
+        // JSON.stringify (сравнение «изменено ли») падает с «circular
+        // structure» — и падает не поле, а вся страница: событие тянет за
+        // собой DOM-узел, а тот ссылается обратно на fiber.
+        onChange={(e) => onChange?.(e.target.value)}
         onBlur={onBlur}
         onKeyDown={onKeyDown}
         style={{

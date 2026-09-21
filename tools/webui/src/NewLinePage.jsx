@@ -185,7 +185,7 @@ export default function NewLinePage({ onCreated, onCancel }) {
                 minRows={6}
                 maxRows={20}
                 value={form.select_sql_text}
-                onChange={(e) => patch({ select_sql_text: e.target.value })}
+                onChange={(v) => patch({ select_sql_text: v })}
               />
             </Form.Item>
           )}

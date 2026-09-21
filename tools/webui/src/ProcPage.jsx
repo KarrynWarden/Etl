@@ -178,10 +178,20 @@ export default function ProcPage({ onChanged }) {
 
   const set = (patch) => setSpec((prev) => ({ ...prev, ...patch }))
 
-  const dirty = useMemo(
-    () => Boolean(spec && original && JSON.stringify(spec) !== original),
-    [spec, original],
-  )
+  // Сравнение со слепком не имеет права уронить страницу. Само по себе оно
+  // косметика — подсветить кнопку «Записать», — а JSON.stringify падает на
+  // любом значении, которое нельзя разложить в JSON, и уносит с собой всю
+  // отрисовку. Цена ошибки несоразмерна: пропавшая подсветка против пустого
+  // экрана с текстом ошибки. Не разобрали — считаем, что изменено: кнопка
+  // останется доступной, и записать работу всё равно можно.
+  const dirty = useMemo(() => {
+    if (!spec || !original) return false
+    try {
+      return JSON.stringify(spec) !== original
+    } catch {
+      return true
+    }
+  }, [spec, original])
 
   // Возврат к слепку, а не перечитывание файла: у новой процедуры файла ещё
   // нет, а поведение кнопки должно быть одинаковым в обоих случаях.
