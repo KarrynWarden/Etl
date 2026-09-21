@@ -44,6 +44,9 @@ PROTECTED_RE='(^|/)dags/|(^|/)structures/|(^|/)customQueries/|(^|/)config\.d/|(^
 
 cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 
+# shellcheck source=local/_ssh_hint.sh
+. "$(git rev-parse --show-toplevel)/local/_ssh_hint.sh"
+
 # push с повтором при СЕТЕВЫХ сбоях: 2s, 4s, 8s, 16s.
 # Отказ сервера повторять бессмысленно: pre-receive через две секунды ответит
 # ровно то же самое, а человек в это время смотрит на четыре одинаковых портянки
@@ -220,7 +223,9 @@ if [[ -n "$(git status --porcelain)" ]]; then
 fi
 
 echo "== синхронизация с $SERVER/$BRANCH перед пушем =="
-git fetch "$SERVER" "$BRANCH"
+# Не голый fetch: при отказе на уровне ssh git говорит «проверь права доступа»,
+# хотя до прав дело не дошло. Разбор — в local/_ssh_hint.sh.
+fetch_or_explain "$SERVER" "$BRANCH" || exit 1
 # Здесь откат УМЕСТЕН, в отличие от dev-pull.sh: push — это «разослать готовое»,
 # и бросать человека в середине перемещения посреди рассылки не надо. Разбор
 # конфликта — работа dev-pull.sh, он оставляет состояние нетронутым.

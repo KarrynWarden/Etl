@@ -15,6 +15,9 @@ SERVER=${SERVER_REMOTE:-server}
 
 cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 
+# shellcheck source=local/_ssh_hint.sh
+. "$(git rev-parse --show-toplevel)/local/_ssh_hint.sh"
+
 cur=$(git rev-parse --abbrev-ref HEAD)
 if [[ "$cur" != "$BRANCH" ]]; then
     echo "Ты на ветке '$cur', а нужна '$BRANCH'. Переключись: git checkout $BRANCH"
@@ -27,7 +30,7 @@ if [[ -n "$(git status --porcelain)" ]]; then
 fi
 
 echo "== fetch $SERVER/$BRANCH =="
-git fetch "$SERVER" "$BRANCH"
+fetch_or_explain "$SERVER" "$BRANCH" || exit 1
 
 # Конфликт НЕ откатываем — в этом весь смысл dev-pull.sh: он для того и есть,
 # чтобы конфликт разрешить. Раньше здесь стоял `git rebase --abort`, и скрипт

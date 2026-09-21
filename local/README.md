@@ -138,6 +138,70 @@ cp .env.example .env
 
 ---
 
+# Пуш на тестовый сервер (`dev-push.sh`)
+
+```bash
+bash local/dev-push.sh "короткое сообщение"
+```
+
+Скрипт сам коммитит несохранённое, подтягивает ветку `test` с сервера (rebase),
+гоняет проверку дагов и пушит в оба remote'а: `origin` (gitea, канон) и `server`
+(bare-репо на сервере, его хук выкладывает в airflow-test).
+
+## Два remote'а — заводятся один раз
+
+```bash
+git remote add origin https://gitea.oms66.ru/Konkin/ETL.git
+git remote add server ssh://devel@airflow/opt/airflow-test/etl.git
+```
+
+## Настройка ssh — тоже один раз, и её легко потерять
+
+Сервер предъявляет ключ хоста типа **ssh-rsa** (RSA с подписью SHA-1). OpenSSH
+начиная с 8.8 такие ключи хоста по умолчанию не принимает, и рукопожатие рвётся
+ещё до проверки твоего ключа:
+
+```
+Unable to negotiate with ... : no matching host key type found. Their offer: ssh-rsa
+fatal: Не удалось прочитать из внешнего репозитория.
+```
+
+Вторая строка сбивает с толку — она про права доступа, а до прав дело не дошло.
+Разрешаем этот тип ключа для одного хоста, в `~/.ssh/config`:
+
+```
+Host airflow
+    HostkeyAlgorithms +ssh-rsa
+    PubkeyAcceptedAlgorithms +ssh-rsa
+```
+
+`PubkeyAcceptedAlgorithms` — для OpenSSH 8.5 и новее; на более старых опция
+называется `PubkeyAcceptedKeyTypes`. Проверить: `ssh -V`. Писать нужно ровно
+одно из двух: незнакомое слово в `~/.ssh/config` — фатальная ошибка, и ssh
+перестанет работать вообще.
+
+Проверка, что настройка подхватилась:
+
+```bash
+ssh -o BatchMode=yes devel@airflow true && echo ok
+```
+
+> Это **настройка рабочего ПК, а не репозитория**: она живёт в домашней папке и
+> исчезает вместе с ней. Если после переустановки системы или смены учётной
+> записи `dev-push.sh` вдруг перестал ходить на сервер — почти наверняка пропал
+> этот блок. Спутник того же события: git начинает ругаться, что `user.name` и
+> `user.email` выведены из имени машины — значит и `~/.gitconfig` новый.
+> Тогда заодно:
+> ```bash
+> git config --global user.name "Владислав Конкин"
+> git config --global user.email <почта>
+> ```
+
+Сами скрипты `dev-push.sh` и `dev-pull.sh` этот отказ теперь узнают и печатают
+готовый блок для `~/.ssh/config` вместо вывода ssh (`local/_ssh_hint.sh`).
+
+---
+
 # Перенос правок с GitHub через флешку
 
 Между рабочим ПК и интернетом только флешка, а с GitHub скачивается ровно одно —
