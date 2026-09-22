@@ -124,6 +124,18 @@ cp .env.example .env
   Для параллелизма нужен `LocalExecutor` + Postgres (SQLite параллелизм не умеет):
   `ETL_LOCAL_EXECUTOR=LocalExecutor ETL_LOCAL_DB_CONN=postgresql+psycopg2://USER:PWD@HOST:5432/airflow_local bash local/airflow-local.sh`.
   Параллелизм на dev-PC стоит ограничить: `ETL_LOCAL_PARALLELISM=4` (по умолчанию уже 4).
+- **`ImportError: libssl.so.1.1: cannot open shared object file`** при парсинге дагов
+  (в `dev-push.sh` или `airflow-local.sh`) — перенесённый с сервера `python3.10` слинкован
+  с OpenSSL 1.1, а на dev-PC после обновления системы остался только OpenSSL 3. Библиотеки
+  не взаимозаменяемы, ставить рядом системный пакет не нужно — копируем обе с сервера
+  в каталог, который и так в `LD_LIBRARY_PATH` перенесённого runtime:
+  ```bash
+  scp devel@airflow:/usr/lib/x86_64-linux-gnu/lib{ssl,crypto}.so.1.1 \
+      ~/airflow-runtime/opt/python3.10/lib/
+  python3 -c 'import ssl; print(ssl.OPENSSL_VERSION)'   # тем же python'ом из runtime
+  ```
+  Признак ровно этой поломки в выводе `dev-push.sh` — `парсинг DAG'ов: собрано 0 DAG'ов`.
+  Обратите внимание: даги при этом целы, ломается интерпретатор.
 - **`DPI-1047 ... Cannot locate a 64-bit Oracle Client`** (без libaio) — не найден сам
   Instant Client; задай `ETL_ORACLE_LIB_DIR=~/airflow-runtime/opt/oracle/instantclient_19_3`
   в `.env`.

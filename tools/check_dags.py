@@ -224,6 +224,21 @@ def checkDagbag(root, tmpHome):
     os.environ["AIRFLOW__CORE__SQL_ALCHEMY_CONN"] = stub
     os.environ["AIRFLOW__LOGGING__BASE_LOG_FOLDER"] = os.path.join(tmpHome, "logs")
 
+    # Сколько файлов ВООБЩЕ могут дать даг — чтобы отличить «дагов нет» от
+    # «дагов не собрали». Условие то же, по которому фильтрует сам DagBag в
+    # safe_mode: в файле должны встретиться и `dag`, и `airflow`.
+    candidates = []
+    for name in sorted(os.listdir(dagsDir)):
+        if not name.endswith(".py"):
+            continue
+        try:
+            with open(os.path.join(dagsDir, name), "rb") as fh:
+                blob = fh.read().lower()
+        except OSError:
+            continue
+        if b"dag" in blob and b"airflow" in blob:
+            candidates.append(name)
+
     try:
         from airflow.models.dagbag import DagBag
     except Exception as err:
@@ -245,6 +260,25 @@ def checkDagbag(root, tmpHome):
             for errLine in str(err).strip().splitlines():
                 print(f"          {errLine}")
         return [f"{p}: {e}" for p, e in bag.import_errors.items()], False
+
+    # Ноль дагов при непустом каталоге — не «чисто», а «проверить не вышло», и
+    # пустой import_errors тут ничего не доказывает. DagBag ловит ошибку файла в
+    # import_errors только внутри process_file; если разваливается сам импорт
+    # airflow (у него в collect_dags импорты идут ДО этого места), исключение
+    # перехватывается общим except, уходит в лог — и наружу DagBag отдаёт ноль
+    # дагов и ни одной ошибки. Ровно так проверка на dev-PC отрапортовала
+    # «0 DAG'ов, ошибок импорта нет / ПРОШЛО», когда у перенесённого python'а
+    # пропала libssl.so.1.1: `import ssl` падал в каждом файле, а гейт пропускал
+    # что угодно. Ярус, который молча пропускает, вреднее отсутствующего:
+    # отсутствующий виден, а этот показывает зелёное.
+    if not bag.dags and candidates:
+        _line(BAD, "парсинг DAG'ов: собрано 0 DAG'ов",
+              f"файлов с дагами в каталоге: {len(candidates)}")
+        print("        Ни один файл не дал DAG'а, но и ошибок импорта DagBag не вернул —")
+        print("        значит разбор не дошёл до файлов. Смотри Traceback выше: чаще")
+        print("        всего это сломанный интерпретатор (нет библиотеки, на которую")
+        print("        слинкован перенесённый python), а не код дагов.")
+        return ["DagBag собрал 0 DAG'ов при непустом каталоге dags"], False
 
     _line(OK, f"парсинг DAG'ов: {len(bag.dags)} DAG'ов, ошибок импорта нет")
     return [], False
